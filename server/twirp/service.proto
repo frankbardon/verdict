@@ -1,0 +1,169 @@
+// Package verdict.v1 defines the Twirp service surface for Verdict.
+//
+// Model documents, input payloads, outputs and traces cross the wire as
+// JSON-encoded strings rather than being re-modelled in protobuf. There is one
+// source of truth for each of those shapes — DMN XML and the VDJ schema for
+// models, `pkg/trace` for traces — and re-modelling them here would guarantee
+// drift between the wire and the library on the first schema change.
+//
+// What *is* modelled in protobuf is the RPC envelope: which model, which
+// decision, which version, and the diagnostics that come back. Those are
+// Verdict's own vocabulary and are stable.
+
+syntax = "proto3";
+
+package verdict.v1;
+
+option go_package = "github.com/frankbardon/verdict/server/twirp;twirp";
+
+// Engine is the RPC surface of a Verdict engine. It mirrors the Go API in
+// pkg/verdict one method at a time; anything the server can do, the library
+// can do in-process, and nothing here is a capability the library lacks.
+service Engine {
+  // LoadModel parses, analyses and registers a decision model.
+  rpc LoadModel        (LoadModelRequest)        returns (LoadModelResponse);
+  // ListModels returns every registered model.
+  rpc ListModels       (ListModelsRequest)       returns (ListModelsResponse);
+  // Evaluate runs a model's top-level decisions.
+  rpc Evaluate         (EvaluateRequest)         returns (EvaluateResponse);
+  // EvaluateDecision runs one decision and its dependencies.
+  rpc EvaluateDecision (EvaluateDecisionRequest) returns (EvaluateResponse);
+  // EvaluateService runs a named decision service.
+  rpc EvaluateService  (EvaluateServiceRequest)  returns (EvaluateResponse);
+  // GetTrace returns a retained trace by evaluation id.
+  rpc GetTrace         (GetTraceRequest)         returns (GetTraceResponse);
+  // Analyze returns a model's gap and overlap report.
+  rpc Analyze          (AnalyzeRequest)          returns (AnalyzeResponse);
+  // Explain returns the DRG slice for a decision, in human-readable form.
+  rpc Explain          (ExplainRequest)          returns (ExplainResponse);
+}
+
+// Severity ranks a diagnostic.
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_INFO        = 1;
+  SEVERITY_WARNING     = 2;
+  SEVERITY_ERROR       = 3;
+}
+
+// Diagnostic is one reported problem, anchored to a model element.
+message Diagnostic {
+  string   code         = 1;
+  Severity severity     = 2;
+  string   message      = 3;
+  string   model_id     = 4;
+  string   element_id   = 5;
+  string   element_name = 6;
+  // detail_json carries code-specific structured context as a JSON object.
+  string   detail_json  = 7;
+}
+
+// Model identifies a registered model.
+message Model {
+  string id      = 1;
+  string name    = 2;
+  string version = 3;
+  // hash is the content address of the source document. Loading the same
+  // content twice is idempotent and returns the same hash.
+  string hash    = 4;
+  // decision_ids and service_ids let a caller discover what it can evaluate
+  // without fetching the whole document.
+  repeated string decision_ids           = 5;
+  repeated string service_ids            = 6;
+  repeated string top_level_decision_ids = 7;
+  repeated Diagnostic diagnostics        = 8;
+}
+
+message LoadModelRequest {
+  // source is the model document: DMN XML or Verdict Decision JSON. The format
+  // is detected from the content.
+  string source = 1;
+  // path loads from a file on the server instead of from source. Only honoured
+  // when the server was started with a model root.
+  string path   = 2;
+}
+
+message LoadModelResponse {
+  Model model = 1;
+}
+
+message ListModelsRequest {}
+
+message ListModelsResponse {
+  repeated Model models = 1;
+}
+
+// EvaluateRequest runs a model's top-level decisions.
+message EvaluateRequest {
+  string model_id    = 1;
+  // version pins a loaded version. Empty means the most recently loaded.
+  string version     = 2;
+  // inputs_json is a JSON object of input-data values.
+  string inputs_json = 3;
+  // include_trace returns the execution trace inline. The trace is always
+  // recorded when the server's tracing is on; this controls whether it is
+  // returned rather than only retained.
+  bool   include_trace = 4;
+}
+
+message EvaluateDecisionRequest {
+  string model_id      = 1;
+  string version       = 2;
+  string decision_id   = 3;
+  string inputs_json   = 4;
+  bool   include_trace = 5;
+}
+
+message EvaluateServiceRequest {
+  string model_id      = 1;
+  string version       = 2;
+  string service_id    = 3;
+  string inputs_json   = 4;
+  bool   include_trace = 5;
+}
+
+message EvaluateResponse {
+  // outputs_json is a JSON object of the evaluated decisions' values.
+  string outputs_json = 1;
+  // trace_id addresses the retained trace, for a later GetTrace.
+  string trace_id     = 2;
+  // trace_json is the execution trace, present when include_trace was set.
+  string trace_json   = 3;
+  repeated Diagnostic diagnostics = 4;
+  int64 duration_ns = 5;
+}
+
+message GetTraceRequest {
+  string trace_id = 1;
+}
+
+message GetTraceResponse {
+  string trace_json = 1;
+}
+
+message AnalyzeRequest {
+  string model_id = 1;
+  string version  = 2;
+}
+
+message AnalyzeResponse {
+  // report_json is the full analysis report.
+  string report_json = 1;
+  repeated Diagnostic diagnostics = 2;
+}
+
+message ExplainRequest {
+  string model_id    = 1;
+  string version     = 2;
+  // decision_id names the decision to explain. Empty lists the model's
+  // decisions and services instead.
+  string decision_id = 3;
+}
+
+message ExplainResponse {
+  // slice_json is the structured explanation.
+  string slice_json = 1;
+  // text is the same explanation rendered as prose, which is what an agent
+  // reading this over MCP actually wants.
+  string text       = 2;
+}

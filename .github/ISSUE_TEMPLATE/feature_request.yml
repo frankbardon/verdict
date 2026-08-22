@@ -1,0 +1,61 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement to Verdict.
+
+        One thing worth checking first: if DMN already names the thing you want, say so.
+        Verdict implements the spec rather than inventing a parallel vocabulary, so
+        "DMN 1.5 §8.2 calls this X" is the fastest possible route to agreement.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem does this solve? What's the use case?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How would you like this to work?
+    validations:
+      required: true
+
+  - type: input
+    id: spec
+    attributes:
+      label: DMN Reference
+      description: The clause of DMN 1.5 that covers this, if there is one.
+      placeholder: "DMN 1.5 §8.3 / not in the spec"
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative approaches you've thought about.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Evaluator / boxed expressions
+        - Decision tables / hit policies
+        - FEEL
+        - Agent decisions / bridges
+        - Static analysis
+        - DMN XML / interoperability
+        - Verdict Decision JSON / JSON Schema
+        - Traces
+        - CLI
+        - Server (Twirp, MCP)
+        - Nexus module
+        - Skill pack
+        - Documentation
+        - Other

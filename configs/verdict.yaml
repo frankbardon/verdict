@@ -1,0 +1,90 @@
+# Verdict configuration.
+#
+# Every key below is shown at its default. A configuration file only needs the
+# keys it changes: what it does not mention keeps the default, so a three-line
+# file is a complete file.
+#
+# The block may be nested under `verdict:` (so it can live inside a host
+# application's own configuration) or supplied at the top level (for a
+# standalone `verdict serve` config). Both are accepted.
+
+verdict:
+  feel:
+    # "feel" is DMN Conformance Level 3 — the full language.
+    # "s-feel" is Level 2: decision tables and simple expressions only, with
+    # iteration, conditionals and inline functions rejected at parse time.
+    # A model that declares its own conformanceLevel overrides this for itself.
+    dialect: feel
+
+    # The location now(), today() and date arithmetic resolve against. UTC by
+    # default: a decision that means something different depending on where it
+    # ran is not auditable.
+    timezone: UTC
+
+  evaluation:
+    # Refuse to load a model whose static analysis reports an error — an
+    # overlap under UNIQUE, a gap under a non-defaulted policy, an expression
+    # that does not compile. Turn this on in production.
+    strict_mode: false
+
+    # Bounds an agent decision that declares no maxLatency of its own. The
+    # model's own policy always wins where it sets one.
+    default_max_latency: 30s
+
+    # Evaluate independent decisions in the same dependency layer concurrently.
+    parallel_independent_decisions: true
+
+    # Cache referentially transparent nodes on their inputs, within one
+    # evaluation. Agent decisions are never memoised.
+    memoize: false
+
+    # Bounds recursion through decision services.
+    max_depth: 32
+
+  tracing:
+    # off | summary | full. The trace is the deliverable, so full is the
+    # default; summary keeps the graph and timings but drops the values.
+    mode: full
+
+    # Binding names whose values are replaced with "[redacted]" in the trace.
+    # Redaction is a trace concern only — the decision still sees the real
+    # value, so redacting an input does not change the outcome.
+    redact_inputs: []
+
+  agent:
+    # nexus | http | mock | none. Empty means the host wires a bridge in code,
+    # which is the library-first path. "nexus" is only available to a program
+    # that imports the separate github.com/frankbardon/verdict/nexus module.
+    bridge: ""
+
+    http:
+      endpoint: ""
+      headers: {}
+      timeout: 60s
+
+    # Read by the verdict/nexus module; ignored by the core.
+    nexus:
+      # per-decision  — every agent node gets its own session. Maximum
+      #                 isolation; the default.
+      # per-evaluation — one session per evaluation, so later nodes see what
+      #                 earlier ones were asked.
+      # shared        — one long-lived session. Best-informed, and the only
+      #                 strategy where one request's data can reach another's
+      #                 prompt.
+      session_strategy: per-decision
+      channel: verdict
+
+  models:
+    # Files or directories to load at startup. Directories are scanned
+    # non-recursively for *.dmn, *.xml, *.json and *.vdj.
+    # There is no hot-reload option: loading is content-addressed and
+    # idempotent, so a host that wants it can watch files and reload itself.
+    paths: []
+
+  # Only read by `verdict serve` and `verdict mcp`; the library ignores this block.
+  server:
+    listen: ":7430"
+    twirp_path: /twirp
+    mcp_enabled: true
+    read_timeout: 30s
+    write_timeout: 60s

@@ -1,0 +1,41 @@
+{
+  "vdj": "1.0",
+  "id": "shipping_gap",
+  "name": "Shipping (with a hole in it)",
+  "description": "A fixture for the --strict gate: the table covers parcels up to 10kg and the input domain runs to 50kg, so three combinations are uncovered and the table declares no default output.",
+  "input_data": [{ "name": "Order" }],
+  "item_definitions": [
+    {
+      "name": "tOrder",
+      "components": [
+        { "name": "weight_kg", "type_ref": "number" },
+        { "name": "zone", "type_ref": "string" }
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "shipping_cost",
+      "name": "Shipping Cost",
+      "question": "What does it cost to ship this order?",
+      "required_inputs": ["Order"],
+      "variable": { "name": "Shipping Cost", "type_ref": "number" },
+      "logic": {
+        "kind": "decisionTable",
+        "hit_policy": "UNIQUE",
+        "inputs": [
+          { "label": "Weight", "expression": "Order.weight_kg", "type_ref": "number", "values": "[0..50]" },
+          { "label": "Zone", "expression": "Order.zone", "type_ref": "string", "values": "\"domestic\",\"eu\",\"world\"" }
+        ],
+        "outputs": [{ "name": "cost", "type_ref": "number" }],
+        "rules": [
+          { "when": ["[0..2]", "\"domestic\""], "then": ["4.95"] },
+          { "when": ["]2..10]", "\"domestic\""], "then": ["7.95"] },
+          { "when": ["[0..2]", "\"eu\""], "then": ["9.95"] },
+          { "when": ["]2..10]", "\"eu\""], "then": ["14.95"] },
+          { "when": ["[0..10]", "\"world\""], "then": ["24.95"] }
+        ]
+      }
+    }
+  ]
+}

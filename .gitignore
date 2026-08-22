@@ -1,0 +1,50 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test & coverage
+*.test
+*.out
+coverage.out
+coverage.html
+*.prof
+
+# Go workspace
+#
+# A go.work spanning the root and nexus/ would collapse the module boundary the
+# whole design rests on: `go build ./...` would start resolving Nexus, and the
+# separation would stop being enforced by anything. One may exist locally for a
+# debugging session; it must never be committed.
+go.work
+go.work.sum
+vendor/
+
+# Docs (mdBook build output)
+docs/book/
+
+# Claude
+.claude/settings.local.json
+.planning/
+
+# Project
+.worktrees/
+tmp/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local

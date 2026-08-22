@@ -1,0 +1,247 @@
+{
+  "vdj": "1.0",
+  "id": "hit_policies",
+  "name": "Hit Policy Exercise",
+  "conformance_level": "feel",
+  "input_data": [
+    { "id": "score", "name": "Score", "variable": { "name": "Score", "type_ref": "number" } }
+  ],
+  "decisions": [
+    {
+      "id": "unique_table", "name": "Unique",
+      "required_inputs": ["score"],
+      "variable": { "name": "Unique", "type_ref": "string" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "UNIQUE",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "band", "type_ref": "string" }],
+        "rules": [
+          { "id": "u1", "when": ["< 10"], "then": ["\"low\""] },
+          { "id": "u2", "when": ["[10..20)"], "then": ["\"mid\""] },
+          { "id": "u3", "when": [">= 20"], "then": ["\"high\""] }
+        ]
+      }
+    },
+    {
+      "id": "overlap_unique", "name": "OverlapUnique",
+      "required_inputs": ["score"],
+      "variable": { "name": "OverlapUnique", "type_ref": "string" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "UNIQUE",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "band", "type_ref": "string" }],
+        "rules": [
+          { "id": "ou1", "when": ["< 30"], "then": ["\"a\""] },
+          { "id": "ou2", "when": ["> 10"], "then": ["\"b\""] }
+        ]
+      }
+    },
+    {
+      "id": "gap_table", "name": "Gapped",
+      "required_inputs": ["score"],
+      "variable": { "name": "Gapped", "type_ref": "string" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "UNIQUE",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "band", "type_ref": "string" }],
+        "rules": [
+          { "id": "g1", "when": ["< 10"], "then": ["\"low\""] },
+          { "id": "g2", "when": ["> 20"], "then": ["\"high\""] }
+        ]
+      }
+    },
+    {
+      "id": "any_table", "name": "Any",
+      "required_inputs": ["score"],
+      "variable": { "name": "Any", "type_ref": "string" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "ANY",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "verdict", "type_ref": "string" }],
+        "rules": [
+          { "id": "a1", "when": ["> 5"], "then": ["\"pass\""] },
+          { "id": "a2", "when": ["> 7"], "then": ["\"pass\""] }
+        ]
+      }
+    },
+    {
+      "id": "any_conflict", "name": "AnyConflict",
+      "required_inputs": ["score"],
+      "variable": { "name": "AnyConflict", "type_ref": "string" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "ANY",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "verdict", "type_ref": "string" }],
+        "rules": [
+          { "id": "ac1", "when": ["> 5"], "then": ["\"pass\""] },
+          { "id": "ac2", "when": ["> 7"], "then": ["\"fail\""] }
+        ]
+      }
+    },
+    {
+      "id": "priority_table", "name": "Priority",
+      "required_inputs": ["score"],
+      "variable": { "name": "Priority", "type_ref": "string" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "PRIORITY",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "band", "type_ref": "string", "values": "\"high\",\"mid\",\"low\"" }],
+        "rules": [
+          { "id": "p1", "when": ["> 0"], "then": ["\"low\""] },
+          { "id": "p2", "when": ["> 10"], "then": ["\"mid\""] },
+          { "id": "p3", "when": ["> 20"], "then": ["\"high\""] }
+        ]
+      }
+    },
+    {
+      "id": "output_order_table", "name": "OutputOrder",
+      "required_inputs": ["score"],
+      "variable": { "name": "OutputOrder" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "OUTPUT ORDER",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "band", "type_ref": "string", "values": "\"high\",\"mid\",\"low\"" }],
+        "rules": [
+          { "id": "o1", "when": ["> 0"], "then": ["\"low\""] },
+          { "id": "o2", "when": ["> 10"], "then": ["\"mid\""] },
+          { "id": "o3", "when": ["> 20"], "then": ["\"high\""] }
+        ]
+      }
+    },
+    {
+      "id": "rule_order_table", "name": "RuleOrder",
+      "required_inputs": ["score"],
+      "variable": { "name": "RuleOrder" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "RULE ORDER",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "band", "type_ref": "string" }],
+        "rules": [
+          { "id": "r1", "when": ["> 0"], "then": ["\"low\""] },
+          { "id": "r2", "when": ["> 10"], "then": ["\"mid\""] },
+          { "id": "r3", "when": ["> 20"], "then": ["\"high\""] }
+        ]
+      }
+    },
+    {
+      "id": "collect_table", "name": "Collect",
+      "required_inputs": ["score"],
+      "variable": { "name": "Collect" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "points", "type_ref": "number" }],
+        "rules": [
+          { "id": "c1", "when": ["> 0"], "then": ["1"] },
+          { "id": "c2", "when": ["> 10"], "then": ["2"] },
+          { "id": "c3", "when": ["> 20"], "then": ["4"] }
+        ]
+      }
+    },
+    {
+      "id": "collect_sum", "name": "CollectSum",
+      "required_inputs": ["score"],
+      "variable": { "name": "CollectSum", "type_ref": "number" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT", "aggregation": "SUM",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "points", "type_ref": "number" }],
+        "rules": [
+          { "id": "cs1", "when": ["> 0"], "then": ["1"] },
+          { "id": "cs2", "when": ["> 10"], "then": ["2"] },
+          { "id": "cs3", "when": ["> 20"], "then": ["4"] }
+        ]
+      }
+    },
+    {
+      "id": "collect_min", "name": "CollectMin",
+      "required_inputs": ["score"],
+      "variable": { "name": "CollectMin", "type_ref": "number" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT", "aggregation": "MIN",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "points", "type_ref": "number" }],
+        "rules": [
+          { "id": "cm1", "when": ["> 0"], "then": ["5"] },
+          { "id": "cm2", "when": ["> 10"], "then": ["3"] },
+          { "id": "cm3", "when": ["> 20"], "then": ["9"] }
+        ]
+      }
+    },
+    {
+      "id": "collect_max", "name": "CollectMax",
+      "required_inputs": ["score"],
+      "variable": { "name": "CollectMax", "type_ref": "number" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT", "aggregation": "MAX",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "points", "type_ref": "number" }],
+        "rules": [
+          { "id": "cx1", "when": ["> 0"], "then": ["5"] },
+          { "id": "cx2", "when": ["> 10"], "then": ["3"] },
+          { "id": "cx3", "when": ["> 20"], "then": ["9"] }
+        ]
+      }
+    },
+    {
+      "id": "collect_count", "name": "CollectCount",
+      "required_inputs": ["score"],
+      "variable": { "name": "CollectCount", "type_ref": "number" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT", "aggregation": "COUNT",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "points", "type_ref": "number" }],
+        "rules": [
+          { "id": "cc1", "when": ["> 0"], "then": ["5"] },
+          { "id": "cc2", "when": ["> 10"], "then": ["3"] },
+          { "id": "cc3", "when": ["> 20"], "then": ["9"] }
+        ]
+      }
+    },
+    {
+      "id": "first_table", "name": "First",
+      "required_inputs": ["score"],
+      "variable": { "name": "First", "type_ref": "string" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "FIRST",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "band", "type_ref": "string" }],
+        "rules": [
+          { "id": "f1", "when": ["> 20"], "then": ["\"high\""] },
+          { "id": "f2", "when": ["> 10"], "then": ["\"mid\""] },
+          { "id": "f3", "when": ["-"], "then": ["\"low\""] }
+        ]
+      }
+    },
+    {
+      "id": "multi_output", "name": "MultiOutput",
+      "required_inputs": ["score"],
+      "variable": { "name": "MultiOutput" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "UNIQUE",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [
+          { "name": "band", "type_ref": "string" },
+          { "name": "fee", "type_ref": "number" }
+        ],
+        "rules": [
+          { "id": "m1", "when": ["< 10"], "then": ["\"low\"", "0"] },
+          { "id": "m2", "when": [">= 10"], "then": ["\"high\"", "25"] }
+        ]
+      }
+    },
+    {
+      "id": "defaulted", "name": "Defaulted",
+      "required_inputs": ["score"],
+      "variable": { "name": "Defaulted", "type_ref": "string" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "UNIQUE",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "band", "type_ref": "string", "default_value": "\"unknown\"" }],
+        "rules": [
+          { "id": "d1", "when": ["< 10"], "then": ["\"low\""] }
+        ]
+      }
+    }
+  ]
+}

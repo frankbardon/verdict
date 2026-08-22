@@ -1,0 +1,22 @@
+[book]
+authors = ["Frank Bardon"]
+language = "en"
+src = "src"
+title = "Verdict Documentation"
+description = "A DMN 1.5 decision engine for Go, with agent decisions as a first-class node kind"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/frankbardon/verdict"
+edit-url-template = "https://github.com/frankbardon/verdict/edit/main/docs/src/{path}"
+no-section-label = false
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.search]
+enable = true
+limit-results = 30
+boost-hierarchy = 2

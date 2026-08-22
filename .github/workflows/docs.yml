@@ -1,0 +1,58 @@
+name: Deploy Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "pkg/dmn/vdj/testdata/vdj-schema.json"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: "latest"
+
+      - name: Build documentation
+        run: mdbook build docs
+
+      # Publish the VDJ JSON Schema at the site root so its $id
+      # (https://frankbardon.github.io/verdict/vdj-schema.json) resolves to the
+      # document that names it. The committed golden carries a trailing
+      # `// golden-hash:` line for tamper detection; strip it so the served file
+      # is valid JSON. The golden is regenerated and verified by `make test` on
+      # every PR, so no Go toolchain is needed here.
+      - name: Publish VDJ schema
+        run: sed '/^\/\/ golden-hash:/d' pkg/dmn/vdj/testdata/vdj-schema.json > docs/book/vdj-schema.json
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

@@ -1,0 +1,1167 @@
+{
+  "$defs": {
+    "AgentBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "feel": {
+          "description": "FEEL expression evaluated against the decision's own context to produce this binding's value.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "feel",
+        "name"
+      ],
+      "type": "object"
+    },
+    "AgentDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "input_bindings": {
+          "description": "The only values the agent sees. The model context is never passed through; each binding names a value and the FEEL expression producing it.",
+          "items": {
+            "$ref": "#/$defs/AgentBinding"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "output_type": {
+          "$ref": "#/$defs/TypeSpec"
+        },
+        "policy": {
+          "$ref": "#/$defs/AgentPolicy"
+        },
+        "prompt_template": {
+          "description": "A Go text/template rendered against the bound inputs. Template errors are reported at load time.",
+          "type": "string"
+        },
+        "validator": {
+          "description": "Optional FEEL expression evaluated with the coerced response bound to `value`. Anything but true is a failure.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_template"
+      ],
+      "type": "object"
+    },
+    "AgentPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "fallback_decision": {
+          "description": "The decision evaluated instead, when `on_failure` is `fallback`.",
+          "type": "string"
+        },
+        "max_latency": {
+          "description": "ISO-8601 duration bounding one invocation including its retries. Omit to take the engine default.",
+          "type": "string"
+        },
+        "max_retries": {
+          "description": "Additional attempts after the first.",
+          "type": "integer"
+        },
+        "on_failure": {
+          "description": "What to do when the agent fails to produce a conforming value within its budget.",
+          "enum": [
+            "error",
+            "fallback",
+            "null"
+          ],
+          "type": "string"
+        },
+        "session_hint": {
+          "description": "Passed through to the bridge. A bridge that reuses sessions may key on it.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "BKM": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "encapsulated_logic": {
+          "$ref": "#/$defs/Expression"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "required_decisions": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "required_inputs": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "required_knowledge": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "variable": {
+          "$ref": "#/$defs/InformationItem"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "Binding": {
+      "additionalProperties": false,
+      "properties": {
+        "parameter": {
+          "$ref": "#/$defs/InformationItem"
+        },
+        "value": {
+          "$ref": "#/$defs/Expression"
+        }
+      },
+      "type": "object"
+    },
+    "ContextEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/Expression"
+        },
+        "variable": {
+          "$ref": "#/$defs/InformationItem"
+        }
+      },
+      "type": "object"
+    },
+    "Decision": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_answers": {
+          "type": "string"
+        },
+        "authority_requirements": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "logic": {
+          "$ref": "#/$defs/Expression"
+        },
+        "name": {
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "required_decisions": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "required_inputs": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "required_knowledge": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "variable": {
+          "$ref": "#/$defs/InformationItem"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "DecisionService": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "encapsulated_decisions": {
+          "description": "Decisions evaluated inside the service but not returned.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "input_data": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "input_decisions": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "output_decisions": {
+          "description": "The decisions whose values the service returns.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "variable": {
+          "$ref": "#/$defs/InformationItem"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "Document": {
+      "additionalProperties": false,
+      "properties": {
+        "business_knowledge_models": {
+          "items": {
+            "$ref": "#/$defs/BKM"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "conformance_level": {
+          "description": "The DMN conformance level to evaluate at: `s-feel` restricts expressions to S-FEEL, `feel` admits the full dialect. Omit to take the engine default.",
+          "enum": [
+            "s-feel",
+            "feel"
+          ],
+          "type": "string"
+        },
+        "decision_services": {
+          "items": {
+            "$ref": "#/$defs/DecisionService"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "decisions": {
+          "items": {
+            "$ref": "#/$defs/Decision"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "exporter": {
+          "type": "string"
+        },
+        "exporter_version": {
+          "type": "string"
+        },
+        "expression_language": {
+          "description": "Default expression language URI for the document's literal expressions.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stable identifier for the model. Verdict falls back to `name` when it is absent.",
+          "type": "string"
+        },
+        "input_data": {
+          "items": {
+            "$ref": "#/$defs/InputData"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "item_definitions": {
+          "items": {
+            "$ref": "#/$defs/ItemDefinition"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "knowledge_sources": {
+          "items": {
+            "$ref": "#/$defs/KnowledgeSource"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "description": "The DMN namespace this model's elements belong to.",
+          "type": "string"
+        },
+        "vdj": {
+          "description": "VDJ format version. The current version is 1.0.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "vdj"
+      ],
+      "type": "object"
+    },
+    "Expression": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "agentDecision"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "aggregation": false,
+              "annotations": false,
+              "bindings": false,
+              "body": false,
+              "called": false,
+              "columns": false,
+              "detail": false,
+              "elements": false,
+              "entries": false,
+              "expression_language": false,
+              "function_kind": false,
+              "hit_policy": false,
+              "inputs": false,
+              "orientation": false,
+              "outputs": false,
+              "parameters": false,
+              "rows": false,
+              "rules": false,
+              "text": false
+            },
+            "required": [
+              "agent"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "context"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "agent": false,
+              "aggregation": false,
+              "annotations": false,
+              "bindings": false,
+              "body": false,
+              "called": false,
+              "columns": false,
+              "detail": false,
+              "elements": false,
+              "expression_language": false,
+              "function_kind": false,
+              "hit_policy": false,
+              "inputs": false,
+              "orientation": false,
+              "outputs": false,
+              "parameters": false,
+              "rows": false,
+              "rules": false,
+              "text": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "decisionTable"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "agent": false,
+              "bindings": false,
+              "body": false,
+              "called": false,
+              "columns": false,
+              "detail": false,
+              "elements": false,
+              "entries": false,
+              "expression_language": false,
+              "function_kind": false,
+              "parameters": false,
+              "rows": false,
+              "text": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "functionDefinition"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "agent": false,
+              "aggregation": false,
+              "annotations": false,
+              "bindings": false,
+              "called": false,
+              "columns": false,
+              "detail": false,
+              "elements": false,
+              "entries": false,
+              "expression_language": false,
+              "hit_policy": false,
+              "inputs": false,
+              "orientation": false,
+              "outputs": false,
+              "rows": false,
+              "rules": false,
+              "text": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "invocation"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "agent": false,
+              "aggregation": false,
+              "annotations": false,
+              "body": false,
+              "columns": false,
+              "detail": false,
+              "elements": false,
+              "entries": false,
+              "expression_language": false,
+              "function_kind": false,
+              "hit_policy": false,
+              "inputs": false,
+              "orientation": false,
+              "outputs": false,
+              "parameters": false,
+              "rows": false,
+              "rules": false,
+              "text": false
+            },
+            "required": [
+              "called"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "agent": false,
+              "aggregation": false,
+              "annotations": false,
+              "bindings": false,
+              "body": false,
+              "called": false,
+              "columns": false,
+              "detail": false,
+              "entries": false,
+              "expression_language": false,
+              "function_kind": false,
+              "hit_policy": false,
+              "inputs": false,
+              "orientation": false,
+              "outputs": false,
+              "parameters": false,
+              "rows": false,
+              "rules": false,
+              "text": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "literalExpression"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "agent": false,
+              "aggregation": false,
+              "annotations": false,
+              "bindings": false,
+              "body": false,
+              "called": false,
+              "columns": false,
+              "detail": false,
+              "elements": false,
+              "entries": false,
+              "function_kind": false,
+              "hit_policy": false,
+              "inputs": false,
+              "orientation": false,
+              "outputs": false,
+              "parameters": false,
+              "rows": false,
+              "rules": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "relation"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "agent": false,
+              "aggregation": false,
+              "annotations": false,
+              "bindings": false,
+              "body": false,
+              "called": false,
+              "detail": false,
+              "elements": false,
+              "entries": false,
+              "expression_language": false,
+              "function_kind": false,
+              "hit_policy": false,
+              "inputs": false,
+              "orientation": false,
+              "outputs": false,
+              "parameters": false,
+              "rules": false,
+              "text": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "agent": false,
+              "aggregation": false,
+              "annotations": false,
+              "bindings": false,
+              "body": false,
+              "called": false,
+              "columns": false,
+              "elements": false,
+              "entries": false,
+              "expression_language": false,
+              "function_kind": false,
+              "hit_policy": false,
+              "inputs": false,
+              "orientation": false,
+              "outputs": false,
+              "parameters": false,
+              "rows": false,
+              "rules": false,
+              "text": false
+            }
+          }
+        }
+      ],
+      "description": "A boxed expression. `kind` selects the payload: the properties belonging to other kinds are forbidden.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentDecision"
+        },
+        "aggregation": {
+          "description": "decisionTable: the COLLECT aggregator, when the hit policy is COLLECT and the shorthand did not already name one.",
+          "enum": [
+            "COUNT",
+            "MAX",
+            "MIN",
+            "SUM"
+          ],
+          "type": "string"
+        },
+        "annotations": {
+          "description": "decisionTable: the annotation column headers. Each rule's `annotations` align with these positionally.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "bindings": {
+          "items": {
+            "$ref": "#/$defs/Binding"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "body": {
+          "$ref": "#/$defs/Expression"
+        },
+        "called": {
+          "description": "invocation: the name of the business knowledge model being invoked.",
+          "type": "string"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/InformationItem"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "detail": {
+          "description": "unknown: what the unrecognised logic was, preserved so a round trip does not lose it.",
+          "type": "string"
+        },
+        "elements": {
+          "items": {
+            "$ref": "#/$defs/Expression"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/ContextEntry"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "expression_language": {
+          "type": "string"
+        },
+        "function_kind": {
+          "description": "functionDefinition: the body's binding. `Java` and `PMML` bodies are preserved but not executed; calling one returns null.",
+          "enum": [
+            "FEEL",
+            "Java",
+            "PMML"
+          ],
+          "type": "string"
+        },
+        "hit_policy": {
+          "description": "decisionTable: how multiple matching rules are resolved. Accepts the long DMN spelling (`COLLECT`) or the single-cell shorthand (`C+`).",
+          "enum": [
+            "A",
+            "ANY",
+            "C",
+            "C#",
+            "C+",
+            "C\u003c",
+            "C\u003e",
+            "COLLECT",
+            "F",
+            "FIRST",
+            "O",
+            "OUTPUT ORDER",
+            "P",
+            "PRIORITY",
+            "R",
+            "RULE ORDER",
+            "U",
+            "UNIQUE"
+          ],
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/TableInput"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "Selects which boxed expression this is, and therefore which of the payload properties may be present.",
+          "enum": [
+            "agentDecision",
+            "context",
+            "decisionTable",
+            "functionDefinition",
+            "invocation",
+            "list",
+            "literalExpression",
+            "relation",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "orientation": {
+          "description": "decisionTable: presentation only. The engine evaluates every orientation identically.",
+          "enum": [
+            "CrossTable",
+            "Rule-as-Column",
+            "Rule-as-Row"
+          ],
+          "type": "string"
+        },
+        "outputs": {
+          "items": {
+            "$ref": "#/$defs/TableOutput"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "parameters": {
+          "items": {
+            "$ref": "#/$defs/InformationItem"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "rows": {
+          "description": "relation: rows of cells, each row aligned positionally with `columns`.",
+          "items": {
+            "items": {
+              "$ref": "#/$defs/Expression"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/TableRule"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "literalExpression: the FEEL expression source.",
+          "type": "string"
+        },
+        "type_ref": {
+          "description": "The type of the value this expression produces: a FEEL builtin or the name of an item definition.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FunctionItem": {
+      "additionalProperties": false,
+      "properties": {
+        "output_type": {
+          "type": "string"
+        },
+        "parameters": {
+          "items": {
+            "$ref": "#/$defs/InformationItem"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "InformationItem": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "optional": {
+          "type": "boolean"
+        },
+        "type_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "InputData": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "variable": {
+          "$ref": "#/$defs/InformationItem"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ItemDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_values": {
+          "description": "FEEL unary tests constraining the type's values.",
+          "type": "string"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/ItemDefinition"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "function_item": {
+          "$ref": "#/$defs/FunctionItem"
+        },
+        "id": {
+          "type": "string"
+        },
+        "is_collection": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "type_constraint": {
+          "description": "DMN 1.4+ type constraint, preserved through round trips.",
+          "type": "string"
+        },
+        "type_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "KnowledgeSource": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "location_uri": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "TableInput": {
+      "additionalProperties": false,
+      "properties": {
+        "expression": {
+          "description": "The FEEL expression producing the value each rule's `when` entry is tested against.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "type_ref": {
+          "type": "string"
+        },
+        "values": {
+          "description": "Optional FEEL list constraining the input's domain. The analyser uses it to decide what counts as a gap.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "type": "object"
+    },
+    "TableOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "default_value": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "name": {
+          "description": "The output's name. Required when the table has more than one output; a single-output table returns the value itself, not a record.",
+          "type": "string"
+        },
+        "type_ref": {
+          "type": "string"
+        },
+        "values": {
+          "description": "Optional FEEL list of permitted outputs. Under PRIORITY and OUTPUT ORDER this list is also the ranking, most preferred first.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "TableRule": {
+      "additionalProperties": false,
+      "properties": {
+        "annotations": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "then": {
+          "description": "One FEEL expression per output clause, positionally aligned.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "when": {
+          "description": "One unary test per input clause, positionally aligned. `-` matches anything.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "then",
+        "when"
+      ],
+      "type": "object"
+    },
+    "TypeSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "type": "boolean"
+        },
+        "components": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TypeSpec"
+          },
+          "description": "Types a structured response, keyed by field name.",
+          "type": "object"
+        },
+        "enumeration": {
+          "description": "Restricts the response to this set of strings.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "type_ref": {
+          "description": "A FEEL builtin type or an item definition name. Empty means Any.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$id": "https://frankbardon.github.io/verdict/vdj-schema.json",
+  "$ref": "#/$defs/Document",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Verdict Decision JSON (VDJ) 1.0: a lossless JSON projection of a DMN decision model. Every construct maps one-to-one onto the DMN model, and a document round-trips through DMN XML and back unchanged.",
+  "title": "Verdict Decision JSON"
+}
+// golden-hash: f26646bc4cd8d0e60535a2b74725dbbdaf09e652cf16d9884f56ebf588b94773

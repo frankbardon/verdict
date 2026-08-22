@@ -1,0 +1,138 @@
+{
+  "vdj": "1.0",
+  "id": "shipping_closed",
+  "name": "Shipping (closed)",
+  "description": "The same table with the 10-50kg band filled in. It covers its declared input domain exactly, so the analyser must report no gaps and no overlaps \u2014 which is what makes --strict a gate a correct model can pass.",
+  "input_data": [
+    {
+      "name": "Order"
+    }
+  ],
+  "item_definitions": [
+    {
+      "name": "tOrder",
+      "components": [
+        {
+          "name": "weight_kg",
+          "type_ref": "number"
+        },
+        {
+          "name": "zone",
+          "type_ref": "string"
+        }
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "shipping_cost",
+      "name": "Shipping Cost",
+      "question": "What does it cost to ship this order?",
+      "required_inputs": [
+        "Order"
+      ],
+      "variable": {
+        "name": "Shipping Cost",
+        "type_ref": "number"
+      },
+      "logic": {
+        "kind": "decisionTable",
+        "hit_policy": "UNIQUE",
+        "inputs": [
+          {
+            "label": "Weight",
+            "expression": "Order.weight_kg",
+            "type_ref": "number",
+            "values": "[0..50]"
+          },
+          {
+            "label": "Zone",
+            "expression": "Order.zone",
+            "type_ref": "string",
+            "values": "\"domestic\",\"eu\",\"world\""
+          }
+        ],
+        "outputs": [
+          {
+            "name": "cost",
+            "type_ref": "number"
+          }
+        ],
+        "rules": [
+          {
+            "when": [
+              "[0..2]",
+              "\"domestic\""
+            ],
+            "then": [
+              "4.95"
+            ]
+          },
+          {
+            "when": [
+              "]2..10]",
+              "\"domestic\""
+            ],
+            "then": [
+              "7.95"
+            ]
+          },
+          {
+            "when": [
+              "[0..2]",
+              "\"eu\""
+            ],
+            "then": [
+              "9.95"
+            ]
+          },
+          {
+            "when": [
+              "]2..10]",
+              "\"eu\""
+            ],
+            "then": [
+              "14.95"
+            ]
+          },
+          {
+            "when": [
+              "[0..10]",
+              "\"world\""
+            ],
+            "then": [
+              "24.95"
+            ]
+          },
+          {
+            "when": [
+              "]10..50]",
+              "\"domestic\""
+            ],
+            "then": [
+              "12.95"
+            ]
+          },
+          {
+            "when": [
+              "]10..50]",
+              "\"eu\""
+            ],
+            "then": [
+              "22.95"
+            ]
+          },
+          {
+            "when": [
+              "]10..50]",
+              "\"world\""
+            ],
+            "then": [
+              "39.95"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

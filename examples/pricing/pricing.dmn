@@ -1,0 +1,440 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:verdict="https://github.com/frankbardon/verdict/schema/1.0"
+             id="pricing"
+             name="Subscription Pricing"
+             namespace="https://example.com/dmn/pricing"
+             verdict:version="1.0.0"
+             verdict:conformanceLevel="feel">
+
+  <description>
+    Multi-table decomposition, with no agent anywhere in it.
+
+    Pricing is the case where an LLM has nothing to offer: the answer must be
+    the same for the same inputs every time, must be explainable to a customer
+    line by line, and must be auditable years later. Verdict is the deterministic
+    half of the pair, and this model is what that half looks like on its own —
+    six tables, four hit policies, one reusable function, and a trace that shows
+    exactly which discounts applied.
+
+    The COLLECT SUM discount table is the reason the hit-policy family matters:
+    discounts stack, and expressing "every rule that matches contributes" as a
+    hit policy rather than as code is what keeps the table readable by the people
+    who own the pricing.
+  </description>
+
+  <itemDefinition id="tCustomer" name="tCustomer">
+    <itemComponent id="tCustomer_segment" name="segment"><typeRef>string</typeRef></itemComponent>
+    <itemComponent id="tCustomer_seats" name="seats"><typeRef>number</typeRef></itemComponent>
+    <itemComponent id="tCustomer_years" name="tenure_years"><typeRef>number</typeRef></itemComponent>
+    <itemComponent id="tCustomer_region" name="region"><typeRef>string</typeRef></itemComponent>
+  </itemDefinition>
+
+  <itemDefinition id="tOrder" name="tOrder">
+    <itemComponent id="tOrder_plan" name="plan"><typeRef>string</typeRef></itemComponent>
+    <itemComponent id="tOrder_term" name="term_months"><typeRef>number</typeRef></itemComponent>
+    <itemComponent id="tOrder_promo" name="promo_code"><typeRef>string</typeRef></itemComponent>
+  </itemDefinition>
+
+  <inputData id="customer" name="Customer">
+    <variable id="customer_var" name="Customer" typeRef="tCustomer"/>
+  </inputData>
+  <inputData id="order" name="Order">
+    <variable id="order_var" name="Order" typeRef="tOrder"/>
+  </inputData>
+
+  <businessKnowledgeModel id="apply_discount" name="Apply Discount">
+    <description>
+      One place where a percentage becomes money, so rounding happens once and
+      the same way everywhere.
+    </description>
+    <variable id="apply_discount_var" name="Apply Discount" typeRef="number"/>
+    <encapsulatedLogic id="apply_discount_fn" kind="FEEL">
+      <formalParameter id="ad_amount" name="amount" typeRef="number"/>
+      <formalParameter id="ad_percent" name="percent" typeRef="number"/>
+      <literalExpression id="apply_discount_expr">
+        <text>decimal(amount * (1 - percent / 100), 2)</text>
+      </literalExpression>
+    </encapsulatedLogic>
+  </businessKnowledgeModel>
+
+  <decision id="base_rate" name="Base Rate">
+    <question>What does a seat cost on this plan, before anything else?</question>
+    <variable id="base_rate_var" name="Base Rate" typeRef="number"/>
+    <informationRequirement id="br_needs_order"><requiredInput href="#order"/></informationRequirement>
+    <decisionTable id="base_rate_table" hitPolicy="UNIQUE">
+      <input id="br_in_plan" label="Plan">
+        <inputExpression id="br_in_plan_expr" typeRef="string"><text>Order.plan</text></inputExpression>
+        <inputValues><text>"starter","team","business","enterprise"</text></inputValues>
+      </input>
+      <output id="br_out" name="base rate" typeRef="number">
+        <defaultOutputEntry><text>null</text></defaultOutputEntry>
+      </output>
+      <rule id="br_r1">
+        <inputEntry id="br_r1_i1"><text>"starter"</text></inputEntry>
+        <outputEntry id="br_r1_o1"><text>9</text></outputEntry>
+      </rule>
+      <rule id="br_r2">
+        <inputEntry id="br_r2_i1"><text>"team"</text></inputEntry>
+        <outputEntry id="br_r2_o1"><text>19</text></outputEntry>
+      </rule>
+      <rule id="br_r3">
+        <inputEntry id="br_r3_i1"><text>"business"</text></inputEntry>
+        <outputEntry id="br_r3_o1"><text>39</text></outputEntry>
+      </rule>
+      <rule id="br_r4">
+        <inputEntry id="br_r4_i1"><text>"enterprise"</text></inputEntry>
+        <outputEntry id="br_r4_o1"><text>79</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decision id="volume_tier" name="Volume Tier">
+    <question>Which volume band does this seat count fall into?</question>
+    <variable id="volume_tier_var" name="Volume Tier" typeRef="string"/>
+    <informationRequirement id="vt_needs_customer"><requiredInput href="#customer"/></informationRequirement>
+    <decisionTable id="volume_tier_table" hitPolicy="UNIQUE">
+      <input id="vt_in_seats" label="Seats">
+        <inputExpression id="vt_in_seats_expr" typeRef="number"><text>Customer.seats</text></inputExpression>
+      </input>
+      <output id="vt_out" name="volume tier" typeRef="string">
+        <outputValues><text>"single","small","mid","large"</text></outputValues>
+        <defaultOutputEntry><text>"single"</text></defaultOutputEntry>
+      </output>
+      <rule id="vt_r1">
+        <inputEntry id="vt_r1_i1"><text>[1..10)</text></inputEntry>
+        <outputEntry id="vt_r1_o1"><text>"single"</text></outputEntry>
+      </rule>
+      <rule id="vt_r2">
+        <inputEntry id="vt_r2_i1"><text>[10..50)</text></inputEntry>
+        <outputEntry id="vt_r2_o1"><text>"small"</text></outputEntry>
+      </rule>
+      <rule id="vt_r3">
+        <inputEntry id="vt_r3_i1"><text>[50..250)</text></inputEntry>
+        <outputEntry id="vt_r3_o1"><text>"mid"</text></outputEntry>
+      </rule>
+      <rule id="vt_r4">
+        <inputEntry id="vt_r4_i1"><text>&gt;= 250</text></inputEntry>
+        <outputEntry id="vt_r4_o1"><text>"large"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decision id="discount_points" name="Discount Points">
+    <description>
+      COLLECT SUM: discounts stack. Every matching rule contributes its
+      percentage and the engine adds them up, so adding a discount is adding a
+      row rather than editing an expression.
+    </description>
+    <question>Which discounts does this order qualify for, and how much is each worth?</question>
+    <variable id="discount_points_var" name="Discount Points" typeRef="number"/>
+    <informationRequirement id="dp_needs_customer"><requiredInput href="#customer"/></informationRequirement>
+    <informationRequirement id="dp_needs_order"><requiredInput href="#order"/></informationRequirement>
+    <informationRequirement id="dp_needs_volume"><requiredDecision href="#volume_tier"/></informationRequirement>
+    <decisionTable id="discount_points_table" hitPolicy="COLLECT" aggregation="SUM">
+      <input id="dp_in_tier" label="Volume tier">
+        <inputExpression id="dp_in_tier_expr" typeRef="string"><text>Volume Tier</text></inputExpression>
+        <inputValues><text>"single","small","mid","large"</text></inputValues>
+      </input>
+      <input id="dp_in_term" label="Term (months)">
+        <inputExpression id="dp_in_term_expr" typeRef="number"><text>Order.term_months</text></inputExpression>
+      </input>
+      <input id="dp_in_tenure" label="Tenure (years)">
+        <inputExpression id="dp_in_tenure_expr" typeRef="number"><text>Customer.tenure_years</text></inputExpression>
+      </input>
+      <input id="dp_in_segment" label="Segment">
+        <inputExpression id="dp_in_segment_expr" typeRef="string"><text>Customer.segment</text></inputExpression>
+        <inputValues><text>"commercial","education","nonprofit"</text></inputValues>
+      </input>
+      <output id="dp_out" name="discount points" typeRef="number">
+        <defaultOutputEntry><text>0</text></defaultOutputEntry>
+      </output>
+      <annotation name="Discount"/>
+
+      <rule id="dp_r1">
+        <inputEntry id="dp_r1_i1"><text>"small"</text></inputEntry>
+        <inputEntry id="dp_r1_i2"><text>-</text></inputEntry>
+        <inputEntry id="dp_r1_i3"><text>-</text></inputEntry>
+        <inputEntry id="dp_r1_i4"><text>-</text></inputEntry>
+        <outputEntry id="dp_r1_o1"><text>5</text></outputEntry>
+        <annotationEntry><text>Volume: small</text></annotationEntry>
+      </rule>
+      <rule id="dp_r2">
+        <inputEntry id="dp_r2_i1"><text>"mid"</text></inputEntry>
+        <inputEntry id="dp_r2_i2"><text>-</text></inputEntry>
+        <inputEntry id="dp_r2_i3"><text>-</text></inputEntry>
+        <inputEntry id="dp_r2_i4"><text>-</text></inputEntry>
+        <outputEntry id="dp_r2_o1"><text>10</text></outputEntry>
+        <annotationEntry><text>Volume: mid</text></annotationEntry>
+      </rule>
+      <rule id="dp_r3">
+        <inputEntry id="dp_r3_i1"><text>"large"</text></inputEntry>
+        <inputEntry id="dp_r3_i2"><text>-</text></inputEntry>
+        <inputEntry id="dp_r3_i3"><text>-</text></inputEntry>
+        <inputEntry id="dp_r3_i4"><text>-</text></inputEntry>
+        <outputEntry id="dp_r3_o1"><text>18</text></outputEntry>
+        <annotationEntry><text>Volume: large</text></annotationEntry>
+      </rule>
+      <rule id="dp_r4">
+        <inputEntry id="dp_r4_i1"><text>-</text></inputEntry>
+        <inputEntry id="dp_r4_i2"><text>&gt;= 12</text></inputEntry>
+        <inputEntry id="dp_r4_i3"><text>-</text></inputEntry>
+        <inputEntry id="dp_r4_i4"><text>-</text></inputEntry>
+        <outputEntry id="dp_r4_o1"><text>8</text></outputEntry>
+        <annotationEntry><text>Annual commitment</text></annotationEntry>
+      </rule>
+      <rule id="dp_r5">
+        <inputEntry id="dp_r5_i1"><text>-</text></inputEntry>
+        <inputEntry id="dp_r5_i2"><text>-</text></inputEntry>
+        <inputEntry id="dp_r5_i3"><text>&gt;= 3</text></inputEntry>
+        <inputEntry id="dp_r5_i4"><text>-</text></inputEntry>
+        <outputEntry id="dp_r5_o1"><text>4</text></outputEntry>
+        <annotationEntry><text>Loyalty</text></annotationEntry>
+      </rule>
+      <rule id="dp_r6">
+        <inputEntry id="dp_r6_i1"><text>-</text></inputEntry>
+        <inputEntry id="dp_r6_i2"><text>-</text></inputEntry>
+        <inputEntry id="dp_r6_i3"><text>-</text></inputEntry>
+        <inputEntry id="dp_r6_i4"><text>"education","nonprofit"</text></inputEntry>
+        <outputEntry id="dp_r6_o1"><text>15</text></outputEntry>
+        <annotationEntry><text>Sector programme</text></annotationEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decision id="discount_cap" name="Discount Cap">
+    <description>
+      The guardrail on the stack: without it, six small discounts compound into
+      a free subscription. PRIORITY picks the most restrictive cap that applies
+      regardless of rule order, so adding a rule cannot silently loosen the cap.
+    </description>
+    <question>How much discount is this segment allowed in total?</question>
+    <variable id="discount_cap_var" name="Discount Cap" typeRef="number"/>
+    <informationRequirement id="dc_needs_customer"><requiredInput href="#customer"/></informationRequirement>
+    <decisionTable id="discount_cap_table" hitPolicy="PRIORITY">
+      <input id="dc_in_segment" label="Segment">
+        <inputExpression id="dc_in_segment_expr" typeRef="string"><text>Customer.segment</text></inputExpression>
+        <inputValues><text>"commercial","education","nonprofit"</text></inputValues>
+      </input>
+      <output id="dc_out" name="cap" typeRef="number">
+        <outputValues><text>40,30,20</text></outputValues>
+        <defaultOutputEntry><text>20</text></defaultOutputEntry>
+      </output>
+      <rule id="dc_r1">
+        <inputEntry id="dc_r1_i1"><text>-</text></inputEntry>
+        <outputEntry id="dc_r1_o1"><text>20</text></outputEntry>
+      </rule>
+      <rule id="dc_r2">
+        <inputEntry id="dc_r2_i1"><text>"education"</text></inputEntry>
+        <outputEntry id="dc_r2_o1"><text>40</text></outputEntry>
+      </rule>
+      <rule id="dc_r3">
+        <inputEntry id="dc_r3_i1"><text>"nonprofit"</text></inputEntry>
+        <outputEntry id="dc_r3_o1"><text>30</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decision id="effective_discount" name="Effective Discount">
+    <question>What discount actually applies, after the cap?</question>
+    <variable id="effective_discount_var" name="Effective Discount" typeRef="number"/>
+    <informationRequirement id="ed_needs_points"><requiredDecision href="#discount_points"/></informationRequirement>
+    <informationRequirement id="ed_needs_cap"><requiredDecision href="#discount_cap"/></informationRequirement>
+    <literalExpression id="effective_discount_expr" typeRef="number">
+      <text>min([Discount Points, Discount Cap])</text>
+    </literalExpression>
+  </decision>
+
+  <decision id="price_per_seat" name="Price Per Seat">
+    <question>What does one seat cost after discount?</question>
+    <variable id="price_per_seat_var" name="Price Per Seat" typeRef="number"/>
+    <informationRequirement id="pps_needs_base"><requiredDecision href="#base_rate"/></informationRequirement>
+    <informationRequirement id="pps_needs_disc"><requiredDecision href="#effective_discount"/></informationRequirement>
+    <knowledgeRequirement id="pps_needs_bkm"><requiredKnowledge href="#apply_discount"/></knowledgeRequirement>
+    <invocation id="price_per_seat_invocation" typeRef="number">
+      <literalExpression id="pps_called"><text>Apply Discount</text></literalExpression>
+      <binding>
+        <parameter id="pps_p_amount" name="amount" typeRef="number"/>
+        <literalExpression id="pps_b_amount"><text>Base Rate</text></literalExpression>
+      </binding>
+      <binding>
+        <parameter id="pps_p_percent" name="percent" typeRef="number"/>
+        <literalExpression id="pps_b_percent"><text>Effective Discount</text></literalExpression>
+      </binding>
+    </invocation>
+  </decision>
+
+  <decision id="quote" name="Quote">
+    <description>
+      A boxed context: the quote is a record, and every entry of it is visible
+      to the entries that follow. The last, unnamed entry is the context's
+      result, which is DMN's way of saying "and this is the answer".
+    </description>
+    <question>What is the quote?</question>
+    <variable id="quote_var" name="Quote"/>
+    <informationRequirement id="q_needs_pps"><requiredDecision href="#price_per_seat"/></informationRequirement>
+    <informationRequirement id="q_needs_base"><requiredDecision href="#base_rate"/></informationRequirement>
+    <informationRequirement id="q_needs_disc"><requiredDecision href="#effective_discount"/></informationRequirement>
+    <informationRequirement id="q_needs_tier"><requiredDecision href="#volume_tier"/></informationRequirement>
+    <informationRequirement id="q_needs_customer"><requiredInput href="#customer"/></informationRequirement>
+    <informationRequirement id="q_needs_order"><requiredInput href="#order"/></informationRequirement>
+    <context id="quote_context">
+      <contextEntry>
+        <variable id="q_seats" name="seats" typeRef="number"/>
+        <literalExpression id="q_seats_expr"><text>Customer.seats</text></literalExpression>
+      </contextEntry>
+      <contextEntry>
+        <variable id="q_monthly" name="monthly total" typeRef="number"/>
+        <literalExpression id="q_monthly_expr">
+          <text>decimal(Price Per Seat * seats, 2)</text>
+        </literalExpression>
+      </contextEntry>
+      <contextEntry>
+        <variable id="q_term_total" name="term total" typeRef="number"/>
+        <literalExpression id="q_term_total_expr">
+          <text>decimal(monthly total * Order.term_months, 2)</text>
+        </literalExpression>
+      </contextEntry>
+      <contextEntry>
+        <literalExpression id="q_result_expr">
+          <text>{
+  plan: Order.plan,
+  volume tier: Volume Tier,
+  seats: seats,
+  list price per seat: Base Rate,
+  discount percent: Effective Discount,
+  price per seat: Price Per Seat,
+  monthly total: monthly total,
+  term total: term total
+}</text>
+        </literalExpression>
+      </contextEntry>
+    </context>
+  </decision>
+
+  <decisionService id="quote_service" name="QuoteService">
+    <description>The whole pricing calculation as one callable unit.</description>
+    <variable id="quote_service_var" name="QuoteService"/>
+    <outputDecision href="#quote"/>
+    <encapsulatedDecision href="#base_rate"/>
+    <encapsulatedDecision href="#volume_tier"/>
+    <encapsulatedDecision href="#discount_points"/>
+    <encapsulatedDecision href="#discount_cap"/>
+    <encapsulatedDecision href="#effective_discount"/>
+    <encapsulatedDecision href="#price_per_seat"/>
+    <inputData href="#customer"/>
+    <inputData href="#order"/>
+  </decisionService>
+
+  <!-- Diagram interchange, generated by `verdict convert` and spliced in
+       by scripts/add-diagram.py. dmn-js has nothing to draw without it, so a
+       model with no DMNDI opens as an empty canvas in Camunda Modeler. -->
+  <!-- Diagram interchange, generated by `verdict convert` and spliced in
+       by scripts/add-diagram.py. dmn-js has nothing to draw without it, so a
+       model with no DMNDI opens as an empty canvas in Camunda Modeler. -->
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_pricing" name="Subscription Pricing">
+      <dmndi:DMNShape id="DMNShape_apply_discount" dmnElementRef="apply_discount">
+        <dc:Bounds x="215" y="980" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_customer" dmnElementRef="customer">
+        <dc:Bounds x="455" y="998" width="125" height="45"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_order" dmnElementRef="order">
+        <dc:Bounds x="640" y="998" width="125" height="45"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_discount_cap" dmnElementRef="discount_cap">
+        <dc:Bounds x="160" y="800" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_base_rate" dmnElementRef="base_rate">
+        <dc:Bounds x="400" y="800" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_volume_tier" dmnElementRef="volume_tier">
+        <dc:Bounds x="640" y="800" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_discount_points" dmnElementRef="discount_points">
+        <dc:Bounds x="400" y="620" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_effective_discount" dmnElementRef="effective_discount">
+        <dc:Bounds x="400" y="440" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_price_per_seat" dmnElementRef="price_per_seat">
+        <dc:Bounds x="400" y="260" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_quote" dmnElementRef="quote">
+        <dc:Bounds x="400" y="80" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNEdge id="DMNEdge_order_base_rate" dmnElementRef="base_rate_ir_1">
+        <di:waypoint x="372.5" y="997.5"></di:waypoint>
+        <di:waypoint x="160" y="880"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_customer_volume_tier" dmnElementRef="volume_tier_ir_1">
+        <di:waypoint x="187.5" y="997.5"></di:waypoint>
+        <di:waypoint x="400" y="880"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_customer_discount_points" dmnElementRef="discount_points_ir_1">
+        <di:waypoint x="187.5" y="997.5"></di:waypoint>
+        <di:waypoint x="160" y="700"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_order_discount_points" dmnElementRef="discount_points_ir_2">
+        <di:waypoint x="372.5" y="997.5"></di:waypoint>
+        <di:waypoint x="160" y="700"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_volume_tier_discount_points" dmnElementRef="discount_points_dr_1">
+        <di:waypoint x="400" y="800"></di:waypoint>
+        <di:waypoint x="160" y="700"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_customer_discount_cap" dmnElementRef="discount_cap_ir_1">
+        <di:waypoint x="187.5" y="997.5"></di:waypoint>
+        <di:waypoint x="-80" y="880"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_discount_points_effective_discount" dmnElementRef="effective_discount_dr_1">
+        <di:waypoint x="160" y="620"></di:waypoint>
+        <di:waypoint x="160" y="520"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_discount_cap_effective_discount" dmnElementRef="effective_discount_dr_2">
+        <di:waypoint x="-80" y="800"></di:waypoint>
+        <di:waypoint x="160" y="520"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_base_rate_price_per_seat" dmnElementRef="price_per_seat_dr_1">
+        <di:waypoint x="160" y="800"></di:waypoint>
+        <di:waypoint x="490" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_effective_discount_price_per_seat" dmnElementRef="price_per_seat_dr_2">
+        <di:waypoint x="160" y="440"></di:waypoint>
+        <di:waypoint x="490" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_apply_discount_price_per_seat" dmnElementRef="price_per_seat_kr_1">
+        <di:waypoint x="-25" y="980"></di:waypoint>
+        <di:waypoint x="490" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_customer_quote" dmnElementRef="quote_ir_1">
+        <di:waypoint x="187.5" y="997.5"></di:waypoint>
+        <di:waypoint x="490" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_order_quote" dmnElementRef="quote_ir_2">
+        <di:waypoint x="372.5" y="997.5"></di:waypoint>
+        <di:waypoint x="490" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_price_per_seat_quote" dmnElementRef="quote_dr_1">
+        <di:waypoint x="490" y="260"></di:waypoint>
+        <di:waypoint x="490" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_base_rate_quote" dmnElementRef="quote_dr_2">
+        <di:waypoint x="160" y="800"></di:waypoint>
+        <di:waypoint x="490" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_effective_discount_quote" dmnElementRef="quote_dr_3">
+        <di:waypoint x="160" y="440"></di:waypoint>
+        <di:waypoint x="490" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_volume_tier_quote" dmnElementRef="quote_dr_4">
+        <di:waypoint x="400" y="800"></di:waypoint>
+        <di:waypoint x="490" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

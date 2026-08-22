@@ -1,0 +1,472 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:verdict="https://github.com/frankbardon/verdict/schema/1.0"
+             id="loan_approval"
+             name="Loan Approval"
+             namespace="https://example.com/dmn/loan"
+             verdict:version="1.0.0"
+             verdict:conformanceLevel="feel"
+             exporter="Verdict"
+             exporterVersion="1.0">
+
+  <description>
+    The classic DMN loan-approval model, extended with one agentDecision node.
+    Everything a rule can decide is decided by a rule; the one genuinely
+    judgemental question — how a human underwriter would read this applicant's
+    story — is delegated to an agent, with a deterministic heuristic standing by
+    as its fallback.
+  </description>
+
+  <itemDefinition id="tApplicant" name="tApplicant">
+    <itemComponent id="tApplicant_age" name="age">
+      <typeRef>number</typeRef>
+    </itemComponent>
+    <itemComponent id="tApplicant_income" name="monthly_income">
+      <typeRef>number</typeRef>
+    </itemComponent>
+    <itemComponent id="tApplicant_employment" name="employment_years">
+      <typeRef>number</typeRef>
+    </itemComponent>
+    <itemComponent id="tApplicant_credit" name="credit_score">
+      <typeRef>number</typeRef>
+    </itemComponent>
+    <itemComponent id="tApplicant_debt" name="existing_debt">
+      <typeRef>number</typeRef>
+    </itemComponent>
+    <itemComponent id="tApplicant_notes" name="notes">
+      <typeRef>string</typeRef>
+    </itemComponent>
+  </itemDefinition>
+
+  <itemDefinition id="tLoan" name="tLoan">
+    <itemComponent id="tLoan_amount" name="amount">
+      <typeRef>number</typeRef>
+    </itemComponent>
+    <itemComponent id="tLoan_term" name="term_months">
+      <typeRef>number</typeRef>
+    </itemComponent>
+  </itemDefinition>
+
+  <itemDefinition id="tRiskTier" name="tRiskTier">
+    <typeRef>string</typeRef>
+    <allowedValues>
+      <text>"low","medium","high"</text>
+    </allowedValues>
+  </itemDefinition>
+
+  <inputData id="applicant" name="Applicant">
+    <variable id="applicant_var" name="Applicant" typeRef="tApplicant"/>
+  </inputData>
+
+  <inputData id="loan" name="Loan">
+    <variable id="loan_var" name="Loan" typeRef="tLoan"/>
+  </inputData>
+
+  <businessKnowledgeModel id="monthly_repayment" name="Monthly Repayment">
+    <variable id="monthly_repayment_var" name="Monthly Repayment" typeRef="number"/>
+    <encapsulatedLogic id="monthly_repayment_fn" kind="FEEL">
+      <formalParameter id="mr_amount" name="amount" typeRef="number"/>
+      <formalParameter id="mr_term" name="term" typeRef="number"/>
+      <formalParameter id="mr_rate" name="annual rate" typeRef="number"/>
+      <context id="monthly_repayment_ctx">
+        <contextEntry>
+          <variable id="mr_monthly_rate" name="monthly rate" typeRef="number"/>
+          <literalExpression id="mr_monthly_rate_expr">
+            <text>annual rate / 12</text>
+          </literalExpression>
+        </contextEntry>
+        <contextEntry>
+          <literalExpression id="mr_result_expr">
+            <text>decimal(amount * (monthly rate + monthly rate / (exp(term * log(1 + monthly rate)) - 1)), 2)</text>
+          </literalExpression>
+        </contextEntry>
+      </context>
+    </encapsulatedLogic>
+  </businessKnowledgeModel>
+
+  <decision id="repayment" name="Repayment">
+    <variable id="repayment_var" name="Repayment" typeRef="number"/>
+    <informationRequirement id="repayment_needs_loan">
+      <requiredInput href="#loan"/>
+    </informationRequirement>
+    <knowledgeRequirement id="repayment_needs_bkm">
+      <requiredKnowledge href="#monthly_repayment"/>
+    </knowledgeRequirement>
+    <invocation id="repayment_invocation" typeRef="number">
+      <literalExpression id="repayment_called">
+        <text>Monthly Repayment</text>
+      </literalExpression>
+      <binding>
+        <parameter id="repayment_p_amount" name="amount" typeRef="number"/>
+        <literalExpression id="repayment_b_amount">
+          <text>Loan.amount</text>
+        </literalExpression>
+      </binding>
+      <binding>
+        <parameter id="repayment_p_term" name="term" typeRef="number"/>
+        <literalExpression id="repayment_b_term">
+          <text>Loan.term_months</text>
+        </literalExpression>
+      </binding>
+      <binding>
+        <parameter id="repayment_p_rate" name="annual rate" typeRef="number"/>
+        <literalExpression id="repayment_b_rate">
+          <text>0.079</text>
+        </literalExpression>
+      </binding>
+    </invocation>
+  </decision>
+
+  <decision id="affordability" name="Affordability">
+    <question>Can the applicant service this loan from current income?</question>
+    <allowedAnswers>comfortable, tight, unaffordable</allowedAnswers>
+    <variable id="affordability_var" name="Affordability" typeRef="string"/>
+    <informationRequirement id="affordability_needs_applicant">
+      <requiredInput href="#applicant"/>
+    </informationRequirement>
+    <informationRequirement id="affordability_needs_repayment">
+      <requiredDecision href="#repayment"/>
+    </informationRequirement>
+    <decisionTable id="affordability_table" hitPolicy="FIRST" preferredOrientation="Rule-as-Row">
+      <input id="affordability_in_ratio" label="Debt service ratio">
+        <inputExpression id="affordability_in_ratio_expr" typeRef="number">
+          <text>(Repayment + Applicant.existing_debt) / Applicant.monthly_income</text>
+        </inputExpression>
+      </input>
+      <output id="affordability_out" name="affordability" typeRef="string">
+        <outputValues>
+          <text>"comfortable","tight","unaffordable"</text>
+        </outputValues>
+      </output>
+      <rule id="affordability_r1">
+        <inputEntry id="affordability_r1_i1"><text>&lt; 0.3</text></inputEntry>
+        <outputEntry id="affordability_r1_o1"><text>"comfortable"</text></outputEntry>
+      </rule>
+      <rule id="affordability_r2">
+        <inputEntry id="affordability_r2_i1"><text>[0.3 .. 0.45)</text></inputEntry>
+        <outputEntry id="affordability_r2_o1"><text>"tight"</text></outputEntry>
+      </rule>
+      <rule id="affordability_r3">
+        <inputEntry id="affordability_r3_i1"><text>&gt;= 0.45</text></inputEntry>
+        <outputEntry id="affordability_r3_o1"><text>"unaffordable"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decision id="credit_rating" name="Credit Rating">
+    <question>How does the bureau score read?</question>
+    <variable id="credit_rating_var" name="Credit Rating" typeRef="string"/>
+    <informationRequirement id="credit_rating_needs_applicant">
+      <requiredInput href="#applicant"/>
+    </informationRequirement>
+    <decisionTable id="credit_rating_table" hitPolicy="UNIQUE">
+      <input id="credit_rating_in" label="Credit score">
+        <inputExpression id="credit_rating_in_expr" typeRef="number">
+          <text>Applicant.credit_score</text>
+        </inputExpression>
+      </input>
+      <output id="credit_rating_out" name="credit rating" typeRef="string">
+        <outputValues>
+          <text>"excellent","good","fair","poor"</text>
+        </outputValues>
+        <defaultOutputEntry><text>"poor"</text></defaultOutputEntry>
+      </output>
+      <rule id="credit_rating_r1">
+        <inputEntry id="credit_rating_r1_i1"><text>&gt;= 740</text></inputEntry>
+        <outputEntry id="credit_rating_r1_o1"><text>"excellent"</text></outputEntry>
+      </rule>
+      <rule id="credit_rating_r2">
+        <inputEntry id="credit_rating_r2_i1"><text>[670 .. 740)</text></inputEntry>
+        <outputEntry id="credit_rating_r2_o1"><text>"good"</text></outputEntry>
+      </rule>
+      <rule id="credit_rating_r3">
+        <inputEntry id="credit_rating_r3_i1"><text>[580 .. 670)</text></inputEntry>
+        <outputEntry id="credit_rating_r3_o1"><text>"fair"</text></outputEntry>
+      </rule>
+      <rule id="credit_rating_r4">
+        <inputEntry id="credit_rating_r4_i1"><text>&lt; 580</text></inputEntry>
+        <outputEntry id="credit_rating_r4_o1"><text>"poor"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decision id="risk_tier_heuristic" name="Risk Tier Heuristic">
+    <description>
+      The deterministic stand-in for the agent decision. It is a real decision in
+      its own right, not a stub: if the agent is unavailable or answers something
+      the type will not accept, this is the answer the application ships with.
+    </description>
+    <variable id="risk_tier_heuristic_var" name="Risk Tier Heuristic" typeRef="tRiskTier"/>
+    <informationRequirement id="rth_needs_credit">
+      <requiredDecision href="#credit_rating"/>
+    </informationRequirement>
+    <informationRequirement id="rth_needs_affordability">
+      <requiredDecision href="#affordability"/>
+    </informationRequirement>
+    <decisionTable id="risk_tier_heuristic_table" hitPolicy="PRIORITY">
+      <input id="rth_in_credit" label="Credit rating">
+        <inputExpression id="rth_in_credit_expr" typeRef="string">
+          <text>Credit Rating</text>
+        </inputExpression>
+        <inputValues><text>"excellent","good","fair","poor"</text></inputValues>
+      </input>
+      <input id="rth_in_afford" label="Affordability">
+        <inputExpression id="rth_in_afford_expr" typeRef="string">
+          <text>Affordability</text>
+        </inputExpression>
+        <inputValues><text>"comfortable","tight","unaffordable"</text></inputValues>
+      </input>
+      <output id="rth_out" name="risk tier" typeRef="tRiskTier">
+        <outputValues><text>"high","medium","low"</text></outputValues>
+      </output>
+      <rule id="rth_r1">
+        <inputEntry id="rth_r1_i1"><text>-</text></inputEntry>
+        <inputEntry id="rth_r1_i2"><text>"unaffordable"</text></inputEntry>
+        <outputEntry id="rth_r1_o1"><text>"high"</text></outputEntry>
+      </rule>
+      <rule id="rth_r2">
+        <inputEntry id="rth_r2_i1"><text>"poor"</text></inputEntry>
+        <inputEntry id="rth_r2_i2"><text>-</text></inputEntry>
+        <outputEntry id="rth_r2_o1"><text>"high"</text></outputEntry>
+      </rule>
+      <rule id="rth_r3">
+        <inputEntry id="rth_r3_i1"><text>"fair"</text></inputEntry>
+        <inputEntry id="rth_r3_i2"><text>"comfortable","tight"</text></inputEntry>
+        <outputEntry id="rth_r3_o1"><text>"medium"</text></outputEntry>
+      </rule>
+      <rule id="rth_r4">
+        <inputEntry id="rth_r4_i1"><text>"good"</text></inputEntry>
+        <inputEntry id="rth_r4_i2"><text>"tight"</text></inputEntry>
+        <outputEntry id="rth_r4_o1"><text>"medium"</text></outputEntry>
+      </rule>
+      <rule id="rth_r5">
+        <inputEntry id="rth_r5_i1"><text>"excellent","good"</text></inputEntry>
+        <inputEntry id="rth_r5_i2"><text>"comfortable"</text></inputEntry>
+        <outputEntry id="rth_r5_o1"><text>"low"</text></outputEntry>
+      </rule>
+      <rule id="rth_r6">
+        <inputEntry id="rth_r6_i1"><text>"excellent"</text></inputEntry>
+        <inputEntry id="rth_r6_i2"><text>"tight"</text></inputEntry>
+        <outputEntry id="rth_r6_o1"><text>"low"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decision id="risk_tier" name="Risk Tier">
+    <!-- The decision-logic slot of <decision> accepts only DMN's own
+         expression elements, so Verdict's agent decision travels inside
+         <extensionElements> - the one place the schema admits a foreign
+         element. tDMNElement fixes its position here, before <question>. -->
+    <extensionElements>
+      <verdict:agentDecision id="risk_tier_agent" typeRef="tRiskTier">
+        <verdict:promptTemplate>
+  You are assisting a loan underwriter. Classify this application's overall risk
+  tier as exactly one of: low, medium, high. Answer with the tier and nothing else.
+
+  The deterministic checks have already run; treat them as established fact and
+  weigh the applicant's narrative against them.
+
+  Credit rating (from the bureau score): {{ .creditRating }}
+  Affordability (debt service ratio band): {{ .affordability }}
+  Years in current employment: {{ .employmentYears }}
+  Underwriter notes: {{ .notes }}
+        </verdict:promptTemplate>
+
+        <verdict:inputBinding name="creditRating"    feel="Credit Rating"/>
+        <verdict:inputBinding name="affordability"   feel="Affordability"/>
+        <verdict:inputBinding name="employmentYears" feel="Applicant.employment_years"/>
+        <verdict:inputBinding name="notes"           feel="Applicant.notes"/>
+
+        <verdict:outputType typeRef="string">
+          <verdict:enumeration>
+            <verdict:value>low</verdict:value>
+            <verdict:value>medium</verdict:value>
+            <verdict:value>high</verdict:value>
+          </verdict:enumeration>
+        </verdict:outputType>
+
+        <verdict:validator feel='value in ["low", "medium", "high"]'/>
+
+        <verdict:policy maxLatency="PT5S"
+                        maxRetries="2"
+                        onFailure="fallback"
+                        fallbackDecision="risk_tier_heuristic"/>
+      </verdict:agentDecision>
+    </extensionElements>
+
+    <question>How would an underwriter read this applicant's overall story?</question>
+    <variable id="risk_tier_var" name="Risk Tier" typeRef="tRiskTier"/>
+    <informationRequirement id="risk_tier_needs_applicant">
+      <requiredInput href="#applicant"/>
+    </informationRequirement>
+    <informationRequirement id="risk_tier_needs_credit">
+      <requiredDecision href="#credit_rating"/>
+    </informationRequirement>
+    <informationRequirement id="risk_tier_needs_afford">
+      <requiredDecision href="#affordability"/>
+    </informationRequirement>
+    <informationRequirement id="risk_tier_needs_heuristic">
+      <requiredDecision href="#risk_tier_heuristic"/>
+    </informationRequirement>
+
+  </decision>
+
+  <decision id="routing" name="Routing">
+    <question>Where does this application go next?</question>
+    <variable id="routing_var" name="Routing" typeRef="string"/>
+    <informationRequirement id="routing_needs_risk">
+      <requiredDecision href="#risk_tier"/>
+    </informationRequirement>
+    <informationRequirement id="routing_needs_afford">
+      <requiredDecision href="#affordability"/>
+    </informationRequirement>
+    <decisionTable id="routing_table" hitPolicy="FIRST">
+      <input id="routing_in_risk" label="Risk tier">
+        <inputExpression id="routing_in_risk_expr" typeRef="string">
+          <text>Risk Tier</text>
+        </inputExpression>
+        <inputValues><text>"low","medium","high"</text></inputValues>
+      </input>
+      <input id="routing_in_afford" label="Affordability">
+        <inputExpression id="routing_in_afford_expr" typeRef="string">
+          <text>Affordability</text>
+        </inputExpression>
+        <inputValues><text>"comfortable","tight","unaffordable"</text></inputValues>
+      </input>
+      <output id="routing_out" name="routing" typeRef="string">
+        <outputValues><text>"auto-approve","manual-review","decline"</text></outputValues>
+      </output>
+      <annotation name="Rationale"/>
+      <rule id="routing_r1">
+        <inputEntry id="routing_r1_i1"><text>-</text></inputEntry>
+        <inputEntry id="routing_r1_i2"><text>"unaffordable"</text></inputEntry>
+        <outputEntry id="routing_r1_o1"><text>"decline"</text></outputEntry>
+        <annotationEntry><text>Cannot service the loan at any risk tier.</text></annotationEntry>
+      </rule>
+      <rule id="routing_r2">
+        <inputEntry id="routing_r2_i1"><text>"high"</text></inputEntry>
+        <inputEntry id="routing_r2_i2"><text>-</text></inputEntry>
+        <outputEntry id="routing_r2_o1"><text>"decline"</text></outputEntry>
+        <annotationEntry><text>High tier is outside appetite.</text></annotationEntry>
+      </rule>
+      <rule id="routing_r3">
+        <inputEntry id="routing_r3_i1"><text>"low"</text></inputEntry>
+        <inputEntry id="routing_r3_i2"><text>"comfortable"</text></inputEntry>
+        <outputEntry id="routing_r3_o1"><text>"auto-approve"</text></outputEntry>
+        <annotationEntry><text>Clean on every axis.</text></annotationEntry>
+      </rule>
+      <rule id="routing_r4">
+        <inputEntry id="routing_r4_i1"><text>-</text></inputEntry>
+        <inputEntry id="routing_r4_i2"><text>-</text></inputEntry>
+        <outputEntry id="routing_r4_o1"><text>"manual-review"</text></outputEntry>
+        <annotationEntry><text>Everything else goes to a human.</text></annotationEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decisionService id="fast_track" name="FastTrackDecisionService">
+    <description>
+      The rules-only slice: everything a caller can get without paying for an
+      agent round trip.
+    </description>
+    <variable id="fast_track_var" name="FastTrackDecisionService"/>
+    <outputDecision href="#affordability"/>
+    <outputDecision href="#credit_rating"/>
+    <encapsulatedDecision href="#repayment"/>
+    <inputData href="#applicant"/>
+    <inputData href="#loan"/>
+  </decisionService>
+
+  <!-- Diagram interchange, generated by `verdict convert` and spliced in
+       by scripts/add-diagram.py. dmn-js has nothing to draw without it, so a
+       model with no DMNDI opens as an empty canvas in Camunda Modeler. -->
+  <!-- Diagram interchange, generated by `verdict convert` and spliced in
+       by scripts/add-diagram.py. dmn-js has nothing to draw without it, so a
+       model with no DMNDI opens as an empty canvas in Camunda Modeler. -->
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_loan_approval" name="Loan Approval">
+      <dmndi:DMNShape id="DMNShape_applicant" dmnElementRef="applicant">
+        <dc:Bounds x="160" y="998" width="125" height="45"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_loan" dmnElementRef="loan">
+        <dc:Bounds x="345" y="998" width="125" height="45"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_monthly_repayment" dmnElementRef="monthly_repayment">
+        <dc:Bounds x="530" y="980" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_credit_rating" dmnElementRef="credit_rating">
+        <dc:Bounds x="225" y="800" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_repayment" dmnElementRef="repayment">
+        <dc:Bounds x="465" y="800" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_affordability" dmnElementRef="affordability">
+        <dc:Bounds x="345" y="620" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_risk_tier_heuristic" dmnElementRef="risk_tier_heuristic">
+        <dc:Bounds x="345" y="440" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_risk_tier" dmnElementRef="risk_tier">
+        <dc:Bounds x="345" y="260" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_routing" dmnElementRef="routing">
+        <dc:Bounds x="345" y="80" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNEdge id="DMNEdge_loan_repayment" dmnElementRef="repayment_ir_1">
+        <di:waypoint x="132.5" y="997.5"></di:waypoint>
+        <di:waypoint x="280" y="880"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_monthly_repayment_repayment" dmnElementRef="repayment_kr_1">
+        <di:waypoint x="345" y="980"></di:waypoint>
+        <di:waypoint x="280" y="880"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_applicant_affordability" dmnElementRef="affordability_ir_1">
+        <di:waypoint x="-52.5" y="997.5"></di:waypoint>
+        <di:waypoint x="160" y="700"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_repayment_affordability" dmnElementRef="affordability_dr_1">
+        <di:waypoint x="280" y="800"></di:waypoint>
+        <di:waypoint x="160" y="700"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_applicant_credit_rating" dmnElementRef="credit_rating_ir_1">
+        <di:waypoint x="-52.5" y="997.5"></di:waypoint>
+        <di:waypoint x="40" y="880"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_credit_rating_risk_tier_heuristic" dmnElementRef="risk_tier_heuristic_dr_1">
+        <di:waypoint x="40" y="800"></di:waypoint>
+        <di:waypoint x="160" y="520"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_affordability_risk_tier_heuristic" dmnElementRef="risk_tier_heuristic_dr_2">
+        <di:waypoint x="160" y="620"></di:waypoint>
+        <di:waypoint x="160" y="520"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_applicant_risk_tier" dmnElementRef="risk_tier_ir_1">
+        <di:waypoint x="-52.5" y="997.5"></di:waypoint>
+        <di:waypoint x="160" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_credit_rating_risk_tier" dmnElementRef="risk_tier_dr_1">
+        <di:waypoint x="40" y="800"></di:waypoint>
+        <di:waypoint x="160" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_affordability_risk_tier" dmnElementRef="risk_tier_dr_2">
+        <di:waypoint x="160" y="620"></di:waypoint>
+        <di:waypoint x="160" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_risk_tier_heuristic_risk_tier" dmnElementRef="risk_tier_dr_3">
+        <di:waypoint x="160" y="440"></di:waypoint>
+        <di:waypoint x="160" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_risk_tier_routing" dmnElementRef="routing_dr_1">
+        <di:waypoint x="160" y="260"></di:waypoint>
+        <di:waypoint x="435" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_affordability_routing" dmnElementRef="routing_dr_2">
+        <di:waypoint x="160" y="620"></di:waypoint>
+        <di:waypoint x="435" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

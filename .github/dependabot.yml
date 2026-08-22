@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # The core module. Nothing here may pull in Nexus, so a bump that appears in
+  # this file and not in the one below is the separation working.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+
+  # The Nexus integration is a separate Go module with its own go.mod, and
+  # Dependabot only scans the directories it is told about. Without this entry
+  # the module that has the largest dependency tree is the one nothing watches.
+  - package-ecosystem: gomod
+    directory: /nexus
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - nexus
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci

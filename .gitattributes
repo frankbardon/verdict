@@ -1,0 +1,19 @@
+# Default: normalise line endings in text files git can identify.
+* text=auto
+
+# The vendored OMG schemas keep the exact bytes OMG published, CRLF and all.
+# They are the reference the interoperability gate validates against, and a
+# vendored artefact that git has rewritten is no longer the thing it claims to
+# be — see pkg/dmn/xml/testdata/schema/README.md for provenance.
+pkg/dmn/xml/testdata/schema/*.xsd -text
+
+# Vendored, not written here. Marking them keeps GitHub's language stats about
+# Verdict rather than about a minified JavaScript bundle, and keeps them out of
+# diffs by default.
+docs/mermaid.min.js         linguist-vendored
+pkg/feel/internal/dialect/* linguist-vendored
+
+# Generated. Committed so a normal build never needs protoc, but not code
+# anyone should review line by line.
+server/twirp/*.pb.go    linguist-generated
+server/twirp/*.twirp.go linguist-generated

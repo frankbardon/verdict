@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://frankbardon.github.io/verdict/
+    about: The manual — model formats, the CLI, embedding, serving. Check it before filing an issue
+  - name: VDJ JSON Schema
+    url: https://frankbardon.github.io/verdict/vdj-schema.json
+    about: The machine-readable contract for a model file. `verdict schema --validate model.vdj` checks one offline

@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A superseded run on the same branch has nothing left to tell anyone.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.26"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build
+        run: make build
+
+      # test-all, not test: `go test ./...` at the root does not cover nexus/,
+      # which is a separate module. A change to the AgentBridge interface
+      # compiles fine at the root and breaks the bridge, so the full target is
+      # the one CI runs.
+      - name: Test
+        run: make test-all
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      # The engine evaluates independent decisions concurrently and shares one
+      # compile cache across goroutines, so the race detector is not optional
+      # here — it is the gate on the thing that makes the engine fast.
+      - name: Test with the race detector
+        run: make test-race
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Lint
+        run: make lint
+
+      # Two modules, two go.mod files, and a dependency added to one of them
+      # without tidying is a diff nobody notices until it breaks someone's build.
+      - name: Check go.mod is tidy
+        run: |
+          make tidy
+          git diff --exit-code -- go.mod go.sum nexus/go.mod nexus/go.sum
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: "latest"
+
+      # docs.yml only builds on a push to main, so without this a pull request
+      # could merge a page that is not in SUMMARY.md — mdBook builds it into
+      # nothing and the link 404s on the published site.
+      - name: Build the documentation
+        run: mdbook build docs
+
+      - name: Check every page is reachable from SUMMARY.md
+        run: |
+          missing=0
+          while IFS= read -r page; do
+            rel="${page#docs/src/}"
+            [ "$rel" = "SUMMARY.md" ] && continue
+            grep -q "($rel)" docs/src/SUMMARY.md || { echo "not linked from SUMMARY.md: $rel"; missing=1; }
+          done < <(find docs/src -name '*.md')
+          exit $missing
+
+  interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      # The Go suite validates against the DMN XSD too, but skips when xmllint
+      # is absent. Installing it is what stops the interoperability gate from
+      # passing by quietly skipping.
+      - name: Install libxml2
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+
+      - name: Validate every example against the DMN 1.3 schema
+        run: make validate
+
+      - name: Load and analyse every example through the built binary
+        run: make examples

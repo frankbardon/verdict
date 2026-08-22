@@ -1,0 +1,99 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+        If the model gave an answer you did not expect, `verdict eval --trace | verdict trace --values`
+        shows which rules actually fired — please include it. It is usually the whole story.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to reproduce the behavior.
+      placeholder: |
+        1. Build with `make build`
+        2. Run `bin/verdict eval model.dmn -d '{"Applicant":{...}}'`
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen. If DMN specifies the behaviour, cite the clause — Verdict treats a spec deviation as a bug unless it is a documented one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened. Include the `VERDICT_*` diagnostic codes, the CLI's exit status, or the trace.
+    validations:
+      required: true
+
+  - type: textarea
+    id: model
+    attributes:
+      label: Model
+      description: The smallest decision model that reproduces it, as DMN XML or VDJ. `verdict convert` moves between the two.
+      render: xml
+
+  - type: textarea
+    id: inputs
+    attributes:
+      label: Inputs
+      description: The input values you evaluated against (redact anything sensitive).
+      render: json
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Evaluator (graph scheduling, boxed expressions)
+        - Decision tables / hit policies
+        - FEEL (expressions, unary tests, built-ins)
+        - Agent decisions / bridges
+        - Static analysis (gaps, overlaps, unreachable rules)
+        - DMN XML reader / writer / interoperability
+        - Verdict Decision JSON / JSON Schema
+        - Traces
+        - CLI (cmd/verdict)
+        - Server (serve, Twirp, MCP)
+        - Nexus module
+        - Skill pack
+        - Documentation
+        - Other
+
+  - type: input
+    id: verdict-version
+    attributes:
+      label: Verdict Version
+      placeholder: "v0.1.0 / commit sha / `verdict --version`"
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go Version
+      placeholder: "1.26"
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "macOS 14.5 / Ubuntu 24.04 / Windows 11"

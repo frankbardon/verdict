@@ -1,0 +1,410 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:verdict="https://github.com/frankbardon/verdict/schema/1.0"
+             id="content_moderation"
+             name="Content Moderation"
+             namespace="https://example.com/dmn/moderation"
+             verdict:version="1.0.0"
+             verdict:conformanceLevel="feel">
+
+  <description>
+    Rules as the guardrail, an agent for the judgement call.
+
+    Deterministic checks decide everything that can be decided deterministically:
+    a hard block stays a hard block whatever a model thinks, and trusted authors
+    are not sent to an agent at all. Only the genuinely ambiguous middle — the
+    posts that are neither clean nor clearly violating — reach the agent, and
+    even there the answer is typed, validated and bounded by a fallback.
+
+    This is the shape the hybrid-AI literature keeps arriving at, and it is
+    cheap for the same reason it is safe: most traffic never reaches the model.
+  </description>
+
+  <itemDefinition id="tPost" name="tPost">
+    <itemComponent id="tPost_text" name="text"><typeRef>string</typeRef></itemComponent>
+    <itemComponent id="tPost_lang" name="language"><typeRef>string</typeRef></itemComponent>
+    <itemComponent id="tPost_links" name="link_count"><typeRef>number</typeRef></itemComponent>
+    <itemComponent id="tPost_reports" name="report_count"><typeRef>number</typeRef></itemComponent>
+  </itemDefinition>
+
+  <itemDefinition id="tAuthor" name="tAuthor">
+    <itemComponent id="tAuthor_age" name="account_age_days"><typeRef>number</typeRef></itemComponent>
+    <itemComponent id="tAuthor_strikes" name="prior_strikes"><typeRef>number</typeRef></itemComponent>
+    <itemComponent id="tAuthor_trusted" name="trusted"><typeRef>boolean</typeRef></itemComponent>
+  </itemDefinition>
+
+  <itemDefinition id="tVerdict" name="tVerdict">
+    <typeRef>string</typeRef>
+    <allowedValues><text>"allow","review","remove"</text></allowedValues>
+  </itemDefinition>
+
+  <inputData id="post" name="Post">
+    <variable id="post_var" name="Post" typeRef="tPost"/>
+  </inputData>
+  <inputData id="author" name="Author">
+    <variable id="author_var" name="Author" typeRef="tAuthor"/>
+  </inputData>
+  <inputData id="signals" name="Signals">
+    <variable id="signals_var" name="Signals" typeRef="tSignals"/>
+  </inputData>
+
+  <itemDefinition id="tSignals" name="tSignals">
+    <itemComponent id="tSignals_banned" name="banned_terms"><typeRef>number</typeRef></itemComponent>
+    <itemComponent id="tSignals_toxicity" name="toxicity_score"><typeRef>number</typeRef></itemComponent>
+  </itemDefinition>
+
+  <knowledgeSource id="policy" name="Community Policy v7">
+    <description>
+      The authority this model implements. Cited rather than restated: when the
+      policy changes, this model is what has to change with it.
+    </description>
+    <type>Published policy document</type>
+  </knowledgeSource>
+
+  <decision id="hard_block" name="Hard Block">
+    <description>
+      The rules an agent is never consulted about. A hard block is not a
+      suggestion, and putting it upstream of the agent means no prompt can talk
+      the system out of it.
+    </description>
+    <question>Does this post violate a bright-line rule?</question>
+    <variable id="hard_block_var" name="Hard Block" typeRef="boolean"/>
+    <informationRequirement id="hb_needs_signals"><requiredInput href="#signals"/></informationRequirement>
+    <authorityRequirement id="hb_authority"><requiredAuthority href="#policy"/></authorityRequirement>
+    <decisionTable id="hard_block_table" hitPolicy="ANY">
+      <input id="hb_in_banned" label="Banned terms">
+        <inputExpression id="hb_in_banned_expr" typeRef="number">
+          <text>Signals.banned_terms</text>
+        </inputExpression>
+      </input>
+      <input id="hb_in_tox" label="Toxicity">
+        <inputExpression id="hb_in_tox_expr" typeRef="number">
+          <text>Signals.toxicity_score</text>
+        </inputExpression>
+      </input>
+      <output id="hb_out" name="hard block" typeRef="boolean">
+        <defaultOutputEntry><text>false</text></defaultOutputEntry>
+      </output>
+      <rule id="hb_r1">
+        <inputEntry id="hb_r1_i1"><text>&gt;= 1</text></inputEntry>
+        <inputEntry id="hb_r1_i2"><text>-</text></inputEntry>
+        <outputEntry id="hb_r1_o1"><text>true</text></outputEntry>
+      </rule>
+      <rule id="hb_r2">
+        <inputEntry id="hb_r2_i1"><text>-</text></inputEntry>
+        <inputEntry id="hb_r2_i2"><text>&gt;= 0.95</text></inputEntry>
+        <outputEntry id="hb_r2_o1"><text>true</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decision id="author_standing" name="Author Standing">
+    <question>How much benefit of the doubt has this author earned?</question>
+    <variable id="author_standing_var" name="Author Standing" typeRef="string"/>
+    <informationRequirement id="as_needs_author"><requiredInput href="#author"/></informationRequirement>
+    <decisionTable id="author_standing_table" hitPolicy="FIRST">
+      <input id="as_in_trusted" label="Trusted">
+        <inputExpression id="as_in_trusted_expr" typeRef="boolean">
+          <text>Author.trusted</text>
+        </inputExpression>
+      </input>
+      <input id="as_in_strikes" label="Prior strikes">
+        <inputExpression id="as_in_strikes_expr" typeRef="number">
+          <text>Author.prior_strikes</text>
+        </inputExpression>
+      </input>
+      <input id="as_in_age" label="Account age (days)">
+        <inputExpression id="as_in_age_expr" typeRef="number">
+          <text>Author.account_age_days</text>
+        </inputExpression>
+      </input>
+      <output id="as_out" name="standing" typeRef="string">
+        <outputValues><text>"trusted","established","new","suspect"</text></outputValues>
+      </output>
+      <rule id="as_r1">
+        <inputEntry id="as_r1_i1"><text>true</text></inputEntry>
+        <inputEntry id="as_r1_i2"><text>0</text></inputEntry>
+        <inputEntry id="as_r1_i3"><text>-</text></inputEntry>
+        <outputEntry id="as_r1_o1"><text>"trusted"</text></outputEntry>
+      </rule>
+      <rule id="as_r2">
+        <inputEntry id="as_r2_i1"><text>-</text></inputEntry>
+        <inputEntry id="as_r2_i2"><text>&gt;= 2</text></inputEntry>
+        <inputEntry id="as_r2_i3"><text>-</text></inputEntry>
+        <outputEntry id="as_r2_o1"><text>"suspect"</text></outputEntry>
+      </rule>
+      <rule id="as_r3">
+        <inputEntry id="as_r3_i1"><text>-</text></inputEntry>
+        <inputEntry id="as_r3_i2"><text>-</text></inputEntry>
+        <inputEntry id="as_r3_i3"><text>&lt; 30</text></inputEntry>
+        <outputEntry id="as_r3_o1"><text>"new"</text></outputEntry>
+      </rule>
+      <rule id="as_r4">
+        <inputEntry id="as_r4_i1"><text>-</text></inputEntry>
+        <inputEntry id="as_r4_i2"><text>-</text></inputEntry>
+        <inputEntry id="as_r4_i3"><text>-</text></inputEntry>
+        <outputEntry id="as_r4_o1"><text>"established"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decision id="needs_judgement" name="Needs Judgement">
+    <description>
+      The cost gate. An agent is consulted only where the deterministic signals
+      genuinely disagree; everything clean and everything obvious is settled
+      without one.
+    </description>
+    <question>Is this post ambiguous enough to be worth an agent's time?</question>
+    <variable id="needs_judgement_var" name="Needs Judgement" typeRef="boolean"/>
+    <informationRequirement id="nj_needs_hb"><requiredDecision href="#hard_block"/></informationRequirement>
+    <informationRequirement id="nj_needs_signals"><requiredInput href="#signals"/></informationRequirement>
+    <informationRequirement id="nj_needs_post"><requiredInput href="#post"/></informationRequirement>
+    <literalExpression id="needs_judgement_expr" typeRef="boolean">
+      <text>if Hard Block then false
+else Signals.toxicity_score &gt;= 0.35 or Post.report_count &gt;= 2 or Post.link_count &gt;= 3</text>
+    </literalExpression>
+  </decision>
+
+  <decision id="agent_assessment" name="Agent Assessment">
+    <!-- The decision-logic slot of <decision> accepts only DMN's own
+         expression elements, so Verdict's agent decision travels inside
+         <extensionElements> - the one place the schema admits a foreign
+         element. tDMNElement fixes its position here, before <question>. -->
+    <extensionElements>
+      <verdict:agentDecision id="agent_assessment_agent" typeRef="tVerdict">
+        <verdict:promptTemplate>
+  You are a content moderator applying Community Policy v7.
+
+  Automated signals have already run and did not find a bright-line violation.
+  Judge the post in context — sarcasm, quotation, reclaimed language and
+  criticism of a view are not the same as endorsing it.
+
+  Answer with exactly one of: allow, review, remove.
+
+  Author standing: {{ .standing }}
+  Language: {{ .language }}
+  Reports from other users: {{ .reports }}
+
+  Post:
+  {{ .text }}
+        </verdict:promptTemplate>
+
+        <verdict:inputBinding name="text"     feel="Post.text"/>
+        <verdict:inputBinding name="language" feel="Post.language"/>
+        <verdict:inputBinding name="reports"  feel="Post.report_count"/>
+        <verdict:inputBinding name="standing" feel="Author Standing"/>
+
+        <verdict:outputType typeRef="string">
+          <verdict:enumeration>
+            <verdict:value>allow</verdict:value>
+            <verdict:value>review</verdict:value>
+            <verdict:value>remove</verdict:value>
+          </verdict:enumeration>
+        </verdict:outputType>
+
+        <verdict:validator feel='value in ["allow", "review", "remove"]'/>
+
+        <!-- The safe default is a human, not an allow: an unavailable model must
+             never be able to publish something by timing out. -->
+        <verdict:policy maxLatency="PT10S" maxRetries="1" onFailure="null"/>
+      </verdict:agentDecision>
+    </extensionElements>
+
+    <question>Read as a moderator would: is this post acceptable in context?</question>
+    <variable id="agent_assessment_var" name="Agent Assessment" typeRef="tVerdict"/>
+    <informationRequirement id="aa_needs_nj"><requiredDecision href="#needs_judgement"/></informationRequirement>
+    <informationRequirement id="aa_needs_post"><requiredInput href="#post"/></informationRequirement>
+    <informationRequirement id="aa_needs_standing"><requiredDecision href="#author_standing"/></informationRequirement>
+    <authorityRequirement id="aa_authority"><requiredAuthority href="#policy"/></authorityRequirement>
+
+  </decision>
+
+  <decision id="moderation_verdict" name="Moderation Verdict">
+    <description>
+      The agent is one input among several here, not the decision. A hard block
+      wins outright; a missing agent answer routes to a human rather than
+      through one.
+    </description>
+    <question>What happens to this post?</question>
+    <variable id="moderation_verdict_var" name="Moderation Verdict" typeRef="tVerdict"/>
+    <informationRequirement id="mv_needs_hb"><requiredDecision href="#hard_block"/></informationRequirement>
+    <informationRequirement id="mv_needs_agent"><requiredDecision href="#agent_assessment"/></informationRequirement>
+    <informationRequirement id="mv_needs_nj"><requiredDecision href="#needs_judgement"/></informationRequirement>
+    <informationRequirement id="mv_needs_standing"><requiredDecision href="#author_standing"/></informationRequirement>
+    <decisionTable id="moderation_verdict_table" hitPolicy="FIRST">
+      <input id="mv_in_hb" label="Hard block">
+        <inputExpression id="mv_in_hb_expr" typeRef="boolean"><text>Hard Block</text></inputExpression>
+      </input>
+      <input id="mv_in_nj" label="Needs judgement">
+        <inputExpression id="mv_in_nj_expr" typeRef="boolean"><text>Needs Judgement</text></inputExpression>
+      </input>
+      <input id="mv_in_agent" label="Agent assessment">
+        <inputExpression id="mv_in_agent_expr" typeRef="string"><text>Agent Assessment</text></inputExpression>
+        <inputValues><text>"allow","review","remove"</text></inputValues>
+      </input>
+      <input id="mv_in_standing" label="Author standing">
+        <inputExpression id="mv_in_standing_expr" typeRef="string"><text>Author Standing</text></inputExpression>
+        <inputValues><text>"trusted","established","new","suspect"</text></inputValues>
+      </input>
+      <output id="mv_out" name="verdict" typeRef="tVerdict"/>
+      <annotation name="Rationale"/>
+
+      <rule id="mv_r1">
+        <inputEntry id="mv_r1_i1"><text>true</text></inputEntry>
+        <inputEntry id="mv_r1_i2"><text>-</text></inputEntry>
+        <inputEntry id="mv_r1_i3"><text>-</text></inputEntry>
+        <inputEntry id="mv_r1_i4"><text>-</text></inputEntry>
+        <outputEntry id="mv_r1_o1"><text>"remove"</text></outputEntry>
+        <annotationEntry><text>Bright-line rule; the agent is not consulted.</text></annotationEntry>
+      </rule>
+      <rule id="mv_r2">
+        <inputEntry id="mv_r2_i1"><text>false</text></inputEntry>
+        <inputEntry id="mv_r2_i2"><text>false</text></inputEntry>
+        <inputEntry id="mv_r2_i3"><text>-</text></inputEntry>
+        <inputEntry id="mv_r2_i4"><text>-</text></inputEntry>
+        <outputEntry id="mv_r2_o1"><text>"allow"</text></outputEntry>
+        <annotationEntry><text>Nothing flagged it; no agent call was made.</text></annotationEntry>
+      </rule>
+      <rule id="mv_r3">
+        <inputEntry id="mv_r3_i1"><text>false</text></inputEntry>
+        <inputEntry id="mv_r3_i2"><text>true</text></inputEntry>
+        <inputEntry id="mv_r3_i3"><text>"remove"</text></inputEntry>
+        <inputEntry id="mv_r3_i4"><text>"suspect","new"</text></inputEntry>
+        <outputEntry id="mv_r3_o1"><text>"remove"</text></outputEntry>
+        <annotationEntry><text>Agent says remove and the author has no standing to spend.</text></annotationEntry>
+      </rule>
+      <rule id="mv_r4">
+        <inputEntry id="mv_r4_i1"><text>false</text></inputEntry>
+        <inputEntry id="mv_r4_i2"><text>true</text></inputEntry>
+        <inputEntry id="mv_r4_i3"><text>"remove"</text></inputEntry>
+        <inputEntry id="mv_r4_i4"><text>-</text></inputEntry>
+        <outputEntry id="mv_r4_o1"><text>"review"</text></outputEntry>
+        <annotationEntry><text>Agent says remove but the author has standing; a human confirms.</text></annotationEntry>
+      </rule>
+      <rule id="mv_r5">
+        <inputEntry id="mv_r5_i1"><text>false</text></inputEntry>
+        <inputEntry id="mv_r5_i2"><text>true</text></inputEntry>
+        <inputEntry id="mv_r5_i3"><text>"allow"</text></inputEntry>
+        <inputEntry id="mv_r5_i4"><text>"trusted","established"</text></inputEntry>
+        <outputEntry id="mv_r5_o1"><text>"allow"</text></outputEntry>
+        <annotationEntry><text>Agent clears it and the author has a record.</text></annotationEntry>
+      </rule>
+      <rule id="mv_r6">
+        <inputEntry id="mv_r6_i1"><text>-</text></inputEntry>
+        <inputEntry id="mv_r6_i2"><text>-</text></inputEntry>
+        <inputEntry id="mv_r6_i3"><text>-</text></inputEntry>
+        <inputEntry id="mv_r6_i4"><text>-</text></inputEntry>
+        <outputEntry id="mv_r6_o1"><text>"review"</text></outputEntry>
+        <annotationEntry><text>Everything unresolved — including a null agent answer — goes to a human.</text></annotationEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <decisionService id="signals_only" name="SignalsOnlyService">
+    <description>The zero-cost slice: what the deterministic checks alone conclude.</description>
+    <variable id="signals_only_var" name="SignalsOnlyService"/>
+    <outputDecision href="#hard_block"/>
+    <outputDecision href="#needs_judgement"/>
+    <outputDecision href="#author_standing"/>
+    <inputData href="#post"/>
+    <inputData href="#author"/>
+    <inputData href="#signals"/>
+  </decisionService>
+
+  <!-- Diagram interchange, generated by `verdict convert` and spliced in
+       by scripts/add-diagram.py. dmn-js has nothing to draw without it, so a
+       model with no DMNDI opens as an empty canvas in Camunda Modeler. -->
+  <!-- Diagram interchange, generated by `verdict convert` and spliced in
+       by scripts/add-diagram.py. dmn-js has nothing to draw without it, so a
+       model with no DMNDI opens as an empty canvas in Camunda Modeler. -->
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_content_moderation" name="Content Moderation">
+      <dmndi:DMNShape id="DMNShape_author" dmnElementRef="author">
+        <dc:Bounds x="160" y="818" width="125" height="45"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_policy" dmnElementRef="policy">
+        <dc:Bounds x="345" y="800" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_post" dmnElementRef="post">
+        <dc:Bounds x="585" y="818" width="125" height="45"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_signals" dmnElementRef="signals">
+        <dc:Bounds x="770" y="818" width="125" height="45"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_author_standing" dmnElementRef="author_standing">
+        <dc:Bounds x="318" y="620" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_hard_block" dmnElementRef="hard_block">
+        <dc:Bounds x="558" y="620" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_needs_judgement" dmnElementRef="needs_judgement">
+        <dc:Bounds x="438" y="440" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_agent_assessment" dmnElementRef="agent_assessment">
+        <dc:Bounds x="438" y="260" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_moderation_verdict" dmnElementRef="moderation_verdict">
+        <dc:Bounds x="438" y="80" width="180" height="80"></dc:Bounds>
+      </dmndi:DMNShape>
+      <dmndi:DMNEdge id="DMNEdge_signals_hard_block" dmnElementRef="hard_block_ir_1">
+        <di:waypoint x="465" y="817.5"></di:waypoint>
+        <di:waypoint x="280" y="700"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_policy_hard_block" dmnElementRef="hard_block_ar_1">
+        <di:waypoint x="67.5" y="800"></di:waypoint>
+        <di:waypoint x="280" y="700"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_author_author_standing" dmnElementRef="author_standing_ir_1">
+        <di:waypoint x="-145" y="817.5"></di:waypoint>
+        <di:waypoint x="40" y="700"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_signals_needs_judgement" dmnElementRef="needs_judgement_ir_1">
+        <di:waypoint x="465" y="817.5"></di:waypoint>
+        <di:waypoint x="160" y="520"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_post_needs_judgement" dmnElementRef="needs_judgement_ir_2">
+        <di:waypoint x="280" y="817.5"></di:waypoint>
+        <di:waypoint x="160" y="520"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_hard_block_needs_judgement" dmnElementRef="needs_judgement_dr_1">
+        <di:waypoint x="280" y="620"></di:waypoint>
+        <di:waypoint x="160" y="520"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_post_agent_assessment" dmnElementRef="agent_assessment_ir_1">
+        <di:waypoint x="280" y="817.5"></di:waypoint>
+        <di:waypoint x="160" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_needs_judgement_agent_assessment" dmnElementRef="agent_assessment_dr_1">
+        <di:waypoint x="160" y="440"></di:waypoint>
+        <di:waypoint x="160" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_author_standing_agent_assessment" dmnElementRef="agent_assessment_dr_2">
+        <di:waypoint x="40" y="620"></di:waypoint>
+        <di:waypoint x="160" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_policy_agent_assessment" dmnElementRef="agent_assessment_ar_1">
+        <di:waypoint x="67.5" y="800"></di:waypoint>
+        <di:waypoint x="160" y="340"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_hard_block_moderation_verdict" dmnElementRef="moderation_verdict_dr_1">
+        <di:waypoint x="280" y="620"></di:waypoint>
+        <di:waypoint x="528" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_agent_assessment_moderation_verdict" dmnElementRef="moderation_verdict_dr_2">
+        <di:waypoint x="160" y="260"></di:waypoint>
+        <di:waypoint x="528" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_needs_judgement_moderation_verdict" dmnElementRef="moderation_verdict_dr_3">
+        <di:waypoint x="160" y="440"></di:waypoint>
+        <di:waypoint x="528" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_author_standing_moderation_verdict" dmnElementRef="moderation_verdict_dr_4">
+        <di:waypoint x="40" y="620"></di:waypoint>
+        <di:waypoint x="528" y="160"></di:waypoint>
+      </dmndi:DMNEdge>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

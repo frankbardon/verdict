@@ -1,0 +1,27 @@
+{
+  "vdj": "1.0",
+  "id": "recursive",
+  "name": "Recursive Service",
+  "conformance_level": "feel",
+  "input_data": [
+    { "id": "n", "name": "N", "variable": { "name": "N", "type_ref": "number" } }
+  ],
+  "decisions": [
+    {
+      "id": "countdown", "name": "Countdown",
+      "required_inputs": ["n"],
+      "variable": { "name": "Countdown", "type_ref": "number" },
+      "logic": {
+        "kind": "literalExpression",
+        "text": "if N <= 0 then 0 else 1 + Countdown Service(N - 1)"
+      }
+    }
+  ],
+  "decision_services": [
+    {
+      "id": "countdown_service", "name": "Countdown Service",
+      "output_decisions": ["countdown"],
+      "input_data": ["n"]
+    }
+  ]
+}

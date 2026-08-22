@@ -1,0 +1,163 @@
+{
+  "vdj": "1.0",
+  "id": "boxed",
+  "name": "Boxed Expression Conformance",
+  "conformance_level": "feel",
+  "item_definitions": [
+    {
+      "name": "tEmployee",
+      "components": [
+        { "name": "name", "type_ref": "string" },
+        { "name": "dept", "type_ref": "string" },
+        { "name": "salary", "type_ref": "number" }
+      ]
+    }
+  ],
+  "input_data": [
+    { "id": "employee", "name": "Employee", "variable": { "name": "Employee", "type_ref": "tEmployee" } },
+    { "id": "budget", "name": "Budget", "variable": { "name": "Budget", "type_ref": "number" } }
+  ],
+  "business_knowledge_models": [
+    {
+      "id": "band_for", "name": "Band For",
+      "encapsulated_logic": {
+        "kind": "functionDefinition",
+        "parameters": [{ "name": "salary", "type_ref": "number" }],
+        "body": {
+          "kind": "decisionTable", "hit_policy": "FIRST",
+          "inputs": [{ "expression": "salary", "type_ref": "number" }],
+          "outputs": [{ "name": "band", "type_ref": "string" }],
+          "rules": [
+            { "id": "b1", "when": ["< 50000"], "then": ["\"junior\""] },
+            { "id": "b2", "when": ["< 90000"], "then": ["\"senior\""] },
+            { "id": "b3", "when": ["-"], "then": ["\"principal\""] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "java_bkm", "name": "Legacy Scoring",
+      "encapsulated_logic": {
+        "kind": "functionDefinition",
+        "function_kind": "Java",
+        "parameters": [{ "name": "x", "type_ref": "number" }]
+      }
+    }
+  ],
+  "decisions": [
+    {
+      "id": "literal_decision", "name": "Doubled Salary",
+      "required_inputs": ["employee"],
+      "variable": { "name": "Doubled Salary", "type_ref": "number" },
+      "logic": { "kind": "literalExpression", "text": "Employee.salary * 2" }
+    },
+    {
+      "id": "context_decision", "name": "Compensation",
+      "required_inputs": ["employee"],
+      "variable": { "name": "Compensation" },
+      "logic": {
+        "kind": "context",
+        "entries": [
+          { "variable": { "name": "base" },  "value": { "kind": "literalExpression", "text": "Employee.salary" } },
+          { "variable": { "name": "bonus" }, "value": { "kind": "literalExpression", "text": "decimal(base * 0.1, 2)" } },
+          { "variable": { "name": "total" }, "value": { "kind": "literalExpression", "text": "base + bonus" } }
+        ]
+      }
+    },
+    {
+      "id": "context_result_decision", "name": "Total Compensation",
+      "required_inputs": ["employee"],
+      "variable": { "name": "Total Compensation", "type_ref": "number" },
+      "logic": {
+        "kind": "context",
+        "entries": [
+          { "variable": { "name": "base" },  "value": { "kind": "literalExpression", "text": "Employee.salary" } },
+          { "variable": { "name": "bonus" }, "value": { "kind": "literalExpression", "text": "decimal(base * 0.1, 2)" } },
+          { "value": { "kind": "literalExpression", "text": "base + bonus" } }
+        ]
+      }
+    },
+    {
+      "id": "list_decision", "name": "Thresholds",
+      "variable": { "name": "Thresholds" },
+      "logic": {
+        "kind": "list",
+        "elements": [
+          { "kind": "literalExpression", "text": "1000" },
+          { "kind": "literalExpression", "text": "5000" },
+          { "kind": "literalExpression", "text": "10000" }
+        ]
+      }
+    },
+    {
+      "id": "relation_decision", "name": "Rate Card",
+      "variable": { "name": "Rate Card" },
+      "logic": {
+        "kind": "relation",
+        "columns": [{ "name": "dept" }, { "name": "rate" }],
+        "rows": [
+          [{ "kind": "literalExpression", "text": "\"eng\"" },   { "kind": "literalExpression", "text": "120" }],
+          [{ "kind": "literalExpression", "text": "\"sales\"" }, { "kind": "literalExpression", "text": "95" }],
+          [{ "kind": "literalExpression", "text": "\"ops\"" },   { "kind": "literalExpression", "text": "80" }]
+        ]
+      }
+    },
+    {
+      "id": "invocation_decision", "name": "Band",
+      "required_inputs": ["employee"],
+      "required_knowledge": ["band_for"],
+      "variable": { "name": "Band", "type_ref": "string" },
+      "logic": {
+        "kind": "invocation",
+        "called": "Band For",
+        "bindings": [
+          { "parameter": { "name": "salary", "type_ref": "number" },
+            "value": { "kind": "literalExpression", "text": "Employee.salary" } }
+        ]
+      }
+    },
+    {
+      "id": "bkm_from_feel", "name": "Band Via FEEL",
+      "required_inputs": ["employee"],
+      "required_knowledge": ["band_for"],
+      "variable": { "name": "Band Via FEEL", "type_ref": "string" },
+      "logic": { "kind": "literalExpression", "text": "Band For(Employee.salary)" }
+    },
+    {
+      "id": "java_call", "name": "Legacy Score",
+      "required_knowledge": ["java_bkm"],
+      "variable": { "name": "Legacy Score" },
+      "logic": { "kind": "literalExpression", "text": "Legacy Scoring(1)" }
+    },
+    {
+      "id": "rate_lookup", "name": "Department Rate",
+      "required_decisions": ["relation_decision"],
+      "required_inputs": ["employee"],
+      "variable": { "name": "Department Rate", "type_ref": "number" },
+      "logic": {
+        "kind": "literalExpression",
+        "text": "sum(for row in Rate Card return if row.dept = Employee.dept then row.rate else 0)"
+      }
+    },
+    {
+      "id": "affordable", "name": "Affordable",
+      "required_decisions": ["context_result_decision"],
+      "required_inputs": ["budget"],
+      "variable": { "name": "Affordable", "type_ref": "boolean" },
+      "logic": { "kind": "literalExpression", "text": "Total Compensation <= Budget" }
+    },
+    {
+      "id": "service_caller", "name": "Service Caller",
+      "required_inputs": ["employee"],
+      "variable": { "name": "Service Caller", "type_ref": "string" },
+      "logic": { "kind": "literalExpression", "text": "BandService(Employee)" }
+    }
+  ],
+  "decision_services": [
+    {
+      "id": "band_service", "name": "BandService",
+      "output_decisions": ["invocation_decision"],
+      "input_data": ["employee"]
+    }
+  ]
+}
