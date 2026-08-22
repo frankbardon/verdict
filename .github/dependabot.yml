@@ -1,4 +1,16 @@
 version: 2
+
+# Dependabot's default subject is `build(deps): Bump X from A to B`, and
+# `build` is not one of the types CONTRIBUTING.md lists. The prefix below makes
+# the proposed commits conform on arrival rather than needing a rewritten
+# subject at merge time.
+#
+# One thing Dependabot cannot do for us: nexus/ replaces the core module with
+# the working tree, so a bump here reaches its build list too, but Dependabot
+# scans the two go.mod files as separate ecosystems and updates only the one it
+# found the dependency in. A root bump therefore usually needs a follow-up
+# `make tidy` commit on the branch. CI's `go mod tidy` diff check catches it;
+# see CONTRIBUTING.md.
 updates:
   # The core module. Nothing here may pull in Nexus, so a bump that appears in
   # this file and not in the one below is the separation working.
@@ -7,6 +19,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
     labels:
       - dependencies
 
@@ -18,6 +33,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
     labels:
       - dependencies
       - nexus
@@ -27,6 +45,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
     labels:
       - dependencies
       - ci

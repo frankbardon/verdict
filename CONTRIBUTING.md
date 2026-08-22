@@ -113,6 +113,23 @@ usually the whole story. For a feature, if DMN already names the thing you want,
 cite the clause — Verdict implements the spec rather than inventing a parallel
 vocabulary, so that is the fastest route to agreement.
 
+## Dependency updates
+
+Dependabot watches both modules. A bump to the **root** module usually needs one
+follow-up commit on its branch:
+
+```bash
+make tidy    # then commit nexus/go.mod and nexus/go.sum
+```
+
+`nexus/` replaces the core module with the working tree, so a root dependency
+change lands in its build list too — but Dependabot scans the two `go.mod`
+files as separate ecosystems and updates only the one it found the dependency
+in. Without the re-tidy, `go test ./...` inside `nexus/` refuses to build. CI's
+`go mod tidy` diff check is what catches it, and it is the module split
+charging its rent; the alternative is a `go.work` that would collapse the
+boundary the design depends on.
+
 ## Two rules that are not negotiable
 
 **1. Documentation ships with the change.** `CLAUDE.md` carries a table mapping
