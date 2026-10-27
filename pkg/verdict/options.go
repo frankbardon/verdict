@@ -43,6 +43,10 @@ type NodeEvaluator = eval.NodeEvaluator
 // FunctionLibrary is a namespaced bundle of application FEEL functions.
 type FunctionLibrary = vfeel.FunctionLibrary
 
+// DefaultMaxIterationRange is the integer-range iteration cap an engine uses
+// unless WithMaxIterationRange sets another.
+const DefaultMaxIterationRange = vfeel.DefaultMaxIterationRange
+
 // Clock supplies the current time. Injecting one makes evaluations that read
 // the clock — `now()`, `today()`, trace timestamps — deterministic in tests.
 type Clock func() time.Time
@@ -62,6 +66,7 @@ type options struct {
 	parallel     bool
 	memoize      bool
 	maxDepth     int
+	maxRange     int64
 	clock        Clock
 }
 
@@ -74,6 +79,7 @@ func defaultOptions() options {
 		// enough for a multi-turn session while still being a bound.
 		maxLatency: 30 * time.Second,
 		parallel:   true,
+		maxRange:   vfeel.DefaultMaxIterationRange,
 		nodeEvals:  map[model.Kind]NodeEvaluator{},
 	}
 }
@@ -85,12 +91,15 @@ func (o options) validate() error {
 	if o.maxLatency < 0 {
 		return fmt.Errorf("verdict: default max latency cannot be negative")
 	}
+	if o.maxRange < 0 {
+		return fmt.Errorf("verdict: max iteration range cannot be negative")
+	}
 	return nil
 }
 
 // feelOptions projects the engine options onto the expression evaluator's own.
 func (o options) feelOptions() []vfeel.Option {
-	opts := []vfeel.Option{}
+	opts := []vfeel.Option{vfeel.WithMaxIterationRange(o.maxRange)}
 	if len(o.functionLibs) > 0 {
 		opts = append(opts, vfeel.WithLibraries(o.functionLibs...))
 	}
@@ -187,6 +196,21 @@ func WithParallelDecisions(parallel bool) Option {
 // their outputs are not referentially transparent.
 func WithMemoization(on bool) Option {
 	return func(o *options) { o.memoize = on }
+}
+
+// WithMaxIterationRange caps the number of integers an integer-range iteration
+// context (`for i in a..b`, `some x in a..b`) may produce. An expression whose
+// range would exceed it fails with VERDICT_EVAL_005 before any element is
+// built, rather than allocating a list that exhausts memory — the risk with a
+// model loaded over the network through `verdict serve`.
+//
+// The default is 1,000,000 (DefaultMaxIterationRange): far beyond any
+// range a decision iterates on purpose, small enough to bound one expression's
+// list to roughly a hundred megabytes. Zero means that default; a negative
+// value is a configuration error. There is no "unlimited" setting — raise the
+// cap instead.
+func WithMaxIterationRange(n int64) Option {
+	return func(o *options) { o.maxRange = n }
 }
 
 // WithMaxDepth bounds recursive invocation through decision services.

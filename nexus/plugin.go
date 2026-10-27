@@ -80,6 +80,9 @@ type pluginConfig struct {
 	Posture string
 	// DefaultMaxLatency bounds an agent decision that declares no policy.
 	DefaultMaxLatency time.Duration
+	// MaxIterationRange caps an integer-range iteration context
+	// (`for i in a..b`). Zero means the engine default.
+	MaxIterationRange int64
 }
 
 // NewPlugin constructs the plugin. Nexus's plugin registry calls it.
@@ -161,6 +164,9 @@ func (p *Plugin) Init(ctx nexusengine.PluginContext) error {
 	}
 	if len(p.config.Redact) > 0 {
 		opts = append(opts, verdict.WithRedactedInputs(p.config.Redact...))
+	}
+	if p.config.MaxIterationRange > 0 {
+		opts = append(opts, verdict.WithMaxIterationRange(p.config.MaxIterationRange))
 	}
 	if p.config.DefaultMaxLatency > 0 {
 		opts = append(opts, verdict.WithDefaultMaxLatency(p.config.DefaultMaxLatency))

@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/frankbardon/verdict/pkg/diag"
@@ -134,7 +135,19 @@ func (ec *Context) eval(x *feel.Expr) (any, error) {
 	if err := ec.ctx.Err(); err != nil {
 		return nil, err
 	}
-	return ec.prog.cfg.FEEL.Eval(x, ec.vars)
+	v, err := ec.prog.cfg.FEEL.Eval(x, ec.vars)
+	return v, feelFailure(err)
+}
+
+// feelFailure turns a FEEL evaluation error that a resource limit raised into a
+// VERDICT_EVAL_005 diagnostic, so a capped iteration range reaches the caller
+// as a coded expression failure rather than an uncoded error. Other errors pass
+// through unchanged.
+func feelFailure(err error) error {
+	if err != nil && errors.Is(err, feel.ErrIterationRangeTooLarge) {
+		return diag.Errorf(diag.CodeExpressionError, "%v", err)
+	}
+	return err
 }
 
 // diagnose records an evaluation-time diagnostic.

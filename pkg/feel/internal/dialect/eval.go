@@ -3,6 +3,7 @@ package dialect
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"reflect"
 )
@@ -350,10 +351,23 @@ func (ir IterationRange) Eval(intp *Interpreter) (any, error) {
 		return nil, nil
 	}
 	step := int64(1)
+	// The element count minus one, in unsigned arithmetic so that the full
+	// int64 span cannot overflow. Checked before anything is allocated: a
+	// model loaded over the network must not be able to ask for a
+	// billion-element list.
+	span := uint64(to) - uint64(from)
 	if to < from {
 		step = -1
+		span = uint64(from) - uint64(to)
 	}
 	results := make([]any, 0)
+	if limit := intp.MaxIterationRange; limit > 0 {
+		if span >= uint64(limit) {
+			return nil, &IterationRangeTooLargeError{From: from, To: to, Limit: limit}
+		}
+		// Bounded by the cap, so sizing the list up front is safe.
+		results = make([]any, 0, span+1)
+	}
 	for i := from; ; i += step {
 		results = append(results, NewNumberFromInt64(i))
 		if i == to {
@@ -361,6 +375,17 @@ func (ir IterationRange) Eval(intp *Interpreter) (any, error) {
 		}
 	}
 	return results, nil
+}
+
+// IterationRangeTooLargeError reports an integer-range iteration context that
+// would produce more elements than Interpreter.MaxIterationRange allows.
+type IterationRangeTooLargeError struct {
+	From, To int64
+	Limit    int64
+}
+
+func (e *IterationRangeTooLargeError) Error() string {
+	return fmt.Sprintf("iteration range %d..%d exceeds the limit of %d elements", e.From, e.To, e.Limit)
 }
 
 // iterationEndpoint reports v as an int64 when it is an integral FEEL number

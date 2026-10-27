@@ -1,8 +1,12 @@
 package config
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/frankbardon/verdict/pkg/verdict"
 )
 
 func TestDefaultsSurviveAPartialFile(t *testing.T) {
@@ -90,6 +94,7 @@ func TestValidationRejectsNonsense(t *testing.T) {
 		"verdict:\n  tracing:\n    mode: verbose\n",
 		"verdict:\n  feel:\n    timezone: Mars/Olympus\n",
 		"verdict:\n  agent:\n    nexus:\n      session_strategy: telepathic\n",
+		"verdict:\n  feel:\n    max_iteration_range: -1\n",
 	}
 	for _, src := range bad {
 		if _, err := Parse([]byte(src)); err == nil {
@@ -111,5 +116,41 @@ verdict:
 	}
 	if got := len(cfg.Options()); got == 0 {
 		t.Fatal("Options produced nothing")
+	}
+}
+
+func TestMaxIterationRangeDefaultsAndIsHonoured(t *testing.T) {
+	cfg, err := Parse([]byte("verdict:\n  feel:\n    dialect: feel\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.FEEL.MaxIterationRange != verdict.DefaultMaxIterationRange {
+		t.Errorf("max_iteration_range = %d, want the %d default", cfg.FEEL.MaxIterationRange, verdict.DefaultMaxIterationRange)
+	}
+
+	// Zero means the default, not "unlimited".
+	cfg, err = Parse([]byte("verdict:\n  feel:\n    max_iteration_range: 0\n"))
+	if err != nil || cfg.FEEL.MaxIterationRange != verdict.DefaultMaxIterationRange {
+		t.Errorf("max_iteration_range: 0 -> %d, %v; want the default", cfg.FEEL.MaxIterationRange, err)
+	}
+
+	// A configured cap reaches the engine through Options.
+	cfg, err = Parse([]byte("verdict:\n  feel:\n    max_iteration_range: 5\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	e, err := verdict.NewEngine(cfg.Options()...)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	doc := `{"vdj":"1.0","id":"r","conformance_level":"feel","decisions":[{"id":"d","name":"D",
+	  "variable":{"name":"D"},"logic":{"kind":"literalExpression","text":"for i in 1..6 return i"}}]}`
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	if _, err := e.Evaluate(context.Background(), m.ID, verdict.Inputs{}); err == nil ||
+		!strings.Contains(err.Error(), "exceeds the limit of 5") {
+		t.Errorf("1..6 under a configured cap of 5: err = %v, want the range cap", err)
 	}
 }

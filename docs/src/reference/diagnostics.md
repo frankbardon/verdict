@@ -62,7 +62,7 @@ defect there.
 | `VERDICT_EVAL_002` | More than one rule matched under `UNIQUE` |
 | `VERDICT_EVAL_003` | Rules matched under `ANY` and their outputs disagreed |
 | `VERDICT_EVAL_004` | A required input was not supplied; it evaluated as null |
-| `VERDICT_EVAL_005` | An expression failed to evaluate |
+| `VERDICT_EVAL_005` | An expression failed to evaluate — including an integer-range iteration (`for i in a..b`) longer than `feel.max_iteration_range` |
 | `VERDICT_EVAL_006` | A value violated its declared type |
 | `VERDICT_EVAL_007` | An agent decision failed |
 | `VERDICT_EVAL_008` | An agent decision exceeded its latency budget |

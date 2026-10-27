@@ -1,6 +1,7 @@
 package nexus
 
 import (
+	"math"
 	"time"
 )
 
@@ -59,7 +60,37 @@ func parseConfig(raw map[string]any) pluginConfig {
 			c.DefaultMaxLatency = d
 		}
 	}
+	// A non-positive or non-integral cap keeps the engine default rather than
+	// failing boot; the engine never runs without one.
+	if v, ok := positiveInt(raw["max_iteration_range"]); ok {
+		c.MaxIterationRange = v
+	}
 	return c
+}
+
+// positiveInt reads a positive whole number, whichever numeric type the YAML
+// decoder chose for it.
+func positiveInt(v any) (int64, bool) {
+	var n int64
+	switch x := v.(type) {
+	case int:
+		n = int64(x)
+	case int64:
+		n = x
+	case uint64:
+		if x > math.MaxInt64 {
+			return 0, false
+		}
+		n = int64(x)
+	case float64:
+		if x != math.Trunc(x) || x >= math.MaxInt64 {
+			return 0, false
+		}
+		n = int64(x)
+	default:
+		return 0, false
+	}
+	return n, n > 0
 }
 
 func stringOf(v any) (string, bool) {

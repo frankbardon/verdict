@@ -200,7 +200,7 @@ func (p *Program) ruleMatches(ec *Context, tests []*feel.UnaryTest, inputs []any
 		}
 		ok, err := ec.prog.cfg.FEEL.EvalUnaryTest(test, inputs[j], ec.vars)
 		if err != nil {
-			return false, err
+			return false, feelFailure(err)
 		}
 		if !ok {
 			return false, nil

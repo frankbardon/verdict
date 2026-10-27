@@ -293,6 +293,9 @@ opens as an empty canvas.
   `for x in 5 return x * 2` is `[10]`, `for x in null return x` is `[null]`.
   Write `1..3`, not `[1..3]` — the bracketed form is a range value, so
   `for x in [1..3] return x` is `[[1..3]]`, one element, not three.
+  One `a..b` context may produce at most 1,000,000 integers (configurable as
+  `feel.max_iteration_range`); a longer range fails the evaluation with
+  `VERDICT_EVAL_005` before building anything.
 - **Input names come from the input-data variable**, not the file. `verdict
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated

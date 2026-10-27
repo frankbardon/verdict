@@ -1,6 +1,7 @@
 package feel
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -416,6 +417,41 @@ func TestForkedDefects(t *testing.T) {
 			if got := mustEval(t, e, c.expr, nil); got != c.want {
 				t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
 			}
+		}
+	})
+
+	t.Run("an integer-range iteration context is capped", func(t *testing.T) {
+		// Upstream had no integer-range form and the fork's first version had
+		// no bound, so `for i in 1..1000000000` built a billion-element list.
+		// The interpreter now refuses, before allocating, a range longer than
+		// its cap; the façade always sets one.
+		capped, err := NewEvaluator(FEEL, WithMaxIterationRange(3))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, expr := range []string{"for i in 1..3 return i", "for i in 3..1 return i", "some x in -1..1 satisfies x = 0"} {
+			if _, err := capped.EvalText(expr, nil); err != nil {
+				t.Errorf("%s under a cap of 3: %v", expr, err)
+			}
+		}
+		for _, expr := range []string{
+			"for i in 1..4 return i",
+			"for i in 4..1 return i",
+			"every x in 0..3 satisfies x >= 0",
+			"for i in [1], j in 1..4 return j",
+			// The full int64 span: the length check must not overflow.
+			"for i in -9223372036854775808..9223372036854775807 return i",
+		} {
+			_, err := capped.EvalText(expr, nil)
+			if !errors.Is(err, ErrIterationRangeTooLarge) {
+				t.Errorf("%s under a cap of 3: err = %v, want ErrIterationRangeTooLarge", expr, err)
+			}
+		}
+		if got := newFEEL(t).MaxIterationRange(); got != DefaultMaxIterationRange {
+			t.Errorf("default cap = %d, want %d", got, DefaultMaxIterationRange)
+		}
+		if _, err := newFEEL(t).EvalText("for i in 1..1000000000 return i", nil); !errors.Is(err, ErrIterationRangeTooLarge) {
+			t.Errorf("1..1e9 under the default cap: err = %v, want ErrIterationRangeTooLarge", err)
 		}
 	})
 

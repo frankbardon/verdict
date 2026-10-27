@@ -42,16 +42,29 @@ var ErrNamespaceRequired = errors.New("feel: a function library must declare a n
 // concurrent use: each evaluation gets its own interpreter and the shared state
 // (compile cache, global scope) is read-only after construction.
 type Evaluator struct {
-	compiler *Compiler
-	globals  pfeel.Scope
+	compiler          *Compiler
+	globals           pfeel.Scope
+	maxIterationRange int64
 }
+
+// DefaultMaxIterationRange is the number of integers an integer-range
+// iteration context (`for i in a..b`, `some x in a..b`) may produce when no
+// other cap is configured.
+//
+// A million is far beyond any range a decision model iterates on purpose — a
+// day-by-day loop over a century is under 40,000 — while bounding the list a
+// single expression can build to roughly a hundred megabytes. Without a cap one
+// expression in a model loaded through `verdict serve` could ask for a
+// billion-element list and exhaust the server's memory.
+const DefaultMaxIterationRange = 1_000_000
 
 // Option configures an Evaluator.
 type Option func(*evaluatorOptions)
 
 type evaluatorOptions struct {
-	libs  []FunctionLibrary
-	clock func() time.Time
+	libs              []FunctionLibrary
+	clock             func() time.Time
+	maxIterationRange int64
 }
 
 // WithLibraries registers namespaced application function libraries.
@@ -69,6 +82,15 @@ func WithClock(clock func() time.Time) Option {
 	return func(o *evaluatorOptions) { o.clock = clock }
 }
 
+// WithMaxIterationRange caps the number of integers an integer-range iteration
+// context (`for i in a..b`) may produce. A range that would exceed it fails the
+// evaluation before any element is built. Zero or a negative value means
+// DefaultMaxIterationRange: there is deliberately no "unlimited" setting, since
+// an unbounded range is a memory-exhaustion vector; pass a larger cap instead.
+func WithMaxIterationRange(n int64) Option {
+	return func(o *evaluatorOptions) { o.maxIterationRange = n }
+}
+
 // NewEvaluator builds an evaluator for a dialect, layering the DMN 1.5 standard
 // library supplement beneath any application function libraries.
 func NewEvaluator(d Dialect, opts ...Option) (*Evaluator, error) {
@@ -77,7 +99,10 @@ func NewEvaluator(d Dialect, opts ...Option) (*Evaluator, error) {
 		o(&cfg)
 	}
 
-	e := &Evaluator{compiler: NewCompiler(d), globals: pfeel.Scope{}}
+	e := &Evaluator{compiler: NewCompiler(d), globals: pfeel.Scope{}, maxIterationRange: cfg.maxIterationRange}
+	if e.maxIterationRange <= 0 {
+		e.maxIterationRange = DefaultMaxIterationRange
+	}
 	for name, fn := range standardSupplement() {
 		e.globals[name] = fn
 	}
@@ -157,6 +182,9 @@ func nativeFunc(f Function) *pfeel.NativeFun {
 // validate expressions at model-load time.
 func (e *Evaluator) Compiler() *Compiler { return e.compiler }
 
+// MaxIterationRange reports the cap on an integer-range iteration context.
+func (e *Evaluator) MaxIterationRange() int64 { return e.maxIterationRange }
+
 // Dialect reports the evaluator's dialect.
 func (e *Evaluator) Dialect() Dialect { return e.compiler.dialect }
 
@@ -168,6 +196,10 @@ func (e *Evaluator) CompileUnaryTest(text string) (*UnaryTest, error) {
 	return e.compiler.CompileUnaryTest(text)
 }
 
+// ErrIterationRangeTooLarge is matched by errors.Is when an integer-range
+// iteration context would produce more elements than the configured cap.
+var ErrIterationRangeTooLarge = errors.New("feel: iteration range exceeds the configured limit")
+
 // EvalError wraps a runtime failure with the expression that produced it.
 type EvalError struct {
 	Text string
@@ -176,6 +208,13 @@ type EvalError struct {
 
 func (e *EvalError) Error() string { return fmt.Sprintf("feel: evaluating %q: %v", e.Text, e.Err) }
 func (e *EvalError) Unwrap() error { return e.Err }
+
+// Is lets errors.Is match ErrIterationRangeTooLarge without exposing the
+// vendored evaluator's own error type.
+func (e *EvalError) Is(target error) bool {
+	var tooLarge *pfeel.IterationRangeTooLargeError
+	return target == ErrIterationRangeTooLarge && errors.As(e.Err, &tooLarge)
+}
 
 // Eval evaluates a compiled expression against vars. A nil expression yields
 // null, which is what an omitted decision-table output entry means.
@@ -206,6 +245,7 @@ func (e *Evaluator) EvalText(text string, vars map[string]any) (any, error) {
 // rule that a variable in scope wins over an outer binding.
 func (e *Evaluator) interpreter(vars map[string]any) *pfeel.Interpreter {
 	intp := pfeel.NewIntepreter()
+	intp.MaxIterationRange = e.maxIterationRange
 	intp.Push(pfeel.Scope(e.globals))
 	if len(vars) > 0 {
 		intp.Push(pfeel.Scope(vars))

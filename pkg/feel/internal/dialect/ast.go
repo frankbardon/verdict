@@ -9,6 +9,13 @@ type Scope map[string]interface{}
 
 type Interpreter struct {
 	ScopeStack []Scope
+	// MaxIterationRange caps the number of integers an integer-range
+	// iteration context (`for i in a..b`) may produce. Zero means no cap,
+	// which is upstream's behaviour; the façade always sets one.
+	//
+	// VERDICT DIVERGENCE: see NOTICE.md. The fork takes the cap as a plain
+	// field rather than importing any Verdict configuration.
+	MaxIterationRange int64
 }
 
 type Node interface {

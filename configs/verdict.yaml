@@ -21,6 +21,17 @@ verdict:
     # ran is not auditable.
     timezone: UTC
 
+    # The most integers an integer-range iteration context may produce:
+    # `for i in 1..n`, `some x in a..b`. A larger range fails the evaluation
+    # (VERDICT_EVAL_005) before any element is built. A million is far beyond
+    # any range a decision iterates on purpose — a day-by-day loop over a
+    # century is under 40,000 — and bounds one expression's list to roughly a
+    # hundred megabytes, so a model loaded through `verdict serve` cannot
+    # exhaust the server's memory with `for i in 1..1000000000`. 0 means this
+    # default; negative is rejected. There is no unlimited setting: raise the
+    # cap instead.
+    max_iteration_range: 1000000
+
   evaluation:
     # Refuse to load a model whose static analysis reports an error — an
     # overlap under UNIQUE, a gap under a non-defaulted policy, an expression

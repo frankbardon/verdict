@@ -2,7 +2,9 @@ package verdict_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/frankbardon/verdict/pkg/diag"
@@ -275,4 +277,65 @@ func TestRecursiveServiceTerminates(t *testing.T) {
 	if d, ok := err.(diag.Diagnostic); !ok || d.Code != diag.CodeRecursionExceeded {
 		t.Errorf("error = %v, want a VERDICT_EVAL_012 diagnostic", err)
 	}
+}
+
+// TestIterationRangeIsCapped checks that an integer-range iteration context
+// cannot build an arbitrarily large list: a range over the cap fails with
+// VERDICT_EVAL_005 before allocating, one within it evaluates, and the
+// configured cap — not the default — is the one enforced.
+func TestIterationRangeIsCapped(t *testing.T) {
+	doc := `{"vdj":"1.0","id":"ranges","conformance_level":"feel",
+	  "input_data":[{"id":"n","name":"N","variable":{"name":"N","type_ref":"number"}}],
+	  "decisions":[{"id":"c","name":"Count","required_inputs":["n"],
+	    "variable":{"name":"Count","type_ref":"number"},
+	    "logic":{"kind":"literalExpression","text":"count(for i in 1..N return i)"}}]}`
+
+	run := func(t *testing.T, e *verdict.Engine, n int) (any, error) {
+		t.Helper()
+		m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+		if err != nil {
+			t.Fatalf("LoadModel: %v", err)
+		}
+		res, err := e.Evaluate(context.Background(), m.ID, verdict.Inputs{"N": n})
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range res.Diagnostics {
+			if d.Code == diag.CodeExpressionError {
+				return nil, d
+			}
+		}
+		return res.Outputs["Count"], nil
+	}
+	isRangeFailure := func(err error) bool {
+		var d diag.Diagnostic
+		return errors.As(err, &d) && d.Code == diag.CodeExpressionError &&
+			strings.Contains(d.Message, "exceeds the limit")
+	}
+
+	t.Run("default cap", func(t *testing.T) {
+		e := verdict.MustNewEngine()
+		if got, err := run(t, e, 1000); err != nil || got != 1000.0 {
+			t.Errorf("1..1000 = %#v, %v; want 1000", got, err)
+		}
+		if _, err := run(t, e, 1_000_000_000); !isRangeFailure(err) {
+			t.Errorf("1..1e9 under the default cap: err = %v, want a VERDICT_EVAL_005 range failure", err)
+		}
+	})
+
+	t.Run("configured cap", func(t *testing.T) {
+		e := verdict.MustNewEngine(verdict.WithMaxIterationRange(10))
+		if got, err := run(t, e, 10); err != nil || got != 10.0 {
+			t.Errorf("1..10 under a cap of 10 = %#v, %v; want 10", got, err)
+		}
+		if _, err := run(t, e, 11); !isRangeFailure(err) {
+			t.Errorf("1..11 under a cap of 10: err = %v, want a VERDICT_EVAL_005 range failure", err)
+		}
+	})
+
+	t.Run("negative cap is rejected", func(t *testing.T) {
+		if _, err := verdict.NewEngine(verdict.WithMaxIterationRange(-1)); err == nil {
+			t.Error("NewEngine accepted a negative iteration-range cap")
+		}
+	})
 }
