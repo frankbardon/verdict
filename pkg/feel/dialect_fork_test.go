@@ -744,6 +744,59 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("days-and-time durations with a day part", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.3.7: a days and time duration is xs:dayTimeDuration,
+		// PnDTnHnMnS, whose T appears only before a time component.
+		strs := map[string]string{
+			`string(duration("P1D"))`:                                         "P1D",
+			`string(@"P1D")`:                                                  "P1D",
+			`string(@"P1DT2H30M")`:                                            "P1DT2H30M",
+			`string(duration("-P2D"))`:                                        "-P2D",
+			`string(duration("PT1H"))`:                                        "PT1H",
+			`string(duration("PT0S"))`:                                        "PT0S",
+			`string(duration("P1Y2M"))`:                                       "P1Y2M",
+			`string(date("2026-01-01") + duration("P1D"))`:                    "2026-01-02",
+			`string(date("2026-01-01") - duration("P1D"))`:                    "2025-12-31",
+			`string(date("2026-01-01") + duration("PT23H"))`:                  "2026-01-01",
+			`string(date("2026-01-15") + duration("P1Y2M"))`:                  "2027-03-15",
+			`string(date and time("2026-01-01T00:00:00") + @"P1DT1H")`:        "2026-01-02T01:00:00@UTC",
+			`string(date and time("2026-01-01T00:00:00") - duration("-P2D"))`: "2026-01-03T00:00:00@UTC",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		if got := mustEval(t, e, `duration("P1D").days`, nil); got != 1.0 {
+			t.Errorf(`duration("P1D").days = %#v, want 1`, got)
+		}
+		bools := map[string]bool{
+			`duration("P1D") = duration("PT24H")`: true,
+			`duration("P1D") = @"PT23H"`:          false,
+			`duration("P1D") > duration("PT23H")`: true,
+			`duration("-P2D") < duration("PT1H")`: true,
+			`duration("P1Y") = duration("P12M")`:  true,
+			`duration("P1Y") < duration("P1Y1M")`: true,
+			`duration("P1DT1H") >= @"PT25M"`:      true,
+		}
+		for expr, want := range bools {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// Neither xs:dayTimeDuration nor xs:yearMonthDuration: rejected as any
+		// malformed duration string is, never read as a partial duration.
+		for _, expr := range []string{`duration("P1Y2D")`, `@"P1Y2D"`, `duration("PT")`, `duration("P1DT")`} {
+			if v, err := e.EvalText(expr, nil); err == nil {
+				t.Errorf("%s = %#v, want a parse failure", expr, ToGo(v))
+			}
+		}
+		// The two duration kinds are distinct types and do not compare.
+		if v, err := e.EvalText(`duration("P1Y") = duration("P1D")`, nil); err == nil {
+			t.Errorf(`duration("P1Y") = duration("P1D") = %#v, want a type error`, ToGo(v))
+		}
+	})
+
 	t.Run("multi-word names without keywords still resolve", func(t *testing.T) {
 		vars := map[string]any{"Credit Rating": "good"}
 		if got := mustEval(t, e, `Credit Rating = "good"`, vars); got != true {

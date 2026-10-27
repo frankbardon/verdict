@@ -311,13 +311,72 @@ func (duration FEELDuration) String() string {
 	}
 	if sYear != "" || sMonth != "" {
 		return fmt.Sprintf("%sP%s%s", sNeg, sYear, sMonth)
-	} else {
-		return fmt.Sprintf("%sP%sT%s%s%s", sNeg, sDay, sHour, sMinute, sSecond)
 	}
+	// A day-only duration is P1D, not P1DT: T appears only before a time
+	// component, and a zero duration is PT0S rather than the empty PT.
+	sTime := sHour + sMinute + sSecond
+	if sTime != "" {
+		sTime = "T" + sTime
+	} else if sDay == "" {
+		sTime = "T0S"
+	}
+	return fmt.Sprintf("%sP%s%s", sNeg, sDay, sTime)
+}
+
+// isYearsMonths reports whether the duration is a years-and-months duration
+// rather than a days-and-time one. A zero duration counts as days-and-time.
+func (duration FEELDuration) isYearsMonths() bool {
+	return duration.Years != 0 || duration.Months != 0
+}
+
+// compareDurations orders two durations of the same kind: years-and-months by
+// total months, days-and-time by total length, so P1D = PT24H. The two kinds
+// are not comparable (DMN 1.5 §10.3.2.3.7 keeps them distinct types), which
+// ok=false reports.
+func compareDurations(a, b *FEELDuration) (r int, ok bool) {
+	if a.isYearsMonths() != b.isYearsMonths() {
+		return 0, false
+	}
+	var x, y int64
+	if a.isYearsMonths() {
+		x, y = int64(a.Years*12+a.Months), int64(b.Years*12+b.Months)
+		if a.Neg {
+			x = -x
+		}
+		if b.Neg {
+			y = -y
+		}
+	} else {
+		x, y = int64(a.Duration()), int64(b.Duration())
+	}
+	switch {
+	case x < y:
+		return -1, true
+	case x > y:
+		return 1, true
+	}
+	return 0, true
+}
+
+// AddDuration is date + duration. DMN 1.5 §10.3.2.3 (addition of a date and a
+// duration) evaluates it as the date of date and time(date, midnight) +
+// duration, so a days-and-time duration moves whole days and drops any
+// remainder of a day, and a years-and-months duration moves calendar months.
+func (d *FEELDate) AddDuration(dur *FEELDuration) *FEELDate {
+	dt := (&FEELDatetime{t: d.t}).Add(dur).t
+	return &FEELDate{t: time.Date(dt.Year(), dt.Month(), dt.Day(), 0, 0, 0, 0, d.t.Location())}
 }
 
 var yearmonthDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)Y)?((\d+)M)?$`)
-var timeDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)D)?T((\d+)H)?((\d+)M)?((\d+)S)?$`)
+
+// timeDurationPattern is the xs:dayTimeDuration lexical form, PnDTnHnMnS.
+//
+// Upstream required the T designator, so a duration with only a day part
+// (P1D, -P2D) failed to parse; and it accepted a bare T (PT). xs:duration makes
+// T present exactly when an hour, minute or second follows it, and requires at
+// least one component overall. Both rules are checked in ParseDuration, since
+// Go's regexp has no lookahead.
+var timeDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)D)?(T((\d+)H)?((\d+)M)?((\d+)S)?)?$`)
 
 func ParseDuration(temporalStr string) (*FEELDuration, error) {
 	// parse year month duration
@@ -349,6 +408,15 @@ func ParseDuration(temporalStr string) (*FEELDuration, error) {
 
 	// parse day time duration
 	if submatches := timeDurationPattern.FindStringSubmatch(temporalStr); submatches != nil {
+		hasTime := submatches[5] != "" || submatches[7] != "" || submatches[9] != ""
+		if submatches[4] != "" && !hasTime {
+			// A T designator with nothing after it (PT, P1DT).
+			return nil, ErrParseTemporal
+		}
+		if submatches[2] == "" && !hasTime {
+			// No component at all (P is the years-and-months branch above).
+			return nil, ErrParseTemporal
+		}
 		dur := &FEELDuration{}
 		if submatches[1] != "" {
 			dur.Neg = true
@@ -360,8 +428,8 @@ func ParseDuration(temporalStr string) (*FEELDuration, error) {
 			}
 			dur.Days = int(v)
 		}
-		if submatches[4] != "" {
-			v, err := strconv.ParseInt(submatches[5], 10, 64)
+		if submatches[5] != "" {
+			v, err := strconv.ParseInt(submatches[6], 10, 64)
 			if err != nil {
 				return nil, err
 			}
@@ -370,8 +438,8 @@ func ParseDuration(temporalStr string) (*FEELDuration, error) {
 			}
 			dur.Hours = int(v)
 		}
-		if submatches[6] != "" {
-			v, err := strconv.ParseInt(submatches[7], 10, 64)
+		if submatches[7] != "" {
+			v, err := strconv.ParseInt(submatches[8], 10, 64)
 			if err != nil {
 				return nil, err
 			}
@@ -380,8 +448,8 @@ func ParseDuration(temporalStr string) (*FEELDuration, error) {
 			}
 			dur.Minutes = int(v)
 		}
-		if submatches[8] != "" {
-			v, err := strconv.ParseInt(submatches[9], 10, 64)
+		if submatches[9] != "" {
+			v, err := strconv.ParseInt(submatches[10], 10, 64)
 			if err != nil {
 				return nil, err
 			}

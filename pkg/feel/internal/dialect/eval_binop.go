@@ -120,6 +120,13 @@ func compareInterfaces(leftVal, rightVal any) (int, error) {
 		if rightMap, ok := rightVal.(map[string]any); ok {
 			return compareMaps(v, rightMap)
 		}
+	case *FEELDuration:
+		// Upstream had no duration case, so every duration comparison raised.
+		if rightDur, ok := rightVal.(*FEELDuration); ok {
+			if r, ok := compareDurations(v, rightDur); ok {
+				return r, nil
+			}
+		}
 	}
 	// Temporals are compared last, and through instantOf rather than through a
 	// HasTime type switch.
@@ -256,6 +263,15 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 				return v.Add(rightDur.Negative()), nil
 			} else if rightTime, ok := rightVal.(HasTime); ok {
 				return v.Sub(rightTime), nil
+			}
+		}
+	case *FEELDate:
+		// Upstream had no date case, so date ± duration fell through to null.
+		if rightDur, ok := rightVal.(*FEELDuration); ok {
+			if op == "+" {
+				return v.AddDuration(rightDur), nil
+			} else if op == "-" {
+				return v.AddDuration(rightDur.Negative()), nil
 			}
 		}
 	}
