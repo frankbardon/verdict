@@ -66,12 +66,18 @@ func (p *Program) serviceFunction(defining *Context, svc *model.DecisionService)
 			child, finish := defining.trace.Child(svc.ID, "decisionService")
 			if s, ok := child.(trace.InputSetter); ok {
 				s.SetName(svc.Name)
-				s.SetInputs(feel.ToGo(inputs).(map[string]any))
+				s.SetInputs(exportValues(inputs))
 			}
 
 			// A service call is a fresh evaluation of its slice: it sees its
 			// declared inputs and nothing from the calling scope, which is what
 			// makes it a contract rather than a macro.
+			//
+			// Arguments and results stay native FEEL values. Converting them
+			// through plain Go would make a zoneless date and time zoned, a date
+			// or time a date and time, a years-and-months duration a string and
+			// a decimal a float64 — every one of which changes what FEEL after
+			// the call computes. Only the trace, which is output, is narrowed.
 			inner := &Context{
 				ctx:    defining.ctx,
 				prog:   p,
@@ -83,8 +89,8 @@ func (p *Program) serviceFunction(defining *Context, svc *model.DecisionService)
 				evaluate: append(append([]string{}, svc.OutputDecisions...), svc.EncapsulatedDecisions...),
 				returns:  svc.OutputDecisions,
 				entry:    svc.Name,
-			}, feel.ToGo(inputs).(map[string]any))
-			finish(values, err)
+			}, inputs)
+			finish(exportValues(values), err)
 			if err != nil {
 				return nil, err
 			}
@@ -94,11 +100,11 @@ func (p *Program) serviceFunction(defining *Context, svc *model.DecisionService)
 			// their results.
 			if len(svc.OutputDecisions) == 1 {
 				for _, v := range values {
-					return feel.FromGo(v), nil
+					return v, nil
 				}
 				return feel.Null, nil
 			}
-			return feel.FromGo(values), nil
+			return values, nil
 		},
 	})
 }

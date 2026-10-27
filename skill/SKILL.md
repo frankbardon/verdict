@@ -448,6 +448,11 @@ opens as an empty canvas.
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated
   decisions run but do not appear in the result.
+- **Values cross a decision service as FEEL values.** Invoked from FEEL, a
+  service receives and returns its values unconverted: a zoneless date and
+  time stays zoneless, a `date` or `time` keeps its kind, a years-and-months
+  duration stays a duration and a number keeps every decimal digit. Only
+  `Result.Outputs` and the trace are narrowed to plain Go/JSON.
 - **An empty cell means `-`** (any), not "equals empty string".
 - **`itemDefinition` is an `xsd:choice`.** A type is *either* a constrained
   simple type (`typeRef` + `allowedValues`) *or* a structure (`itemComponent`)
