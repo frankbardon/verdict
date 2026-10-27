@@ -180,6 +180,60 @@ func TestNumericBuiltinsAreNullOutsideTheirDomain(t *testing.T) {
 	}
 }
 
+// TestNumericBuiltinsAreDecimal pins issue #41: sqrt, log and exp are
+// computed at decimal128's 34 significant digits (DMN 1.5 §10.3.2.3.1) rather
+// than through float64, and odd and even read the exact integer, so one above
+// 2^53 is not rounded to an even float64 neighbour first.
+func TestNumericBuiltinsAreDecimal(t *testing.T) {
+	e := newFEEL(t)
+	// Each right-hand side is the true value rounded to 34 significant digits;
+	// `=` compares at the evaluator's full precision, so a float64 result
+	// (about 16 digits) fails every one.
+	for _, expr := range []string{
+		`sqrt(2) = 1.414213562373095048801688724209698`,
+		`sqrt(16) = 4`,
+		`sqrt(0) = 0`,
+		`sqrt(0.0001) = 0.01`,
+		`sqrt(10 ** -40) = 10 ** -20`,
+		`exp(1) = 2.718281828459045235360287471352662`,
+		`exp(-1) = 0.3678794411714423215955237701614609`,
+		`exp(0) = 1`,
+		`exp(100) = number("2.688117141816135448412625551580014e43")`,
+		`log(10) = 2.302585092994045684017991454684364`,
+		`log(1) = 0`,
+		`log(2) = 0.6931471805599453094172321214581766`,
+		`log(0.5) = -0.6931471805599453094172321214581766`,
+		`log(exp(5)) = 5`,
+		`odd(9007199254740993)`,
+		`not(even(9007199254740993))`,
+		`even(9007199254740994)`,
+		`odd(123456789012345678901234567890123)`,
+		`odd(-7)`,
+		`even(0)`,
+		`not(odd(2.5))`,
+		`not(even(2.5))`,
+	} {
+		if got := mustEval(t, e, expr, nil); got != true {
+			t.Errorf("%s = %#v, want true", expr, got)
+		}
+	}
+	// Extreme arguments answer at once rather than iterating (#20): exp past
+	// decimal128's range is null, far below it 0; log of an extreme magnitude
+	// is one short series.
+	for expr, want := range map[string]any{
+		`exp(1000000000)`:           nil,
+		`exp(14150)`:                nil,
+		`exp(-1000000000)`:          0.0,
+		`log(10 ** 6000) > 13815`:   true,
+		`log(10 ** -6000) < -13815`: true,
+		`exp(14000) > 10 ** 6080`:   true,
+	} {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("%s = %#v, want %#v", expr, got, want)
+		}
+	}
+}
+
 // TestModuloIsDecimal pins every modulo example of DMN 1.5 §10.3.4.5: the
 // remainder takes the divisor's sign and is computed on the exact decimals.
 func TestModuloIsDecimal(t *testing.T) {

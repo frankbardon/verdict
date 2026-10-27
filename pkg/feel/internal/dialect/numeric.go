@@ -176,6 +176,14 @@ func (n *Number) rat() *big.Rat {
 	return r
 }
 
+// BigFloat is a copy of the number's value at the working precision, for
+// arithmetic the fork does not provide itself (Verdict's sqrt, log, exp, odd
+// and even in pkg/feel/stdlib.go). VERDICT DIVERGENCE: upstream exposed the
+// value only through Float64, Int64 and String, which lose digits.
+func (n *Number) BigFloat() *big.Float {
+	return new(big.Float).SetPrec(Prec).Set(n.v)
+}
+
 // IsZero reports whether the number is exactly zero.
 func (n *Number) IsZero() bool { return n.v.Sign() == 0 }
 

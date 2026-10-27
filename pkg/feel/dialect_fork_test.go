@@ -2190,6 +2190,65 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("a duration divided by one of its kind is a number", func(t *testing.T) {
+		// Issue #43. Upstream had no duration case in `/`, and the scaling fix
+		// still made duration / duration null. DMN 1.5 §10.3.2.15 Table 59:
+		// valueymd(e1) / valueymd(e2) and valuedtd(e1) / valuedtd(e2) are
+		// numbers; a zero divisor, mixed kinds and number / duration are null.
+		// TCK 0100-arithmetic (divide_lhs_*Duration_by_rhs_*Duration_*).
+		for expr, want := range map[string]float64{
+			`@"P10Y" / @"P5Y"`:            2,
+			`@"P10D" / @"P5D"`:            2,
+			`@"P1Y" / @"P1M"`:             12,
+			`@"P1D" / @"PT1H"`:            24,
+			`@"-P1Y" / @"P6M"`:            -2,
+			`@"P1M" / @"P1Y"`:             1.0 / 12,
+			`@"PT1.5S" / @"PT0.5S"`:       3,
+			`@"PT1S" / @"PT0.000000001S"`: 1e9,
+		} {
+			got, ok := mustEval(t, e, expr, nil).(float64)
+			if !ok || !approx(got, want) {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// Exact, not float64: a third of a year is 4 months to every digit.
+		if got := mustEval(t, e, `@"P1Y" / @"P3M" = 4 and @"P1M" / @"P3M" = 1 / 3`, nil); got != true {
+			t.Errorf("duration ratios are not exact decimals: %#v", got)
+		}
+		for _, expr := range []string{
+			`@"P10D" / @"P0D"`,
+			`@"P10Y" / @"P0Y"`,
+			`@"P10D" / @"P0Y"`,
+			`@"P10Y" / @"PT0S"`,
+			`@"P1D" / @"P1Y"`,
+			`@"P1Y" / @"P1D"`,
+			`10 / @"P1D"`,
+			`10 / @"P1Y"`,
+			`@"P1D" / null`,
+			`@"P1D" / "P1D"`,
+			`@"P1D" * @"P1D"`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+	})
+
+	t.Run("a number's exact value reaches the supplement", func(t *testing.T) {
+		// Issue #41. Upstream exposed a Number only through Float64, Int64 and
+		// String, so the supplement's odd, even, sqrt, log and exp read it as a
+		// float64. Number.BigFloat hands over the full-precision value.
+		for _, expr := range []string{
+			`odd(9007199254740993)`,
+			`even(9007199254740994)`,
+			`sqrt(2) = 1.414213562373095048801688724209698`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+	})
+
 	t.Run("syntax errors report a 1-based line and column", func(t *testing.T) {
 		// Upstream printed the scanner's 0-based row and column, so an error
 		// at the very start read "at 0 0", like an unset position, and every

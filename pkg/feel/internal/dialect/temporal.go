@@ -712,6 +712,30 @@ func scaleDuration(d *FEELDuration, factor *Number, divide bool) (res *FEELDurat
 	return NewFEELDuration(time.Duration(q.Int64())), true, nil
 }
 
+// divideDurations is duration / duration (DMN 1.5 §10.3.2.15, Table 59): for
+// two years and months durations valueymd(e1) / valueymd(e2), the ratio of
+// their total months; for two days and time durations valuedtd(e1) /
+// valuedtd(e2), the ratio of their lengths. The result is a number. ok is false
+// — the operator's null — when the divisor is zero or the kinds differ: Table
+// 59 has no cell for a mixed pair, and one kind is never coerced to the other.
+//
+// VERDICT DIVERGENCE: upstream had no duration case in `/`.
+func divideDurations(a, b *FEELDuration) (*Number, bool) {
+	if a.isYearsMonths() != b.isYearsMonths() {
+		return nil, false
+	}
+	var x, y int64
+	if a.isYearsMonths() {
+		x, y = a.signedMonths(), b.signedMonths()
+	} else {
+		x, y = int64(a.Duration()), int64(b.Duration())
+	}
+	if y == 0 {
+		return nil, false
+	}
+	return NewNumberFromInt64(x).Div(NewNumberFromInt64(y)), true
+}
+
 // compareDurations orders two durations of the same kind: years-and-months by
 // total months, days-and-time by total length, so P1D = PT24H. The two kinds
 // are not comparable (DMN 1.5 §10.3.2.3.7 keeps them distinct types), which

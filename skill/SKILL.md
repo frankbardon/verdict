@@ -160,6 +160,7 @@ if x then "a" else "b"                            // conditional
 value in ["low", "medium", "high"]                // membership
 decimal(amount * 1.2, 2)                          // round to 2 places
 modulo(-10.1, 4.5) = 3.4   sqrt(-1) = null           // numeric fns: exact decimals; null on null, non-number or out-of-domain args
+sqrt(2)   log(10)   exp(1)   odd(9007199254740993)  // 34 significant digits; odd/even exact on any integer
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
 date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
 number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
@@ -372,6 +373,8 @@ opens as an empty canvas.
   number (`PT1H * 2` and `2 * PT1H` are `PT2H`, `P1Y / 2` is `P6M`, exact
   decimal: `PT1S * 0.1` is `PT0.1S`); a fraction of a month or nanosecond
   truncates toward zero (`P1M / 3` is `P0M`, `P1Y * 1.5` is `P1Y6M`).
+  Two durations of the same kind divide to a number (`@"P10Y" / @"P5Y"` is
+  `2`, `@"P1D" / @"PT1H"` is `24`); a zero divisor or mixed kinds are null.
   Division by zero, `number / duration` and a non-number operand are null.
 - **Temporal arithmetic follows DMN Table 57.** `date - date` is a days and time
   duration (`date("2026-01-02") - date("2026-01-01")` is `P1D`; a date counts as

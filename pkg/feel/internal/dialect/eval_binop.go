@@ -611,8 +611,8 @@ func (binop Binop) mulOp(intp *Interpreter) (any, error) {
 //
 // VERDICT DIVERGENCE: upstream routed both through numberOp, so a duration
 // operand was null (DMN 1.5 §10.3.2.15, Table 59 defines duration * number,
-// number * duration and duration / number). Every other pairing, null
-// included, is still null.
+// number * duration, duration / number and duration / duration of one kind,
+// the last a number). Every other pairing, null included, is still null.
 func (binop Binop) scaleOp(intp *Interpreter, en evalNumbers, divide bool) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
@@ -635,8 +635,15 @@ func (binop Binop) scaleOp(intp *Interpreter, en evalNumbers, divide bool) (any,
 			}
 		}
 	case *FEELDuration:
-		if r, ok := rightVal.(*Number); ok {
+		switch r := rightVal.(type) {
+		case *Number:
 			dur, factor = l, r
+		case *FEELDuration:
+			if divide {
+				if q, ok := divideDurations(l, r); ok {
+					return q, nil
+				}
+			}
 		}
 	}
 	if dur == nil {
