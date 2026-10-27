@@ -265,6 +265,10 @@ opens as an empty canvas.
   `x > 5` with `x` missing all yield null, not true or false — and a `> 5`
   cell does not match a null input. Equality is different: `null = null` is
   true. Guard with `x != null and x > 5` or an explicit `null` rule.
+- **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
+  false or null — null when no element decides it and some condition was null.
+  `some` over `[]` is false, `every` over `[]` is true. One iteration context
+  only: `some x in A, y in B satisfies …` does not parse — nest two quantifiers.
 - **Input names come from the input-data variable**, not the file. `verdict
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated

@@ -351,60 +351,56 @@ func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 	}
 }
 
-func (sexpr SomeExpr) Eval(intp *Interpreter) (any, error) {
-	listLike, err := sexpr.ListExpr.Eval(intp)
+// Quantified expressions yield a boolean, DMN 1.5 FEEL grammar rule 58 and
+// §10.3.2.13: `some` is true if the condition is true for any element,
+// `every` is true if it is true for all of them, and both fold a null or
+// non-boolean condition into a null result when no element decides the
+// answer outright. Upstream returned the first matching element from `some`
+// and the list of matching elements from `every`, so neither was usable as a
+// condition, and `some` leaked an interpreter scope on its early return.
+
+// quantify evaluates cond for every element of list, bound to varname, and
+// folds the results three-valued. decisive is the condition value that settles
+// the answer on its own: true for `some`, false for `every`.
+func quantify(intp *Interpreter, varname string, listExpr, cond Node, decisive bool) (any, error) {
+	listLike, err := listExpr.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-
-	if aList, ok := listLike.([]any); ok {
-		intp.PushEmpty()
-		for _, val := range aList {
-			intp.Bind(sexpr.Varname, val)
-
-			res, err := sexpr.FilterExpr.Eval(intp)
-			if err != nil {
-				intp.Pop()
-				return nil, err
-			}
-			if boolValue(res) {
-				return val, nil
-			}
-		}
-		intp.Pop()
-		return nil, nil
-	} else {
+	aList, ok := listLike.([]any)
+	if !ok {
 		return nil, NewErrTypeMismatch("list")
 	}
+
+	intp.PushEmpty()
+	defer intp.Pop()
+	undecided := false
+	for _, val := range aList {
+		intp.Bind(varname, val)
+		res, err := cond.Eval(intp)
+		if err != nil {
+			return nil, err
+		}
+		b, isBool := res.(bool)
+		switch {
+		case !isBool:
+			undecided = true
+		case b == decisive:
+			return decisive, nil
+		}
+	}
+	if undecided {
+		return nil, nil
+	}
+	return !decisive, nil
+}
+
+func (sexpr SomeExpr) Eval(intp *Interpreter) (any, error) {
+	return quantify(intp, sexpr.Varname, sexpr.ListExpr, sexpr.FilterExpr, true)
 }
 
 func (ee EveryExpr) Eval(intp *Interpreter) (any, error) {
-	listLike, err := ee.ListExpr.Eval(intp)
-	if err != nil {
-		return nil, err
-	}
-
-	if aList, ok := listLike.([]any); ok {
-		intp.PushEmpty()
-		chooses := make([]any, 0)
-		for _, val := range aList {
-			intp.Bind(ee.Varname, val)
-
-			res, err := ee.FilterExpr.Eval(intp)
-			if err != nil {
-				intp.Pop()
-				return nil, err
-			}
-
-			if boolValue(res) {
-				chooses = append(chooses, val)
-			}
-		}
-		intp.Pop()
-		return chooses, nil
-	} else {
-		return nil, NewErrTypeMismatch("list")
-	}
+	return quantify(intp, ee.Varname, ee.ListExpr, ee.FilterExpr, false)
 }
 
 func (fd FunDef) Eval(intp *Interpreter) (any, error) {

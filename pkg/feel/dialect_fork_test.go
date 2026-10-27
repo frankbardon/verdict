@@ -196,6 +196,69 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("quantified expressions yield a boolean", func(t *testing.T) {
+		// DMN 1.5 FEEL grammar rule 58: `some` and `every` yield true, false
+		// or null. Upstream returned the first match from `some` and the list
+		// of matches from `every` (issue #14).
+		cases := []struct {
+			expr string
+			want any
+		}{
+			{"some h in [1,2,3] satisfies h > 1", true},
+			{"some h in [1] satisfies h > 1", false},
+			{"some h in [] satisfies h > 1", false},
+			{"every h in [1,2,3] satisfies h > 0", true},
+			{"every h in [1,2] satisfies h > 1", false},
+			{"every h in [] satisfies h > 1", true},
+			// Null folding: a decisive element wins, otherwise null beats
+			// the default.
+			{"some h in [null, 2] satisfies h > 1", true},
+			{"some h in [null, 1] satisfies h > 1", nil},
+			{`some h in [1, 2] satisfies "yes"`, nil},
+			{"every h in [null, 1] satisfies h > 1", false},
+			{"every h in [null, 2] satisfies h > 1", nil},
+			{"every h in [2, 3] satisfies h", nil},
+			// Composes with the boolean operators.
+			{"(some h in [1,2] satisfies h > 1) and (every h in [1,2] satisfies h > 0)", true},
+			{"(some h in [1] satisfies h > 1) or (every h in [1,2] satisfies h > 1)", false},
+			{"x and (some h in xs satisfies h = 2)", true},
+		}
+		vars := map[string]any{"x": FromGo(true), "xs": FromGo([]any{1, 2, 3})}
+		for _, c := range cases {
+			if got := mustEval(t, e, c.expr, vars); got != c.want {
+				t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+			}
+		}
+		// The bound name does not leak out of the expression's scope.
+		if got := mustEval(t, e, "(some h in [1,2] satisfies h > 1) and h = null", nil); got != true {
+			t.Errorf("h leaked out of the quantifier scope: got %#v", got)
+		}
+	})
+
+	t.Run("a quantified result matches a true input entry", func(t *testing.T) {
+		c := NewCompiler(FEEL)
+		ut, err := c.CompileUnaryTest("true")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for expr, want := range map[string]bool{
+			"some h in [1,2,3] satisfies h > 2":  true,
+			"every h in [1,2,3] satisfies h > 2": false,
+		} {
+			in, err := e.EvalText(expr, nil)
+			if err != nil {
+				t.Fatalf("%s: %v", expr, err)
+			}
+			got, err := e.EvalUnaryTest(ut, in, nil)
+			if err != nil {
+				t.Fatalf("%s against true: %v", expr, err)
+			}
+			if got != want {
+				t.Errorf("true matched %s = %v, want %v", expr, got, want)
+			}
+		}
+	})
+
 	t.Run("multi-word names without keywords still resolve", func(t *testing.T) {
 		vars := map[string]any{"Credit Rating": "good"}
 		if got := mustEval(t, e, `Credit Rating = "good"`, vars); got != true {
