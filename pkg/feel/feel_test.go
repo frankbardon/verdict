@@ -1,6 +1,7 @@
 package feel
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -179,6 +180,60 @@ func TestNumericBuiltinsAreNullOutsideTheirDomain(t *testing.T) {
 	}
 }
 
+// TestNumericBuiltinsAreDecimal pins issue #41: sqrt, log and exp are
+// computed at decimal128's 34 significant digits (DMN 1.5 §10.3.2.3.1) rather
+// than through float64, and odd and even read the exact integer, so one above
+// 2^53 is not rounded to an even float64 neighbour first.
+func TestNumericBuiltinsAreDecimal(t *testing.T) {
+	e := newFEEL(t)
+	// Each right-hand side is the true value rounded to 34 significant digits;
+	// `=` compares at the evaluator's full precision, so a float64 result
+	// (about 16 digits) fails every one.
+	for _, expr := range []string{
+		`sqrt(2) = 1.414213562373095048801688724209698`,
+		`sqrt(16) = 4`,
+		`sqrt(0) = 0`,
+		`sqrt(0.0001) = 0.01`,
+		`sqrt(10 ** -40) = 10 ** -20`,
+		`exp(1) = 2.718281828459045235360287471352662`,
+		`exp(-1) = 0.3678794411714423215955237701614609`,
+		`exp(0) = 1`,
+		`exp(100) = number("2.688117141816135448412625551580014e43")`,
+		`log(10) = 2.302585092994045684017991454684364`,
+		`log(1) = 0`,
+		`log(2) = 0.6931471805599453094172321214581766`,
+		`log(0.5) = -0.6931471805599453094172321214581766`,
+		`log(exp(5)) = 5`,
+		`odd(9007199254740993)`,
+		`not(even(9007199254740993))`,
+		`even(9007199254740994)`,
+		`odd(123456789012345678901234567890123)`,
+		`odd(-7)`,
+		`even(0)`,
+		`not(odd(2.5))`,
+		`not(even(2.5))`,
+	} {
+		if got := mustEval(t, e, expr, nil); got != true {
+			t.Errorf("%s = %#v, want true", expr, got)
+		}
+	}
+	// Extreme arguments answer at once rather than iterating (#20): exp past
+	// decimal128's range is null, far below it 0; log of an extreme magnitude
+	// is one short series.
+	for expr, want := range map[string]any{
+		`exp(1000000000)`:           nil,
+		`exp(14150)`:                nil,
+		`exp(-1000000000)`:          0.0,
+		`log(10 ** 6000) > 13815`:   true,
+		`log(10 ** -6000) < -13815`: true,
+		`exp(14000) > 10 ** 6080`:   true,
+	} {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("%s = %#v, want %#v", expr, got, want)
+		}
+	}
+}
+
 // TestModuloIsDecimal pins every modulo example of DMN 1.5 §10.3.4.5: the
 // remainder takes the divisor's sign and is computed on the exact decimals.
 func TestModuloIsDecimal(t *testing.T) {
@@ -246,6 +301,169 @@ func TestContextBuiltinDomain(t *testing.T) {
 	}
 }
 
+// TestContextEntriesHaveDistinctKeys pins DMN 1.5 §10.3.4.10 Table 81 with
+// §10.3.2.6 ("These strings are distinct within a context") against TCK 1145:
+// context(entries) with a repeated key is null, where context put and context
+// merge override.
+func TestContextEntriesHaveDistinctKeys(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`context([{key: "a", value: 1}, {key: "a", value: 2}])`, nil},
+		{`context([{key: "a", value: 1}, {key: "b", value: 2}, {key: "a", value: 1}])`, nil},
+		{`context([{key: "a", value: 1}, {key: "b", value: 2}])`, map[string]any{"a": 1.0, "b": 2.0}},
+		{`context([{key: "a", value: 1}, {key: "b", value: 2, something: "else"}])`, map[string]any{"a": 1.0, "b": 2.0}},
+		{`context({key: "a", value: null})`, map[string]any{"a": nil}},
+		{`context({key: "", value: 1})`, map[string]any{"": 1.0}},
+		{`context([])`, map[string]any{}},
+		{`context(entries: [{key: "a", value: 1}])`, map[string]any{"a": 1.0}},
+		{`context({value: 1})`, nil},
+		{`context({key: null, value: 1})`, nil},
+		{`context("foo")`, nil},
+		{`context()`, nil},
+		{`context(entris: [{key: "a", value: 1}])`, nil},
+		// context put and context merge keep their override rule.
+		{`context put({a: 1}, "a", 2)`, map[string]any{"a": 2.0}},
+		{`context merge([{a: 1}, {a: 2}])`, map[string]any{"a": 2.0}},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestStringAndListSupplementDomain pins the §10.3.4 domain rule for the
+// supplement's string and list built-ins: a null or wrong-typed argument, an
+// invalid regular expression, replacement or flags (footnote 2), a position
+// outside the list, the wrong number of arguments and an unknown parameter
+// name are all null, never an evaluation error. The "including null"
+// parameters keep accepting null.
+func TestStringAndListSupplementDomain(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Null and wrong-typed arguments.
+		{`substring before(null, "a")`, nil},
+		{`substring before("abc", null)`, nil},
+		{`substring before(1, "a")`, nil},
+		{`substring after(null, "a")`, nil},
+		{`substring after("abc", 1)`, nil},
+		{`replace(null, "a", "b")`, nil},
+		{`replace("abc", null, "b")`, nil},
+		{`replace("abc", "a", null)`, nil},
+		{`matches(null, "a")`, nil},
+		{`matches("abc", null)`, nil},
+		{`matches("abc", ["a"])`, nil},
+		{`matches("abc", "a", ["i"])`, nil},
+		{`split(null, ",")`, nil},
+		{`split("a,b", null)`, nil},
+		{`list replace(null, 1, 2)`, nil},
+		{`list replace([1,2,3], null, 2)`, nil},
+		{`list replace([1,2,3], "2", 9)`, nil},
+		{`list replace([1,2,3], 1.5, 9)`, nil},
+		{`duplicate values(null)`, nil},
+		// Invalid patterns, flags and replacements.
+		{`matches("abc", "(")`, nil},
+		{`matches("abc", "(.)\3")`, nil},
+		{`matches("abc", "\3")`, nil},
+		{`matches("abc", "\p{ IsBasicLatin}")`, nil},
+		{`matches("abc", "a", "p")`, nil},
+		{`matches("abc", "a", "X")`, nil},
+		{`matches("abc", "a", " ")`, nil},
+		{`replace("abc", "(", "x")`, nil},
+		{`replace("abc", "", "x")`, nil},
+		{`replace("abc", "b", "$")`, nil},
+		{`replace("abc", "b", "x\y")`, nil},
+		{`replace("abc", "b", "x", "p")`, nil},
+		{`split("abc", "(")`, nil},
+		// Arity and parameter names.
+		{`matches("abc")`, nil},
+		{`matches("abc", "a", "i", 1)`, nil},
+		{`split("a,b")`, nil},
+		{`split(string: "a,b", delimitr: ",")`, nil},
+		{`list replace(list: [1,2,3], position: 2, newItem: 9, foo: 1)`, nil},
+		{`substring before("abc")`, nil},
+		// Positions outside the list.
+		{`list replace([1,2,3], 0, 9)`, nil},
+		{`list replace([1,2,3], 4, 9)`, nil},
+		{`list replace([1,2,3], -4, 9)`, nil},
+		// What stays defined.
+		{`substring before("foobar", "xyz")`, ""},
+		{`substring after("foobar", "xyz")`, ""},
+		{`substring after("", "a")`, ""},
+		{`substring after("abc", "")`, "abc"},
+		{`substring before("abc", "")`, ""},
+		{`matches("abracadabra", "bra", null)`, true},
+		{`replace("abc", "b", "x", null)`, "axc"},
+		{`replace("abc", "b", "\$")`, "a$c"},
+		{`split("a;b;c;;", ";")`, []any{"a", "b", "c", "", ""}},
+		{`list replace([1,2,3], 3, null)`, []any{1.0, 2.0, nil}},
+		{`list replace([1,2,3], -1, 9)`, []any{1.0, 2.0, 9.0}},
+		{`list replace(list: [1,2,3], position: 2, newItem: 9)`, []any{1.0, 9.0, 3.0}},
+		{`list replace(1, 1, 9)`, []any{9.0}},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+func TestAllAnyAreThreeValued(t *testing.T) {
+	// DMN 1.5 §10.3.4.4; TCK 0059/0060. A null item decides nothing; a
+	// non-boolean item puts the call outside its domain.
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`all([false, null])`, false},
+		{`all([true, null])`, nil},
+		{`all([false, 123])`, nil},
+		{`all([])`, true},
+		{`all(true)`, true},
+		{`all(123)`, nil},
+		{`all(null)`, nil},
+		{`all(true, true)`, true},
+		{`any([true, null])`, true},
+		{`any([false, null])`, nil},
+		{`any([])`, false},
+		{`any(false)`, false},
+		{`any(false, true)`, true},
+		{`any(null)`, nil},
+		// Table 55: a scalar right side of `in` is equality.
+		{`1 in 1`, true},
+		{`"a" in "a"`, true},
+		{`"a" in "b"`, false},
+		{`1 in "a"`, nil},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); got != c.want {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 func TestConversionOverloadsTakeModelValues(t *testing.T) {
 	// DMN 1.5 §10.3.4.1 Table 72: the component overloads of date and time,
 	// fed from model inputs as a decision would feed them.
@@ -270,8 +488,11 @@ func TestFunctionLibraryIsNamespaced(t *testing.T) {
 		Namespace: "acme",
 		Functions: map[string]Function{
 			"double": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) {
-				f, err := asFloat(a["n"], "n")
-				return f * 2, err
+				n, ok := numberArg(a["n"])
+				if !ok {
+					return nil, fmt.Errorf("n must be a number")
+				}
+				return n.Float64() * 2, nil
 			}},
 		},
 	}
@@ -310,13 +531,13 @@ func TestRoundTripValues(t *testing.T) {
 	if out["n"] != 3.0 || out["f"] != 2.5 || out["s"] != "x" || out["b"] != true {
 		t.Errorf("scalar round trip lost fidelity: %#v", out)
 	}
-	// Round-tripping normalises the location to a fixed UTC offset: the
-	// embedded library exposes no constructor from a time.Time and its parse
-	// grammar carries an offset, not a zone name. The instant is preserved.
-	if got, ok := out["t"].(time.Time); !ok || !got.Equal(when) {
-		t.Errorf("time round trip = %v, want the same instant as %v", out["t"], when)
+	// A Go time comes back as its FEEL lexical form. The location is
+	// normalised to a fixed offset (the embedded library's parse grammar
+	// carries an offset, not a zone name) and UTC prints as Z.
+	if got := out["t"]; got != "2024-03-01T12:30:00Z" {
+		t.Errorf("time round trip = %v, want 2024-03-01T12:30:00Z (the instant %v)", got, when)
 	}
-	if got, want := out["d"], 90*time.Minute; got != want {
+	if got, want := out["d"], "PT1H30M"; got != want {
 		t.Errorf("duration round trip = %v, want %v", got, want)
 	}
 	if got := out["nil"]; got != nil {
@@ -368,6 +589,60 @@ func TestCompareAndEqual(t *testing.T) {
 	}
 	if _, ok := Compare(FromGo(map[string]any{}), FromGo(map[string]any{})); ok {
 		t.Error("contexts should not be orderable")
+	}
+}
+
+// TestCompareFollowsFEELOrdering pins Compare to FEEL's `<` (DMN 1.5 Table 54)
+// and to min/max (§10.3.4.4), which COLLECT MIN/MAX and the analyser share:
+// booleans, nulls and pairs of different kinds have no order.
+func TestCompareFollowsFEELOrdering(t *testing.T) {
+	e := newFEEL(t)
+	// Compare takes FEEL values, so evaluate without mustEval's ToGo.
+	feelValue := func(text string) any {
+		t.Helper()
+		v, err := e.EvalText(text, nil)
+		if err != nil {
+			t.Fatalf("EvalText(%q): %v", text, err)
+		}
+		return v
+	}
+	ordered := []struct {
+		a, b string
+		want int
+	}{
+		{`1`, `2`, -1},
+		{`"b"`, `"a"`, 1},
+		{`duration("P1D")`, `duration("PT24H")`, 0},
+		{`duration("P1Y")`, `duration("P11M")`, 1},
+		{`date("2024-01-01")`, `date and time("2024-01-01T00:00:00Z")`, 0},
+		{`time("10:00:00")`, `time("11:00:00")`, -1},
+	}
+	for _, p := range ordered {
+		a, b := feelValue(p.a), feelValue(p.b)
+		if c, ok := Compare(a, b); !ok || c != p.want {
+			t.Errorf("Compare(%s, %s) = %d, %v; want %d, true", p.a, p.b, c, ok, p.want)
+		}
+	}
+	unordered := [][2]string{
+		{`false`, `true`},
+		{`true`, `true`},
+		{`1`, `"1"`},
+		{`1`, `null`},
+		{`null`, `null`},
+		{`duration("P1D")`, `duration("P1M")`},
+		{`time("10:00:00")`, `date("2024-01-01")`},
+		{`[1]`, `[2]`},
+		{`[1..2]`, `[1..2]`},
+	}
+	for _, p := range unordered {
+		a, b := feelValue(p[0]), feelValue(p[1])
+		if c, ok := Compare(a, b); ok {
+			t.Errorf("Compare(%s, %s) = %d, true; want not comparable", p[0], p[1], c)
+		}
+		// Compare and min agree: wherever Compare has no order, min is null.
+		if got := mustEval(t, e, "min(["+p[0]+", "+p[1]+"])", nil); !IsNull(got) {
+			t.Errorf("min([%s, %s]) = %v; want null, as Compare has no order", p[0], p[1], got)
+		}
 	}
 }
 
@@ -423,6 +698,18 @@ func deepEqualNum(got, want any) bool {
 			}
 		}
 		return true
+	case map[string]any:
+		g, ok := got.(map[string]any)
+		if !ok || len(g) != len(w) {
+			return false
+		}
+		for k, v := range w {
+			gv, present := g[k]
+			if !present || !deepEqualNum(gv, v) {
+				return false
+			}
+		}
+		return true
 	default:
 		return got == want
 	}
@@ -437,13 +724,11 @@ func TestInjectedClockDrivesTheTemporalBuiltins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, ok := mustEval(t, e, "today()", nil).(time.Time)
-	if !ok || got.Format("2006-01-02") != "2021-06-15" {
-		t.Errorf("today() = %v, want 2021-06-15", mustEval(t, e, "today()", nil))
+	if got := mustEval(t, e, "today()", nil); got != "2021-06-15" {
+		t.Errorf("today() = %v, want 2021-06-15", got)
 	}
-	nowVal, ok := mustEval(t, e, "now()", nil).(time.Time)
-	if !ok || !nowVal.Equal(fixed) {
-		t.Errorf("now() = %v, want %v", nowVal, fixed)
+	if got := mustEval(t, e, "now()", nil); got != "2021-06-15T14:30:00Z" {
+		t.Errorf("now() = %v, want 2021-06-15T14:30:00Z", got)
 	}
 	// Derived arithmetic must follow the same clock, or half a model is frozen
 	// and the other half is not.
@@ -467,7 +752,7 @@ func TestInjectedClockDrivesTheTemporalBuiltins(t *testing.T) {
 
 	// Without a clock, the real one applies and the built-ins still work.
 	live := newFEEL(t)
-	if _, ok := mustEval(t, live, "today()", nil).(time.Time); !ok {
+	if v, err := live.EvalText("today()", nil); err != nil || TypeName(v) != "date" {
 		t.Error("today() did not return a date without an injected clock")
 	}
 }
@@ -491,4 +776,113 @@ func TestTemporalZoneProperties(t *testing.T) {
 			t.Errorf("%s = %#v, want %#v", expr, got, want)
 		}
 	}
+}
+
+// TestKeyOfSeparatesKinds pins issue #53: KeyOf is the BKM memo key, so two
+// distinct FEEL values must never share one, while identical values must.
+func TestKeyOfSeparatesKinds(t *testing.T) {
+	e := newFEEL(t)
+	key := func(expr string) string {
+		t.Helper()
+		v, err := e.EvalText(expr, nil)
+		if err != nil {
+			t.Fatalf("EvalText(%q): %v", expr, err)
+		}
+		k, ok := KeyOf(v)
+		if !ok {
+			t.Fatalf("KeyOf(%s) is unusable", expr)
+		}
+		return k
+	}
+	distinct := [][2]string{
+		{`date and time("2024-03-05T10:00:00")`, `date and time("2024-03-05T10:00:00Z")`},
+		{`date("2024-03-05")`, `date and time("2024-03-05T00:00:00Z")`},
+		{`date("2024-03-05")`, `date and time("2024-03-05T00:00:00")`},
+		{`time("10:00:00Z")`, `date and time("0000-01-01T10:00:00Z")`},
+		{`time("10:00:00")`, `time("10:00:00Z")`},
+		{`time("10:00:00")`, `time("10:00:00.5")`},
+		{`"1"`, `1`},
+		{`"2024-03-05"`, `date("2024-03-05")`},
+		{`"P1Y"`, `duration("P1Y")`},
+		{`duration("P1D")`, `duration("PT25H")`},
+		{`[1, "1"]`, `["1", 1]`},
+		{`{a: 1}`, `{a: "1"}`},
+		{`[1..2]`, `(1..2]`},
+		{`null`, `"null"`},
+		{`true`, `"true"`},
+	}
+	for _, p := range distinct {
+		if a, b := key(p[0]), key(p[1]); a == b {
+			t.Errorf("KeyOf(%s) = KeyOf(%s) = %s", p[0], p[1], a)
+		}
+	}
+	same := [][2]string{
+		{`time("10:00:00.250")`, `time("10:00:00.25")`},
+		{`{b: 2, a: 1}`, `{a: 1, b: 2}`},
+		{`duration("P1D")`, `duration("PT24H")`},
+		{`date and time("2024-03-05T10:00:00@Europe/Paris")`, `date and time("2024-03-05T10:00:00@Europe/Paris")`},
+	}
+	for _, p := range same {
+		if a, b := key(p[0]), key(p[1]); a != b {
+			t.Errorf("KeyOf(%s) = %s, KeyOf(%s) = %s; want equal", p[0], a, p[1], b)
+		}
+	}
+	if k, ok := KeyOf(int64(3)); !ok || k != key(`3`) {
+		t.Errorf("KeyOf(int64(3)) = %q, %v; want the key of FEEL 3", k, ok)
+	}
+	if _, ok := KeyOf(struct{}{}); ok {
+		t.Errorf("KeyOf of an unknown Go value should be unusable")
+	}
+}
+
+// TestToGoEmitsFEELLexicalForms pins issue #46: the boundary conversion prints
+// every temporal and both duration kinds in their FEEL lexical form, keeping
+// kind and zone-ness, while numbers stay float64.
+func TestToGoEmitsFEELLexicalForms(t *testing.T) {
+	e := newFEEL(t)
+	for expr, want := range map[string]any{
+		`date("2024-03-05")`:                                "2024-03-05",
+		`time("10:00:00")`:                                  "10:00:00",
+		`time("10:00:00Z")`:                                 "10:00:00Z",
+		`time("10:00:00+02:00")`:                            "10:00:00+02:00",
+		`date and time("2024-03-05T10:00:00")`:              "2024-03-05T10:00:00",
+		`date and time("2024-03-05T10:00:00Z")`:             "2024-03-05T10:00:00Z",
+		`date and time("2024-03-05T10:00:00+02:00")`:        "2024-03-05T10:00:00+02:00",
+		`date and time("2024-03-05T10:00:00@Europe/Paris")`: "2024-03-05T10:00:00@Europe/Paris",
+		`date and time("2024-03-05T10:00:00.25")`:           "2024-03-05T10:00:00.25",
+		`duration("P1DT2H")`:                                "P1DT2H",
+		`duration("P1Y2M")`:                                 "P1Y2M",
+		`duration("-PT0.5S")`:                               "-PT0.5S",
+		`1000000`:                                           1000000.0,
+		`0.1`:                                               0.1,
+	} {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("ToGo(%s) = %#v, want %#v", expr, got, want)
+		}
+	}
+	// Contexts, the fork's own Scope map included, and lists convert their
+	// elements the same way.
+	got := ToGo(pfeel.Scope{"d": mustFEEL(t, e, `date("2024-03-05")`), "l": []any{mustFEEL(t, e, `duration("PT1H")`)}})
+	m, ok := got.(map[string]any)
+	if !ok || m["d"] != "2024-03-05" || m["l"].([]any)[0] != "PT1H" {
+		t.Errorf("ToGo(Scope) = %#v", got)
+	}
+}
+
+// TestFromGoKeepsSubSecondTimes pins the inbound half of #46: a Go time with a
+// fraction of a second reaches FEEL with it, not truncated to the second.
+func TestFromGoKeepsSubSecondTimes(t *testing.T) {
+	in := time.Date(2024, 3, 5, 10, 0, 0, 250_000_000, time.UTC)
+	if got := ToGo(FromGo(in)); got != "2024-03-05T10:00:00.25Z" {
+		t.Errorf("ToGo(FromGo(%v)) = %#v, want 2024-03-05T10:00:00.25Z", in, got)
+	}
+}
+
+func mustFEEL(t *testing.T, e *Evaluator, text string) any {
+	t.Helper()
+	v, err := e.EvalText(text, nil)
+	if err != nil {
+		t.Fatalf("EvalText(%q): %v", text, err)
+	}
+	return v
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/frankbardon/verdict/pkg/diag"
+	"github.com/frankbardon/verdict/pkg/trace"
 	"github.com/frankbardon/verdict/pkg/verdict"
 )
 
@@ -161,6 +162,95 @@ func TestMemoizationDoesNotChangeResults(t *testing.T) {
 	if !reflect.DeepEqual(a.Outputs, b.Outputs) {
 		t.Errorf("memoisation changed the answer:\n plain: %#v\ncached: %#v", a.Outputs, b.Outputs)
 	}
+}
+
+// TestMemoKeysKeepTemporalKindsApart pins issue #53: the BKM memo key was
+// built from ToGo, which then mapped every temporal to a Go time.Time, so a zoneless
+// date and time and the same wall clock at UTC, a date and its midnight date
+// and time, and a time and a date and time all shared a key, and the second
+// call returned the first call's result. Each twin decision depends on its
+// first so the first always fills the cache before the twin looks it up.
+func TestMemoKeysKeepTemporalKindsApart(t *testing.T) {
+	pairs := []struct {
+		name, first, twin   string
+		wantFirst, wantTwin string
+	}{
+		{"zoneless vs UTC", `date and time("2024-03-05T10:00:00")`, `date and time("2024-03-05T10:00:00Z")`,
+			"2024-03-05T10:00:00", "2024-03-05T10:00:00Z"},
+		{"date vs midnight", `date("2024-03-05")`, `date and time("2024-03-05T00:00:00Z")`,
+			"2024-03-05", "2024-03-05T00:00:00Z"},
+		{"time vs date and time", `time("10:00:00Z")`, `date and time("0000-01-01T10:00:00Z")`,
+			"10:00:00Z", "0000-01-01T10:00:00Z"},
+		{"fraction kept", `time("10:00:00")`, `time("10:00:00.5")`, "10:00:00", "10:00:00.5"},
+	}
+
+	var decisions []string
+	want := map[string]string{}
+	for i, p := range pairs {
+		a, b := fmt.Sprintf("A%d", i), fmt.Sprintf("B%d", i)
+		decisions = append(decisions,
+			invokeShow(a, a, nil, p.first),
+			invokeShow(b, b, []string{a}, fmt.Sprintf("if %s = null then null else %s", a, p.twin)))
+		want[a], want[b] = p.wantFirst, p.wantTwin
+	}
+	// An identical pair still shares its entry: the key is not merely unique.
+	decisions = append(decisions,
+		invokeShow("S1", "S1", nil, `time("10:00:00.25")`),
+		invokeShow("S2", "S2", []string{"S1"}, `if S1 = null then null else time("10:00:00.250")`))
+	want["S1"], want["S2"] = "10:00:00.25", "10:00:00.25"
+
+	doc := `{"vdj":"1.0","id":"memo_kinds","conformance_level":"feel",
+	  "business_knowledge_models":[{"id":"show","name":"Show",
+	    "encapsulated_logic":{"kind":"functionDefinition","parameters":[{"name":"x"}],
+	      "body":{"kind":"literalExpression","text":"string(x)"}}}],
+	  "decisions":[` + strings.Join(decisions, ",") + `]}`
+
+	e, err := verdict.NewEngine(verdict.WithMemoization(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	res, err := e.Evaluate(context.Background(), m.ID, nil)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	// A first decision is required by its twin, so it is not a root output;
+	// read every decision's value off the trace instead.
+	got := map[string]any{}
+	hits := map[string]bool{}
+	res.Trace.Walk(func(n *trace.Node) {
+		if _, ok := want[n.DecisionID]; ok {
+			got[n.DecisionID] = n.Output
+		}
+		if n.Annotations[trace.AnnCacheHit] == true {
+			hits[n.DecisionID] = true
+		}
+	})
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("%s = %#v, want %q", name, got[name], w)
+		}
+	}
+	if len(hits) == 0 {
+		t.Errorf("no BKM invocation hit the cache; the identical S1/S2 pair should")
+	}
+}
+
+// invokeShow is a VDJ decision named name that invokes the Show BKM with the
+// FEEL text arg, after the decisions in after.
+func invokeShow(id, name string, after []string, arg string) string {
+	req := ""
+	if len(after) > 0 {
+		req = `"required_decisions":["` + strings.Join(after, `","`) + `"],`
+	}
+	return fmt.Sprintf(`{"id":%q,"name":%q,%s"required_knowledge":["show"],
+	  "variable":{"name":%q},
+	  "logic":{"kind":"invocation","called":"Show","bindings":[
+	    {"parameter":{"name":"x"},"value":{"kind":"literalExpression","text":%q}}]}}`,
+		id, name, req, name, arg)
 }
 
 // TestSFEELModelRejectsLevel3Constructs checks the conformance gate fires at

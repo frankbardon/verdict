@@ -54,6 +54,50 @@ func valueToInterface(tp reflect.Type, val reflect.Value) (interface{}, error) {
 	return output, nil
 }
 
+// domainArg checks a built-in's argument against the Go parameter type it is
+// bound to, and applies DMN 1.5 §10.3.2.9.4's conversion to a singleton list
+// where the parameter is a list. ok is false when the argument is outside the
+// parameter's domain: null where a value of a type is expected, a value of
+// another kind, a value that does not implement an interface parameter.
+//
+// VERDICT DIVERGENCE: upstream handed every argument to mapstructure, which
+// raised a reflection error for most mismatches ("source data must be an array
+// or slice" for `list contains(5, 5)`, a decode error for `contains(null,
+// "a")`) and quietly converted others (null to an empty context, so `get
+// entries(null)` was []). §10.3.4: "Whenever a parameter is outside its
+// domain, the result of the built-in is null"; §10.3.2.15: unless the
+// singleton-list conversion applies.
+func domainArg(param any, argType reflect.Type) (any, bool) {
+	if argType.Kind() == reflect.Interface {
+		if argType.NumMethod() == 0 {
+			return param, true
+		}
+		if param == nil || !reflect.TypeOf(param).Implements(argType) {
+			return nil, false
+		}
+		return param, true
+	}
+	if param == nil || isNullValue(param) {
+		return nil, false
+	}
+	switch argType.Kind() {
+	case reflect.String:
+		_, ok := param.(string)
+		return param, ok
+	case reflect.Map:
+		_, ok := param.(map[string]any)
+		return param, ok
+	case reflect.Slice:
+		if _, ok := param.([]any); ok {
+			return param, true
+		}
+		return []any{param}, true
+	case reflect.Ptr:
+		return param, reflect.TypeOf(param).AssignableTo(argType)
+	}
+	return param, true
+}
+
 func wrapTyped(tfunc interface{}) *NativeFun {
 	funcType := reflect.TypeOf(tfunc)
 	if funcType.Kind() != reflect.Func {
@@ -115,10 +159,13 @@ func wrapTyped(tfunc interface{}) *NativeFun {
 			}
 			j++
 
+			param, ok = domainArg(param, argType)
+			if !ok {
+				return null, nil
+			}
 			argValue, err := interfaceToValue(param, argType)
 			if err != nil {
-				return nil, errors.New(
-					fmt.Sprintf("arguments %d %s", i+1, err))
+				return null, nil
 			}
 			fnArgs = append(fnArgs, argValue)
 

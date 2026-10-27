@@ -4,10 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/mitchellh/mapstructure"
 )
@@ -124,6 +127,92 @@ func extractList(args map[string]any, argName string) ([]any, error) {
 	}
 }
 
+// booleanItems binds the `list` parameter of all/any (and the fork's
+// and(list)/or(list)): DMN 1.5 §10.3.4.4 gives them the domain "list of
+// Boolean items or argument list of one or more Boolean items". A positional
+// call collects its arguments as the list, unless it passed one list; a named
+// `list:` that is not a list is a singleton list (§10.3.2.9.4). ok is false
+// — the call is null — for a missing or null list, or an item that is neither
+// a boolean nor null.
+//
+// VERDICT DIVERGENCE: the domain is checked before any item decides the
+// result, so `all([false, 123])` is null, not false. Interpretation: the TCK
+// (0059, 0060) only puts a non-boolean beside undecisive items; §10.3.4 makes
+// a parameter outside its domain null whatever else the list holds.
+func booleanItems(args map[string]any) (items []any, ok bool) {
+	v, present := args["list"]
+	if !present || isNullValue(v) {
+		return nil, false
+	}
+	items, isList := v.([]any)
+	switch {
+	case !isList:
+		items = []any{v}
+	case len(items) == 1:
+		if inner, nested := items[0].([]any); nested {
+			items = inner
+		}
+	}
+	for _, item := range items {
+		if isNullValue(item) {
+			continue
+		}
+		if _, isBool := item.(bool); !isBool {
+			return nil, false
+		}
+	}
+	return items, true
+}
+
+// allItems is all(list): false if any item is false, else true if every item
+// is true (so for an empty list), else null — a null item is unknown, never
+// falsy. DMN 1.5 §10.3.4.4: `all([false,null,true]) = false`, `all([]) =
+// true`, `all(0) = null`.
+func allItems(args map[string]any) (any, error) {
+	items, ok := booleanItems(args)
+	if !ok {
+		return null, nil
+	}
+	unknown := false
+	for _, item := range items {
+		switch item {
+		case false:
+			return false, nil
+		case true:
+		default:
+			unknown = true
+		}
+	}
+	if unknown {
+		return null, nil
+	}
+	return true, nil
+}
+
+// anyItems is any(list): true if any item is true, else false if every item
+// is false (so for an empty list), else null. DMN 1.5 §10.3.4.4:
+// `any([false,null,true]) = true`, `any([]) = false`, `any(0) = null`.
+func anyItems(args map[string]any) (any, error) {
+	items, ok := booleanItems(args)
+	if !ok {
+		return null, nil
+	}
+	unknown := false
+	for _, item := range items {
+		switch item {
+		case true:
+			return true, nil
+		case false:
+		default:
+			unknown = true
+		}
+	}
+	if unknown {
+		return null, nil
+	}
+	return false, nil
+}
+
 // separatedNumber rewrites s, written with the given separators, as a plain
 // numeric literal: number(from, grouping separator, decimal separator), DMN
 // 1.5 §10.3.4.1 Table 72. grouping is " ", "," or "." and decimal "." or ",",
@@ -177,13 +266,18 @@ func installBuiltinFunctions(prelude *Prelude) {
 	// conversion functions
 	// VERDICT DIVERGENCE: string(null) is null rather than the Go rendering of
 	// the null value ("&{}"). DMN 1.5 §10.3.4.1 Table 72: string(from) takes a
-	// non-null from, with string(null) = null as its example.
+	// non-null from, with string(null) = null as its example. Every other
+	// value is rendered in FEEL form (see feelString) rather than through
+	// fmt's %s, which printed `%!s(bool=true)` and `[1 2]`.
 	prelude.Bind("string", NewNativeFunc(func(kwargs map[string]any) (any, error) {
 		v := kwargs["from"]
 		if _, isNull := v.(*NullValue); isNull || v == nil {
 			return null, nil
 		}
-		return fmt.Sprintf("%s", v), nil
+		if s, ok := v.(string); ok {
+			return s, nil
+		}
+		return feelString(v), nil
 	}).Required("from"))
 
 	// VERDICT DIVERGENCE: number yields null for a string that is not a
@@ -250,30 +344,34 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return len(s), nil
 	}).Required("string"))
 
+	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure,
+	// raising on a null or non-string string or a non-number position;
+	// indexed bytes rather than characters; and read a negative start
+	// position as a byte index before the string. DMN 1.5 §10.3.4.3 Table
+	// 73, footnote 1: start position is a non-zero integer in [-L..L] (a
+	// negative one counts from the end), length an integer in [1..E] where E
+	// is the number of characters from the start position to the end, and a
+	// position is a character (code point); §10.3.4 makes anything outside
+	// that null.
 	prelude.Bind("substring", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		type substringArgs struct {
-			Str      string  `json:"string"`
-			StartPos *Number `json:"start position"`
-			Length   *Number `json:"length,omitempty"`
+		str, ok := kwargs["string"].(string)
+		if !ok {
+			return null, nil
 		}
-
-		args := substringArgs{}
-		if err := decodeKWArgs(kwargs, &args); err != nil {
-			return nil, err
+		runes := []rune(str)
+		start, ok := position(kwargs["start position"], len(runes))
+		if !ok {
+			return null, nil
 		}
-		startPos := fromFEELIndex(args.StartPos.Int())
-		if startPos >= len(args.Str) {
-			return "", nil
-		}
-		endPos := len(args.Str)
-		if args.Length != nil {
-			endPos = startPos + int(args.Length.Int64())
-			if endPos >= len(args.Str) {
-				endPos = len(args.Str)
+		end := len(runes)
+		if l, present := kwargs["length"]; present {
+			n, ok := intArg(l)
+			if !ok || n < 1 || n > len(runes)-start {
+				return null, nil
 			}
+			end = start + n
 		}
-		subs := args.Str[startPos:endPos]
-		return subs, nil
+		return string(runes[start:end]), nil
 	}).Required("string", "start position").Optional("length"))
 
 	prelude.Bind("upper case", wrapTyped(func(s string) (string, error) {
@@ -436,139 +534,102 @@ func installBuiltinFunctions(prelude *Prelude) {
 		}
 	}).Vararg("list"))
 
-	prelude.Bind("all", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range list {
-			if !boolValue(v) {
-				return false, nil
-			}
-		}
-		return true, nil
-	}).Vararg("list"))
+	// VERDICT DIVERGENCE: upstream coerced each item through boolValue, so
+	// `all([true, null])` was false and `any([123])` true, and raised on a
+	// null list. See allItems/anyItems.
+	prelude.Bind("all", NewNativeFunc(allItems).Vararg("list"))
+	prelude.Bind("and", NewNativeFunc(allItems).Vararg("list"))
+	prelude.Bind("any", NewNativeFunc(anyItems).Vararg("list"))
+	prelude.Bind("or", NewNativeFunc(anyItems).Vararg("list"))
 
-	prelude.Bind("and", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range list {
-			if !boolValue(v) {
-				return false, nil
-			}
-		}
-		return true, nil
-	}).Vararg("list"))
-
-	prelude.Bind("any", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range list {
-			if boolValue(v) {
-				return true, nil
-			}
-		}
-		return false, nil
-	}).Vararg("list"))
-
-	prelude.Bind("or", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range list {
-			if boolValue(v) {
-				return true, nil
-			}
-		}
-		return false, nil
-	}).Vararg("list"))
-
+	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure
+	// (raising on a null list or position), returned "" for a start past the
+	// end and sliced from a negative index (a panic). DMN 1.5 §10.3.4.4 Table
+	// 76: a list (a non-list item is the singleton list §10.3.2.9.4 converts
+	// it to), a start position counted from 1 or, if negative, from the end,
+	// and an optional length; §10.3.4 makes a position or length outside the
+	// list null.
 	prelude.Bind("sublist", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		type sublistArgs struct {
-			List     []any   `json:"list"`
-			StartPos *Number `json:"start position"`
-			Length   *Number `json:"length,omitempty"`
+		list, ok := listArg(kwargs["list"])
+		if !ok {
+			return null, nil
 		}
-
-		args := sublistArgs{}
-		if err := decodeKWArgs(kwargs, &args); err != nil {
-			return nil, err
+		start, ok := position(kwargs["start position"], len(list))
+		if !ok {
+			return null, nil
 		}
-		startPos := fromFEELIndex(args.StartPos.Int())
-		if startPos >= len(args.List) {
-			return "", nil
-		}
-		endPos := len(args.List)
-		if args.Length != nil {
-			endPos = startPos + int(args.Length.Int64())
-			if endPos >= len(args.List) {
-				endPos = len(args.List)
+		end := len(list)
+		if l, present := kwargs["length"]; present {
+			n, ok := intArg(l)
+			if !ok || n < 0 || n > len(list)-start {
+				return null, nil
 			}
+			end = start + n
 		}
-		subs := args.List[startPos:endPos]
-		return subs, nil
+		return append([]any{}, list[start:end]...), nil
 	}).Required("list", "start position").Optional("length"))
 
+	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure,
+	// raising on a null list. DMN 1.5 §10.3.4.4: list is a list (a non-list
+	// item converted to a singleton list, §10.3.2.9.4; null outside the
+	// domain), and each item is "any element including null".
 	prelude.Bind("append", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		type appendArgs struct {
-			List  []any `json:"list"`
-			Items []any `json:"items"`
+		list, ok := listArg(kwargs["list"])
+		if !ok {
+			return null, nil
 		}
-		args := appendArgs{}
-		if err := decodeKWArgs(kwargs, &args); err != nil {
-			return nil, err
+		out := append([]any{}, list...)
+		switch items := kwargs["items"].(type) {
+		case nil:
+		case []any:
+			out = append(out, items...)
+		default:
+			out = append(out, items)
 		}
-		return append(args.List, args.Items...), nil
+		return out, nil
 	}).Required("list").Vararg("items"))
 
+	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure,
+	// raising on a null argument. DMN 1.5 §10.3.4.4: each argument is a list
+	// (a non-list item converted to a singleton list, §10.3.2.9.4); a null one
+	// is outside the domain, so the result is null.
 	prelude.Bind("concatenate", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		type concatArgs struct {
-			Lists [][]any `json:"lists"`
-		}
-		args := concatArgs{}
-		if err := decodeKWArgs(kwargs, &args); err != nil {
-			return nil, err
+		lists, ok := listsArg(kwargs["lists"])
+		if !ok {
+			return null, nil
 		}
 		results := make([]any, 0)
-		for _, list := range args.Lists {
+		for _, list := range lists {
 			results = append(results, list...)
 		}
 		return results, nil
 	}).Vararg("lists"))
 
-	prelude.Bind("insert before", wrapTyped(func(list []any, pos *Number, newItem any) ([]any, error) {
-		// The position starts at the index 1. The last position is -1
-		position := fromFEELIndex(pos.Int())
-		if position > len(list) {
-			position = len(list)
+	// VERDICT DIVERGENCE: upstream sliced at the position unchecked, so a
+	// position of 0 or below -1 panicked and a negative one inserted at the
+	// wrong place, and clamped a position past the end to an append. DMN 1.5
+	// §10.3.4.4: position counts from 1, or from the end if negative; one
+	// outside the list is outside the domain, so the result is null. newItem
+	// is "any element including null".
+	prelude.Bind("insert before", wrapTyped(func(list []any, pos *Number, newItem any) (any, error) {
+		idx, ok := position(pos, len(list))
+		if !ok {
+			return null, nil
 		}
-		// make a copy of the original list
-		var tmpList []any
-		tmpList = append(tmpList, list[:position]...)
-
-		//
-		newList := append(tmpList, newItem)
-		newList = append(newList[:], list[position:]...)
-		return newList, nil
+		newList := append([]any{}, list[:idx]...)
+		newList = append(newList, newItem)
+		return append(newList, list[idx:]...), nil
 	}).Required("list", "position", "newItem"))
 
-	prelude.Bind("remove", wrapTyped(func(list []any, pos *Number) ([]any, error) {
-		// The position starts at the index 1. The last position is -1
-		position := fromFEELIndex(pos.Int())
-		if position > len(list) {
-			position = len(list)
+	// VERDICT DIVERGENCE: as insert before — upstream panicked on a position
+	// of 0 or a negative one, and on one past the end.
+	prelude.Bind("remove", wrapTyped(func(list []any, pos *Number) (any, error) {
+		idx, ok := position(pos, len(list))
+		if !ok {
+			return null, nil
 		}
-		// make a copy of the original list
-		var tmpList []any
-		tmpList = append(tmpList, list[:position]...)
-		//
-		newList := append(tmpList, list[(position+1):]...)
-		return newList, nil
+		newList := append([]any{}, list[:idx]...)
+		return append(newList, list[idx+1:]...), nil
 	}).Required("list", "position"))
 
 	prelude.Bind("reverse", wrapTyped(func(list []any) ([]any, error) {
@@ -589,16 +650,15 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return matched, nil
 	}).Required("list", "match"))
 
+	// VERDICT DIVERGENCE: as concatenate — a null argument is null, a non-list
+	// one a singleton list, where upstream raised.
 	prelude.Bind("union", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		type unionArgs struct {
-			Lists [][]any `json:"lists"`
-		}
-		args := unionArgs{}
-		if err := decodeKWArgs(kwargs, &args); err != nil {
-			return nil, err
+		lists, ok := listsArg(kwargs["lists"])
+		if !ok {
+			return null, nil
 		}
 		elemSet := make([]any, 0)
-		for _, list := range args.Lists {
+		for _, list := range lists {
 			for _, elem := range list {
 				found := false
 				for _, setElem := range elemSet {
@@ -688,28 +748,36 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return newList, nil
 	}).Required("list", "predicates"))
 
+	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure,
+	// so a null delimiter raised, and it took two further optional arguments
+	// (prefix, suffix) DMN does not define. DMN 1.5 §10.3.4.3 Table 73:
+	// string join(list) and string join(list, delimiter); null elements are
+	// ignored, a null delimiter joins without a separator, and §10.3.4 makes
+	// a non-string element or delimiter, a null list, or a third argument,
+	// null (TCK 1140).
 	prelude.Bind("string join", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		type joinArgs struct {
-			List      []any  `json:"list"`
-			Delimiter string `json:"delimiter,omitempty"`
-			Prefix    string `json:"prefix,omitempty"`
-			Suffix    string `json:"suffix,omitempty"`
+		list, ok := listArg(kwargs["list"])
+		if !ok {
+			return null, nil
 		}
-		args := joinArgs{}
-		if err := decodeKWArgs(kwargs, &args); err != nil {
-			return nil, err
+		delimiter := ""
+		switch d := kwargs["delimiter"].(type) {
+		case nil, *NullValue:
+		case string:
+			delimiter = d
+		default:
+			return null, nil
 		}
-		strArray := make([]string, 0)
-		for _, v := range args.List {
+		strArray := make([]string, 0, len(list))
+		for _, v := range list {
 			if s, ok := v.(string); ok {
 				strArray = append(strArray, s)
-			} else if _, ok := v.(*NullValue); !ok {
+			} else if !isNullValue(v) {
 				return null, nil
 			}
 		}
-		joined := fmt.Sprintf("%s%s%s", args.Prefix, strings.Join(strArray, args.Delimiter), args.Suffix)
-		return joined, nil
-	}).Required("list").Optional("delimiter", "prefix", "suffix"))
+		return strings.Join(strArray, delimiter), nil
+	}).Required("list").Optional("delimiter"))
 
 }
 
@@ -756,4 +824,158 @@ func orderedKind(v any) bool {
 	}
 	_, ok := instantOf(v)
 	return ok
+}
+
+// listArg is a built-in's list argument: a list as it is, any other non-null
+// value as the singleton list DMN 1.5 §10.3.2.9.4 converts it to, and null as
+// outside the domain.
+func listArg(v any) ([]any, bool) {
+	if isNullValue(v) {
+		return nil, false
+	}
+	if l, ok := v.([]any); ok {
+		return l, true
+	}
+	return []any{v}, true
+}
+
+// listsArg is a variadic parameter of lists (concatenate, union): each
+// argument through listArg.
+func listsArg(v any) ([][]any, bool) {
+	args, ok := v.([]any)
+	if !ok {
+		return nil, true // no arguments
+	}
+	out := make([][]any, len(args))
+	for i, a := range args {
+		if out[i], ok = listArg(a); !ok {
+			return nil, false
+		}
+	}
+	return out, true
+}
+
+// intArg is an integer-valued number argument.
+func intArg(v any) (int, bool) {
+	n, ok := v.(*Number)
+	if !ok || n == nil || !n.v.IsInt() {
+		return 0, false
+	}
+	i, acc := n.v.Int64()
+	if acc != big.Exact || i > math.MaxInt32 || i < math.MinInt32 {
+		return 0, false
+	}
+	return int(i), true
+}
+
+// position resolves a FEEL position over a sequence of length n — 1-based,
+// or counted from the end if negative — to a 0-based index; false when it is
+// not an integer, is 0, or lies outside the sequence.
+func position(v any, n int) (int, bool) {
+	p, ok := intArg(v)
+	switch {
+	case !ok || p == 0 || p > n || p < -n:
+		return 0, false
+	case p > 0:
+		return p - 1, true
+	default:
+		return n + p, true
+	}
+}
+
+// feelString renders a value as string() does for anything but a top-level
+// string or null (DMN 1.5 §10.3.4.1 Table 72: "convert from to a string"):
+// in FEEL's own lexical form, so true is `true`, a list `[1, "a", null]` and
+// a context `{a: 1, b: "x"}`. Strings inside a list or context are quoted and
+// escaped; temporals and durations print in their lexical form, unquoted, as
+// a top-level one does; ranges print with their endpoints. A context's
+// entries print in key order: the fork holds contexts as Go maps, which keep
+// none of their own. A key that is not a FEEL name is quoted.
+//
+// VERDICT DIVERGENCE: fork-only; upstream formatted with fmt's %s.
+func feelString(v any) string {
+	var b strings.Builder
+	writeFEEL(&b, v)
+	return b.String()
+}
+
+func writeFEEL(b *strings.Builder, v any) {
+	switch x := v.(type) {
+	case nil, *NullValue:
+		b.WriteString("null")
+	case string:
+		b.WriteString(strconv.Quote(x))
+	case bool:
+		b.WriteString(strconv.FormatBool(x))
+	case *Number:
+		b.WriteString(x.String())
+	case []any:
+		b.WriteByte('[')
+		for i, e := range x {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			writeFEEL(b, e)
+		}
+		b.WriteByte(']')
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			if isFEELName(k) {
+				b.WriteString(k)
+			} else {
+				b.WriteString(strconv.Quote(k))
+			}
+			b.WriteString(": ")
+			writeFEEL(b, x[k])
+		}
+		b.WriteByte('}')
+	case *RangeValue:
+		if x.StartOpen {
+			b.WriteByte('(')
+		} else {
+			b.WriteByte('[')
+		}
+		writeFEEL(b, x.Start)
+		b.WriteString("..")
+		writeFEEL(b, x.End)
+		if x.EndOpen {
+			b.WriteByte(')')
+		} else {
+			b.WriteByte(']')
+		}
+	case *NativeFun, *Macro, *FunDef:
+		b.WriteString("function")
+	case fmt.Stringer:
+		b.WriteString(x.String())
+	default:
+		fmt.Fprintf(b, "%v", x)
+	}
+}
+
+// isFEELName reports whether a context key can be written unquoted: a FEEL
+// name start character followed by name characters, with no leading or
+// trailing space (DMN 1.5 §10.3.1.2 grammar rules 27-30, restricted to the
+// unambiguous subset).
+func isFEELName(k string) bool {
+	if k == "" || strings.TrimSpace(k) != k {
+		return false
+	}
+	for i, r := range k {
+		switch {
+		case r == '_' || r == '?' || unicode.IsLetter(r):
+		case i > 0 && (unicode.IsDigit(r) || r == ' '):
+		default:
+			return false
+		}
+	}
+	return true
 }

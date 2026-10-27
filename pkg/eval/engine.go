@@ -68,7 +68,12 @@ func (p *Program) Evaluate(ctx context.Context, req Request) (*Result, error) {
 	}
 	ec := &Context{ctx: ctx, prog: p, vars: map[string]any{}, trace: rootWriter, shared: state}
 
-	outputs, err := p.evaluateRoots(ec, pl, req.Inputs)
+	// The request is the external boundary in both directions: caller values
+	// become FEEL values once on the way in, and FEEL values are narrowed once
+	// on the way out. Everything between — decision-service calls included —
+	// works on native FEEL values.
+	native, err := p.evaluateRoots(ec, pl, feel.FromGo(req.Inputs).(map[string]any))
+	outputs := exportValues(native)
 	finishRoot(outputs, err)
 
 	result := &Result{
@@ -146,7 +151,15 @@ func (p *Program) TopLevelDecisions() []string {
 }
 
 // evaluateRoots evaluates the transitive closure of roots and returns the roots'
-// values.
+// values as native FEEL values.
+//
+// inputs must already be FEEL values (see feel.FromGo). Neither direction is
+// converted here: a decision service calls this with its arguments and hands
+// the results straight back to FEEL, so a zoneless date and time, a date, a
+// time, a years-and-months duration or a high-precision number crosses a
+// service with its type and value intact (DMN 1.5 §10.4 decision service
+// semantics). Only Evaluate narrows the results for the outside world, through
+// exportValues.
 func (p *Program) evaluateRoots(ec *Context, pl plan, inputs map[string]any) (map[string]any, error) {
 	slice, err := p.Graph.Slice(pl.evaluate...)
 	if err != nil {
@@ -221,9 +234,20 @@ func (p *Program) evaluateRoots(ec *Context, pl plan, inputs map[string]any) (ma
 		if alias := outputClauseAlias(d); alias != "" {
 			key = alias
 		}
-		out[key] = feel.ToGo(v)
+		out[key] = v
 	}
 	return out, nil
+}
+
+// exportValues is the engine's single boundary conversion for a set of named
+// FEEL values (root results, service arguments): it narrows them into the
+// plain Go values that Result.Outputs and the trace carry. A nil map stays nil,
+// so a failed evaluation records no output rather than an empty one.
+func exportValues(values map[string]any) map[string]any {
+	if values == nil {
+		return nil
+	}
+	return feel.ToGo(values).(map[string]any)
 }
 
 // runLayer evaluates a set of independent decisions, concurrently when the
@@ -379,16 +403,17 @@ func decisionError(d *model.Decision, err error) error {
 }
 
 // bindInputs builds the initial variable scope: the caller's input data plus
-// every business knowledge model as a callable value.
+// every business knowledge model as a callable value. inputs are FEEL values
+// already; the conversion from caller-supplied Go values happens in Evaluate.
 func (p *Program) bindInputs(ec *Context, slice []string, inputs map[string]any) (map[string]any, error) {
 	vars := make(map[string]any, len(inputs)+len(p.Defs.BKMs))
 
 	// Callers may address an input by its variable name, its element name or its
 	// ID; index all three so a model authored in any tool accepts the same
 	// payload.
-	supplied := map[string]any{}
+	supplied := make(map[string]any, len(inputs))
 	for k, v := range inputs {
-		supplied[k] = feel.FromGo(v)
+		supplied[k] = v
 	}
 
 	for _, id := range slice {

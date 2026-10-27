@@ -2,7 +2,6 @@ package feel
 
 import (
 	"fmt"
-	"math"
 	"math/big"
 	"regexp"
 	"strings"
@@ -50,18 +49,26 @@ func buildSupplement() {
 		if _, exists := pfeel.GetPrelude().Resolve(name); exists {
 			return
 		}
-		supplement[name] = nativeFunc(f)
+		// A supplement built-in is a standard one: a call to it with the
+		// wrong arguments is null (DMN 1.5 §10.3.4), as for the prelude's.
+		supplement[name] = nativeFunc(f).Standard()
 	}
 
 	// ---- string functions -------------------------------------------------
+	//
+	// DMN 1.5 §10.3.4: "Whenever a parameter is outside its domain, the
+	// result of the built-in is null." A null or non-string argument, an
+	// invalid pattern, replacement or flags (footnote 2: "where XPath
+	// specifies an error result, FEEL specifies a null result") are all
+	// null, never an evaluation error.
 
 	bind("substring before", Function{
 		Params: []string{"string", "match"},
 		Help:   "the substring preceding the first occurrence of match, or \"\"",
 		Fn: func(a map[string]any) (any, error) {
-			s, m, err := twoStrings(a, "string", "match")
-			if err != nil {
-				return nil, err
+			s, m, ok := twoStrings(a, "string", "match")
+			if !ok {
+				return Null, nil
 			}
 			i := strings.Index(s, m)
 			if i < 0 {
@@ -74,9 +81,9 @@ func buildSupplement() {
 		Params: []string{"string", "match"},
 		Help:   "the substring following the first occurrence of match, or \"\"",
 		Fn: func(a map[string]any) (any, error) {
-			s, m, err := twoStrings(a, "string", "match")
-			if err != nil {
-				return nil, err
+			s, m, ok := twoStrings(a, "string", "match")
+			if !ok {
+				return Null, nil
 			}
 			i := strings.Index(s, m)
 			if i < 0 {
@@ -90,24 +97,24 @@ func buildSupplement() {
 		Optional: []string{"flags"},
 		Help:     "regular-expression replacement; $1..$9 refer to capture groups",
 		Fn: func(a map[string]any) (any, error) {
-			in, err := asString(a["input"], "input")
-			if err != nil {
-				return nil, err
+			in, ok1 := asString(a["input"])
+			pat, ok2 := asString(a["pattern"])
+			repl, ok3 := asString(a["replacement"])
+			if !ok1 || !ok2 || !ok3 {
+				return Null, nil
 			}
-			pat, err := asString(a["pattern"], "pattern")
-			if err != nil {
-				return nil, err
-			}
-			repl, err := asString(a["replacement"], "replacement")
-			if err != nil {
-				return nil, err
-			}
-			re, err := compilePattern(pat, a["flags"])
-			if err != nil {
-				return nil, err
+			re, ok := compilePattern(pat, a["flags"])
+			// XPath (fn:replace, FORX0003) rejects a pattern that matches
+			// the empty string.
+			if !ok || re.MatchString("") {
+				return Null, nil
 			}
 			// XPath spells capture groups $1..$9; Go spells them ${1}..${9}.
-			return re.ReplaceAllString(in, dollarToGo(repl)), nil
+			goRepl, ok := dollarToGo(repl)
+			if !ok {
+				return Null, nil
+			}
+			return re.ReplaceAllString(in, goRepl), nil
 		},
 	})
 	bind("matches", Function{
@@ -115,17 +122,14 @@ func buildSupplement() {
 		Optional: []string{"flags"},
 		Help:     "true when input matches the regular expression",
 		Fn: func(a map[string]any) (any, error) {
-			in, err := asString(a["input"], "input")
-			if err != nil {
-				return nil, err
+			in, ok1 := asString(a["input"])
+			pat, ok2 := asString(a["pattern"])
+			if !ok1 || !ok2 {
+				return Null, nil
 			}
-			pat, err := asString(a["pattern"], "pattern")
-			if err != nil {
-				return nil, err
-			}
-			re, err := compilePattern(pat, a["flags"])
-			if err != nil {
-				return nil, err
+			re, ok := compilePattern(pat, a["flags"])
+			if !ok {
+				return Null, nil
 			}
 			return re.MatchString(in), nil
 		},
@@ -134,13 +138,15 @@ func buildSupplement() {
 		Params: []string{"string", "delimiter"},
 		Help:   "splits a string on a regular-expression delimiter",
 		Fn: func(a map[string]any) (any, error) {
-			s, d, err := twoStrings(a, "string", "delimiter")
-			if err != nil {
-				return nil, err
+			s, d, ok := twoStrings(a, "string", "delimiter")
+			if !ok {
+				return Null, nil
 			}
-			re, err := regexp.Compile(d)
-			if err != nil {
-				return nil, fmt.Errorf("split: bad delimiter pattern %q: %w", d, err)
+			re, ok := compilePattern(d, nil)
+			// XPath (fn:tokenize, FORX0003) rejects a pattern that matches
+			// the empty string.
+			if !ok || re.MatchString("") {
+				return Null, nil
 			}
 			parts := re.Split(s, -1)
 			out := make([]any, len(parts))
@@ -198,57 +204,38 @@ func buildSupplement() {
 		},
 	})
 	bind("sqrt", Function{Params: []string{"number"}, Help: "square root, null for negatives",
-		Fn: unaryFloat(func(f float64) any {
-			if f < 0 {
-				return Null
-			}
-			return math.Sqrt(f)
-		})})
+		Fn: unaryDecimal(decimalSqrt)})
 	bind("log", Function{Params: []string{"number"}, Help: "natural logarithm, null for non-positives",
-		Fn: unaryFloat(func(f float64) any {
-			if f <= 0 {
-				return Null
-			}
-			return math.Log(f)
-		})})
+		Fn: unaryDecimal(decimalLog)})
 	bind("exp", Function{Params: []string{"number"}, Help: "e raised to the given power",
-		Fn: unaryFloat(func(f float64) any { return math.Exp(f) })})
+		Fn: unaryDecimal(decimalExp)})
 	bind("odd", Function{Params: []string{"number"}, Help: "true when the integral value is odd",
-		Fn: unaryFloat(func(f float64) any {
-			if f != math.Trunc(f) {
-				return false
-			}
-			return math.Mod(math.Abs(f), 2) == 1
-		})})
+		Fn: parity(1)})
 	bind("even", Function{Params: []string{"number"}, Help: "true when the integral value is even",
-		Fn: unaryFloat(func(f float64) any {
-			if f != math.Trunc(f) {
-				return false
-			}
-			return math.Mod(math.Abs(f), 2) == 0
-		})})
+		Fn: parity(0)})
 
 	// ---- list functions ---------------------------------------------------
 
 	bind("list replace", Function{
 		Params: []string{"list", "position", "newItem"},
-		Help:   "a copy of list with the 1-based position replaced",
+		Help:   "a copy of list with the position (1-based, negative from the end) replaced; null outside the list",
 		Fn: func(a map[string]any) (any, error) {
-			l, err := asList(a["list"], "list")
-			if err != nil {
-				return nil, err
+			// DMN 1.5 §10.3.4.4: list is a list (a non-list item converted
+			// to a singleton list, §10.3.2.9.4), position an integer
+			// counted from 1 or, if negative, from the end, and newItem
+			// "any element including null"; anything else is null (TCK
+			// 1155).
+			l, ok := asList(a["list"])
+			if !ok {
+				return Null, nil
 			}
-			p, err := asFloat(a["position"], "position")
-			if err != nil {
-				return nil, err
-			}
-			idx := int(p)
-			if idx < 1 || idx > len(l) {
+			idx, ok := listPosition(a["position"], len(l))
+			if !ok {
 				return Null, nil
 			}
 			out := make([]any, len(l))
 			copy(out, l)
-			out[idx-1] = a["newItem"]
+			out[idx] = a["newItem"]
 			return out, nil
 		},
 	})
@@ -256,9 +243,9 @@ func buildSupplement() {
 		Params: []string{"list"},
 		Help:   "the values occurring more than once, in first-occurrence order",
 		Fn: func(a map[string]any) (any, error) {
-			l, err := asList(a["list"], "list")
-			if err != nil {
-				return nil, err
+			l, ok := asList(a["list"])
+			if !ok {
+				return Null, nil
 			}
 			var out []any
 			for i, v := range l {
@@ -321,7 +308,7 @@ func buildSupplement() {
 	})
 	bind("context", Function{
 		Params: []string{"entries"},
-		Help:   "builds a context from a list of {key, value} entries, null unless every entry has a string key and a value",
+		Help:   "builds a context from a list of {key, value} entries, null unless every entry has a distinct string key and a value",
 		Fn: func(a map[string]any) (any, error) {
 			// DMN 1.5 §10.3.4.7: entries is a list of contexts each holding a
 			// key and a value; §10.3.4 makes anything else null rather than an
@@ -336,6 +323,12 @@ func buildSupplement() {
 			default:
 				return Null, nil
 			}
+			//
+			// §10.3.2.6: a context's keys "are distinct within a context",
+			// and unlike context put and context merge, Table 81 gives
+			// context(entries) no override rule — so two entries with the
+			// same key are outside the domain and null (TCK 1145), not the
+			// last one winning.
 			out := map[string]any{}
 			for _, e := range l {
 				m, ok := e.(map[string]any)
@@ -348,6 +341,9 @@ func buildSupplement() {
 				}
 				v, ok := m["value"]
 				if !ok {
+					return Null, nil
+				}
+				if _, dup := out[k]; dup {
 					return Null, nil
 				}
 				out[k] = v
@@ -376,32 +372,40 @@ func sameKindInstants(a, b any) (time.Time, time.Time, bool) {
 	return time.Time{}, time.Time{}, false
 }
 
-func asString(v any, name string) (string, error) {
+// asString is a string argument; false for null or any other kind, which
+// DMN 1.5 §10.3.4 makes the built-in's result null.
+func asString(v any) (string, bool) {
 	s, ok := v.(string)
-	if !ok {
-		return "", fmt.Errorf("argument %s must be a string, got %s", name, TypeName(v))
-	}
-	return s, nil
+	return s, ok
 }
 
-func twoStrings(a map[string]any, k1, k2 string) (string, string, error) {
-	s1, err := asString(a[k1], k1)
-	if err != nil {
-		return "", "", err
-	}
-	s2, err := asString(a[k2], k2)
-	if err != nil {
-		return "", "", err
-	}
-	return s1, s2, nil
+func twoStrings(a map[string]any, k1, k2 string) (string, string, bool) {
+	s1, ok1 := asString(a[k1])
+	s2, ok2 := asString(a[k2])
+	return s1, s2, ok1 && ok2
 }
 
-func asFloat(v any, name string) (float64, error) {
-	n, ok := v.(*pfeel.Number)
+// listPosition resolves a list position — an integer counted from 1 or, if
+// negative, from the end — to a 0-based index into a list of length n; false
+// for a non-integer, 0, or a position outside the list.
+func listPosition(v any, n int) (int, bool) {
+	num, ok := numberArg(v)
 	if !ok {
-		return 0, fmt.Errorf("argument %s must be a number, got %s", name, TypeName(v))
+		return 0, false
 	}
-	return n.Float64(), nil
+	r, ok := new(big.Rat).SetString(num.String())
+	if !ok || !r.IsInt() || !r.Num().IsInt64() {
+		return 0, false
+	}
+	p := r.Num().Int64()
+	switch {
+	case p == 0 || p > int64(n) || p < -int64(n):
+		return 0, false
+	case p > 0:
+		return int(p - 1), true
+	default:
+		return n + int(p), true
+	}
 }
 
 // numberArg is a numeric built-in's argument, or false when it is null or not a
@@ -427,22 +431,216 @@ func decimalArg(v any) (*big.Rat, bool) {
 	return new(big.Rat).SetString(n.String())
 }
 
-func asList(v any, name string) ([]any, error) {
-	l, ok := v.([]any)
-	if !ok {
-		return nil, fmt.Errorf("argument %s must be a list, got %s", name, TypeName(v))
+// asList is a list argument: a list as it is, any other non-null value as the
+// singleton list DMN 1.5 §10.3.2.9.4 converts it to; false for null, which
+// §10.3.4 makes the built-in's result null.
+func asList(v any) ([]any, bool) {
+	switch x := v.(type) {
+	case nil, *pfeel.NullValue:
+		return nil, false
+	case []any:
+		return x, true
+	default:
+		return []any{x}, true
 	}
-	return l, nil
 }
 
-func unaryFloat(f func(float64) any) func(map[string]any) (any, error) {
+// unaryDecimal is a one-argument numeric built-in computed at decimal128
+// precision (34 significant digits, DMN 1.5 §10.3.2.3.1) rather than through
+// float64. f reports false for an argument outside the function's domain or a
+// result outside decimal128's range, which makes the result null (§10.3.4).
+func unaryDecimal(f func(*big.Float) (*big.Float, bool)) func(map[string]any) (any, error) {
 	return func(a map[string]any) (any, error) {
 		n, ok := numberArg(a["number"])
 		if !ok {
 			return Null, nil
 		}
-		return f(n.Float64()), nil
+		x := n.BigFloat()
+		if x.IsInf() {
+			return Null, nil
+		}
+		r, ok := f(x)
+		if !ok {
+			return Null, nil
+		}
+		return decimal128Number(r), nil
 	}
+}
+
+// parity is odd (rem 1) or even (rem 0), decided on the exact value so an
+// integer above 2^53 is not rounded to its float64 neighbour first. A number
+// that is not an integer is neither.
+func parity(rem uint) func(map[string]any) (any, error) {
+	return func(a map[string]any) (any, error) {
+		n, ok := numberArg(a["number"])
+		if !ok {
+			return Null, nil
+		}
+		x := n.BigFloat()
+		if x.IsInf() || !x.IsInt() {
+			return false, nil
+		}
+		i, _ := x.Int(nil)
+		return i.Bit(0) == rem, nil
+	}
+}
+
+// decimal128Digits is decimal128's coefficient length, the precision DMN 1.5
+// §10.3.2.3.1 gives a FEEL number.
+const decimal128Digits = 34
+
+// decimal128Number rounds r to 34 significant digits. A result below
+// decimal128's smallest magnitude is zero.
+func decimal128Number(r *big.Float) *pfeel.Number {
+	if new(big.Float).Abs(r).Cmp(decimal128Tiny) < 0 {
+		return pfeel.NewNumberFromInt64(0)
+	}
+	return pfeel.NewNumber(r.Text('g', decimal128Digits))
+}
+
+// mathPrec is the working precision of the transcendental functions: the
+// evaluator's own, plus guard bits for the precision range reduction loses.
+const mathPrec = pfeel.Prec + 64
+
+var (
+	// decimal128Max and decimal128Tiny bound decimal128's magnitudes (DMN 1.5
+	// §10.3.2.3.1; the exponent range is the one scale is confined to in
+	// §10.3.4.5): an exp result above the first is null, below the second 0.
+	decimal128Max  = mustBigFloat("9.999999999999999999999999999999999e6144")
+	decimal128Tiny = mustBigFloat("1e-6176")
+	// expLimit is a little over ln(decimal128Max): exp beyond it is null, and
+	// beyond its negation is 0, without the series ever running. Together they
+	// keep exp's range reduction to a few dozen halvings however large the
+	// argument (#20).
+	expLimit = mustBigFloat("14150")
+	sqrtHalf = new(big.Float).SetPrec(mathPrec).Sqrt(mustBigFloat("0.5"))
+	ln2Once  sync.Once
+	ln2Value *big.Float
+)
+
+func mustBigFloat(s string) *big.Float {
+	f, _, err := big.ParseFloat(s, 10, mathPrec, big.ToNearestEven)
+	if err != nil {
+		panic(err)
+	}
+	return f
+}
+
+// decimalSqrt is sqrt(number); a negative number is outside its domain.
+func decimalSqrt(x *big.Float) (*big.Float, bool) {
+	if x.Sign() < 0 {
+		return nil, false
+	}
+	if x.Sign() == 0 {
+		return new(big.Float), true
+	}
+	return new(big.Float).SetPrec(mathPrec).Sqrt(x), true
+}
+
+// decimalExp is e raised to x: x is halved m times until it is below 2^-20,
+// the Taylor series sums the small remainder, and the result is squared m
+// times back. An x past expLimit overflows decimal128 (null) or underflows it
+// (0) and is answered without computing.
+func decimalExp(x *big.Float) (*big.Float, bool) {
+	if x.Cmp(expLimit) > 0 {
+		return nil, false
+	}
+	if x.Cmp(new(big.Float).Neg(expLimit)) < 0 {
+		return new(big.Float), true
+	}
+	y := new(big.Float).SetPrec(mathPrec).Set(x)
+	m := 0
+	if y.Sign() != 0 {
+		if e := y.MantExp(nil) + 20; e > 0 {
+			m = e
+			y.SetMantExp(y, -m)
+		}
+	}
+	// Taylor: sum of y^k / k!, until a term no longer moves the sum.
+	sum := new(big.Float).SetPrec(mathPrec).SetInt64(1)
+	term := new(big.Float).SetPrec(mathPrec).SetInt64(1)
+	eps := new(big.Float).SetPrec(mathPrec).SetMantExp(big.NewFloat(1), -int(mathPrec))
+	for k := int64(1); ; k++ {
+		term.Mul(term, y)
+		term.Quo(term, new(big.Float).SetPrec(mathPrec).SetInt64(k))
+		sum.Add(sum, term)
+		if new(big.Float).Abs(term).Cmp(eps) < 0 {
+			break
+		}
+	}
+	for ; m > 0; m-- {
+		sum.Mul(sum, sum)
+	}
+	if sum.Cmp(decimal128Max) > 0 {
+		return nil, false
+	}
+	return sum, true
+}
+
+// decimalLog is the natural logarithm of x; a non-positive x is outside its
+// domain. x is split as mant * 2^e with mant in [1/sqrt 2, sqrt 2), so ln x is
+// ln(mant) + e*ln 2, and ln(mant) = 2 atanh((mant-1)/(mant+1)) converges
+// quickly because that ratio is within ±0.18 — and is exactly 0 for a power of
+// two, so log(1) is exactly 0. The binary exponent is bounded by big.Float's,
+// so even an extreme x costs one short series.
+func decimalLog(x *big.Float) (*big.Float, bool) {
+	if x.Sign() <= 0 {
+		return nil, false
+	}
+	mant := new(big.Float).SetPrec(mathPrec)
+	e := x.MantExp(mant)
+	if mant.Cmp(sqrtHalf) < 0 {
+		mant.SetMantExp(mant, 1)
+		e--
+	}
+	r := lnSmall(mant)
+	if e != 0 {
+		k := new(big.Float).SetPrec(mathPrec).SetInt64(int64(e))
+		r.Add(r, k.Mul(k, ln2()))
+	}
+	return r, true
+}
+
+// lnSmall is ln(m) for m near 1, as 2 * atanh((m-1)/(m+1)).
+func lnSmall(m *big.Float) *big.Float {
+	one := new(big.Float).SetPrec(mathPrec).SetInt64(1)
+	num := new(big.Float).SetPrec(mathPrec).Sub(m, one)
+	den := new(big.Float).SetPrec(mathPrec).Add(m, one)
+	return atanhSeries(num.Quo(num, den))
+}
+
+// atanhSeries is 2 * atanh(z) = 2 * sum z^(2k+1)/(2k+1), for |z| <= 1/3.
+// The sum stops once a term is below |z| * 2^-mathPrec, a bound relative to
+// the result (which is at least 2|z|), so a z near 0 keeps its digits too.
+func atanhSeries(z *big.Float) *big.Float {
+	sum := new(big.Float).SetPrec(mathPrec)
+	if z.Sign() == 0 {
+		return sum
+	}
+	z2 := new(big.Float).SetPrec(mathPrec).Mul(z, z)
+	pow := new(big.Float).SetPrec(mathPrec).Set(z)
+	eps := new(big.Float).SetPrec(mathPrec).Abs(z)
+	eps.SetMantExp(eps, -int(mathPrec))
+	for k := int64(1); ; k += 2 {
+		term := new(big.Float).SetPrec(mathPrec).Quo(pow, new(big.Float).SetPrec(mathPrec).SetInt64(k))
+		sum.Add(sum, term)
+		if term.Abs(term).Cmp(eps) < 0 {
+			break
+		}
+		pow.Mul(pow, z2)
+	}
+	return sum.Add(sum, sum)
+}
+
+// ln2 is ln 2 at mathPrec, computed once as 2 atanh(1/3).
+func ln2() *big.Float {
+	ln2Once.Do(func() {
+		third := new(big.Float).SetPrec(mathPrec).Quo(
+			new(big.Float).SetPrec(mathPrec).SetInt64(1),
+			new(big.Float).SetPrec(mathPrec).SetInt64(3))
+		ln2Value = atanhSeries(third)
+	})
+	return ln2Value
 }
 
 // scaledRound applies a rounding mode at a decimal scale. DMN's rounding
@@ -572,9 +770,25 @@ func roundHalf(f *big.Float, up, even bool) *big.Float {
 
 // compilePattern translates an XPath 2.0 regular expression flag string into
 // Go's inline flag syntax. DMN inherits XPath's `s`, `m`, `i` and `x` flags;
-// `q` (literal) has no Go equivalent and is applied by quoting instead.
-func compilePattern(pattern string, flags any) (*regexp.Regexp, error) {
-	f, _ := flags.(string)
+// `q` (literal) has no Go equivalent and is applied by quoting instead. Absent
+// or null flags are no flags. false — so the built-in is null, DMN 1.5
+// §10.3.4.3 footnote 2 — for flags that are not a string, a flag XPath does
+// not define (FORX0001), or a pattern that does not compile (FORX0002), which
+// includes the back-references and XPath-only classes Go's RE2 lacks.
+func compilePattern(pattern string, flags any) (*regexp.Regexp, bool) {
+	var f string
+	switch x := flags.(type) {
+	case nil, *pfeel.NullValue:
+	case string:
+		f = x
+	default:
+		return nil, false
+	}
+	for _, r := range f {
+		if !strings.ContainsRune("smixq", r) {
+			return nil, false
+		}
+	}
 	if strings.Contains(f, "q") {
 		pattern = regexp.QuoteMeta(pattern)
 		f = strings.ReplaceAll(f, "q", "")
@@ -594,9 +808,9 @@ func compilePattern(pattern string, flags any) (*regexp.Regexp, error) {
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("bad regular expression %q: %w", pattern, err)
+		return nil, false
 	}
-	return re, nil
+	return re, true
 }
 
 func stripPatternWhitespace(p string) string {
@@ -623,28 +837,35 @@ func stripPatternWhitespace(p string) string {
 
 // dollarToGo rewrites XPath's $N capture references into Go's ${N} form so a
 // following digit in the replacement text is not swallowed into the group
-// number.
-func dollarToGo(repl string) string {
+// number. false for a replacement XPath rejects (fn:replace, FORX0004): a `\`
+// not followed by `\` or `$`, or a `$` not followed by a digit.
+func dollarToGo(repl string) (string, bool) {
 	var b strings.Builder
 	for i := 0; i < len(repl); i++ {
 		c := repl[i]
-		if c == '\\' && i+1 < len(repl) {
-			b.WriteByte(repl[i+1])
+		if c == '\\' {
+			if i+1 >= len(repl) || (repl[i+1] != '\\' && repl[i+1] != '$') {
+				return "", false
+			}
+			if repl[i+1] == '$' {
+				b.WriteString("$$")
+			} else {
+				b.WriteByte('\\')
+			}
 			i++
 			continue
 		}
-		if c == '$' && i+1 < len(repl) && repl[i+1] >= '0' && repl[i+1] <= '9' {
+		if c == '$' {
+			if i+1 >= len(repl) || repl[i+1] < '0' || repl[i+1] > '9' {
+				return "", false
+			}
 			b.WriteString("${")
 			b.WriteByte(repl[i+1])
 			b.WriteString("}")
 			i++
 			continue
 		}
-		if c == '$' {
-			b.WriteString("$$")
-			continue
-		}
 		b.WriteByte(c)
 	}
-	return b.String()
+	return b.String(), true
 }

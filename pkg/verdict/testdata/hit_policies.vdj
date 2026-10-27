@@ -184,6 +184,33 @@
       }
     },
     {
+      "id": "collect_min_boolean", "name": "CollectMinBoolean",
+      "required_inputs": ["score"],
+      "variable": { "name": "CollectMinBoolean", "type_ref": "boolean" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT", "aggregation": "MIN",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "flag", "type_ref": "boolean" }],
+        "rules": [
+          { "id": "cb1", "when": ["> 0"], "then": ["true"] },
+          { "id": "cb2", "when": ["> 10"], "then": ["false"] }
+        ]
+      }
+    },
+    {
+      "id": "collect_max_mixed", "name": "CollectMaxMixed",
+      "required_inputs": ["score"],
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT", "aggregation": "MAX",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "points" }],
+        "rules": [
+          { "id": "cmx1", "when": ["> 0"], "then": ["5"] },
+          { "id": "cmx2", "when": ["> 10"], "then": ["\"high\""] }
+        ]
+      }
+    },
+    {
       "id": "collect_count", "name": "CollectCount",
       "required_inputs": ["score"],
       "variable": { "name": "CollectCount", "type_ref": "number" },

@@ -93,6 +93,14 @@ When an answer is wrong, the trace tells you *which node* is wrong before you
 read any rules. `matched_rules` is usually the whole story: a rule you did not
 expect fired, or none did and the table defaulted.
 
+Values in the trace (`inputs`, `output`, `input_values`) — and in
+`Result.Outputs`, agent inputs, MCP, Twirp and CLI output — are numbers as
+`float64` and every temporal and duration as its FEEL lexical string:
+`"2024-03-05"`, `"10:00:00"`, `"2024-03-05T10:00:00"` (zoneless: no `Z`),
+`"2024-03-05T10:00:00+02:00"`, `"...@Europe/Paris"`, `"P1DT2H"`, `"P1Y2M"`. Read
+a value's kind and zone from its string; feed it back through `date()`,
+`time()`, `date and time()` or `duration()`.
+
 ## Authoring: decision tables
 
 A decision table has **input clauses** (expressions evaluated once per
@@ -122,7 +130,7 @@ Pick the policy that says what you mean; do not encode it in the rules.
 | `P` PRIORITY | Most-preferred output wins, ranked by `outputValues` | Precedence is about *outcomes*, not row order |
 | `F` FIRST | First matching rule in row order | Precedence is genuinely positional, e.g. a catch-all last row |
 | `C` COLLECT | List of every match | Collecting reasons, flags, applicable rules |
-| `C+` `C<` `C>` `C#` | Collect and sum / min / max / count | Stacking discounts, worst-case limits, counting hits |
+| `C+` `C<` `C>` `C#` | Collect and sum / min / max / count. `C<`/`C>` order as FEEL `min`/`max`: null over booleans, mixed kinds or a null output | Stacking discounts, worst-case limits, counting hits |
 | `R` RULE ORDER | Every match, in row order | The order rules were written is meaningful |
 | `O` OUTPUT ORDER | Every match, ranked by `outputValues` | A ranked list of outcomes |
 
@@ -160,6 +168,7 @@ if x then "a" else "b"                            // conditional
 value in ["low", "medium", "high"]                // membership
 decimal(amount * 1.2, 2)                          // round to 2 places
 modulo(-10.1, 4.5) = 3.4   sqrt(-1) = null           // numeric fns: exact decimals; null on null, non-number or out-of-domain args
+sqrt(2)   log(10)   exp(1)   odd(9007199254740993)  // 34 significant digits; odd/even exact on any integer
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
 date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
 number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
@@ -167,7 +176,23 @@ date(2026, 2, 28)   time(10, 30, 0)   time(10, 30, 0, duration("PT2H"))   // com
 date(dt)   time(dt)   date and time(d, t)   number("1.000,5", ".", ",")   // Table 72 overloads
 [1..10]  [1..10)  [1..10[  (1..10]  ]1..10]           // both bracket spellings
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
+string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; strings nested in lists/contexts quoted
+context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key; context put/merge override instead
+context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list
+list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, negative from the end
+all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
+all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null
+1 in 1   "a" in "a"                                   // a non-list, non-range right side is `=`
 ```
+
+String, list and context built-ins return **null**, never an error, outside
+their domain (DMN §10.3.4): a null or wrong-typed argument, a position outside
+the list or string, an invalid regex, replacement or flags, the wrong number of
+arguments, an unknown parameter name. The parameters the spec says take "any
+element including null" still do — `append`, `insert before` and `list replace`
+items, `index of` match, the `context put` value — and `string join` skips null
+elements and treats a null delimiter as none. A non-matching `substring before`
+/ `after` is `""`, not null.
 
 Names may contain spaces (`Credit Rating`) but **not reserved words** — `and`,
 `or`, `in`, `if`, `then`, `else`, `for`, `some`, `every`, `return`, `satisfies`.
@@ -218,7 +243,11 @@ Two dialects, selected per model with `conformanceLevel`:
 Five rules that make this safe:
 
 1. **The agent sees only its bindings.** Never the model context. Bind the
-   minimum — an agent that can see the applicant's ID can key on it.
+   minimum — an agent that can see the applicant's ID can key on it. The
+   bound values arrive in the trace's boundary shape (temporals and durations
+   as FEEL lexical strings, numbers as `float64`), and the prompt template
+   prints scalars in FEEL lexical form (`1000000`, `2024-03-05`, `P1DT2H`,
+   `null`) and contexts/lists as indented JSON.
 2. **The output type is declared and enforced.** An enumeration becomes a
    provider-side schema *and* a post-hoc check. A non-conforming answer is a
    failure, not a value.
@@ -359,6 +388,8 @@ opens as an empty canvas.
   number (`PT1H * 2` and `2 * PT1H` are `PT2H`, `P1Y / 2` is `P6M`, exact
   decimal: `PT1S * 0.1` is `PT0.1S`); a fraction of a month or nanosecond
   truncates toward zero (`P1M / 3` is `P0M`, `P1Y * 1.5` is `P1Y6M`).
+  Two durations of the same kind divide to a number (`@"P10Y" / @"P5Y"` is
+  `2`, `@"P1D" / @"PT1H"` is `24`); a zero divisor or mixed kinds are null.
   Division by zero, `number / duration` and a non-number operand are null.
 - **Temporal arithmetic follows DMN Table 57.** `date - date` is a days and time
   duration (`date("2026-01-02") - date("2026-01-01")` is `P1D`; a date counts as
@@ -377,8 +408,15 @@ opens as an empty canvas.
   one at the other's offset (`10:00:00 < 11:00:00Z` true, `10:00:00 <
   10:00:00Z` false); `<=`/`>=` are true when `<`/`>` is and otherwise **null**
   (`10:00:00 <= 10:00:00Z` is null), and so is a closed range endpoint;
-  `date and time - date and time` and `time - time` are null. A date takes the
-  zone-ness of the date and time it meets. `+`/`- duration` keeps the operand's
+  `date and time - date and time` and `time - time` are null. The range
+  built-ins (`before`, `meets`, `overlaps`, `starts`, `includes`, `during`,
+  `coincides`, ...) use the same operators, so a mixed tie or non-strict
+  comparison makes them null (`meets([09:00..10:00], [10:00Z..11:00Z])`,
+  `coincides(10:00:00, 11:00:00Z)` are null) while a strict one still adopts
+  the offset (`before(10:00:00, 11:00:00Z)` is true). A date takes the
+  zone-ness of the date and time it meets. A **time never compares with a date
+  or date and time**: `=`, `<`, `in`, `max`, the range built-ins over the pair
+  are null; a date against a date and time compares as its UTC midnight. `+`/`- duration` keeps the operand's
   zone-ness. `.time offset` (a duration) and `.timezone` are null for a zoneless
   value, and `string()` omits the offset (`"10:00:00"`). In a decision table a
   zoneless input never equals a zoned cell — write inputs and cells the same way.
@@ -392,7 +430,9 @@ opens as an empty canvas.
 - **`string()` of a temporal is its lexical form**, and parses back to the same
   value: `"2026-02-28T23:59:59+05:00"`, `"...Z"` for a zero offset,
   `"...@Europe/Paris"` only for a zone id, `"2026-02-28T23:59:59"` with none;
-  likewise for `time`.
+  likewise for `time`. A fraction of a second prints only when it is non-zero,
+  with trailing zeros trimmed: `string(time("10:00:00.500"))` is `"10:00:00.5"`,
+  `string(time("10:00:00.000"))` is `"10:00:00"`.
 - **`today()` is the UTC date**, not the host's: with `feel.timezone` set (the
   engine clock's zone, UTC by default) it is the date in that zone.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
@@ -422,6 +462,12 @@ opens as an empty canvas.
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated
   decisions run but do not appear in the result.
+- **Values cross a decision service as FEEL values.** Invoked from FEEL, a
+  service receives and returns its values unconverted: a zoneless date and
+  time stays zoneless, a `date` or `time` keeps its kind, a years-and-months
+  duration stays a duration and a number keeps every decimal digit. Only
+  `Result.Outputs` and the trace are narrowed to plain Go/JSON (temporals and
+  durations as FEEL lexical strings, numbers as `float64`).
 - **An empty cell means `-`** (any), not "equals empty string".
 - **`itemDefinition` is an `xsd:choice`.** A type is *either* a constrained
   simple type (`typeRef` + `allowedValues`) *or* a structure (`itemComponent`)

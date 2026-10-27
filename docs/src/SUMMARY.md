@@ -10,6 +10,7 @@
 # Modelling
 
 - [Decision Tables](concepts/decision-tables.md)
+- [Decision Services](concepts/decision-services.md)
 - [Agent Decisions](concepts/agent-decisions.md)
 - [Traces](concepts/traces.md)
 

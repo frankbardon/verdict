@@ -100,11 +100,16 @@ func (p *Program) invokeAgent(ec *Context, a *model.AgentDecision) (any, error) 
 			"model contains an agent decision but no agent bridge is registered").At(a.ExprID(), "")
 	}
 
-	inputs, err := p.bindAgentInputs(ec, a)
+	native, err := p.bindAgentInputs(ec, a)
 	if err != nil {
 		return nil, err
 	}
-	prompt, err := p.renderPrompt(a, inputs)
+	// The agent, the trace and the prompt all see the bindings and nothing
+	// else. Request.Inputs and the trace get the boundary shape every other
+	// surface carries; the prompt is rendered from the native values so its
+	// scalars print exactly as FEEL prints them.
+	inputs := exportValues(native)
+	prompt, err := p.renderPrompt(a, native)
 	if err != nil {
 		return nil, err
 	}
@@ -196,9 +201,9 @@ func wrapAgentTimeout(a *model.AgentDecision, budget time.Duration, err error, a
 // legal FEEL name, so a model cannot collide with it.
 const currentDecisionNameKey = "__verdict_decision_name"
 
-// bindAgentInputs evaluates the declared bindings. The agent sees these values
-// and nothing else — the same encapsulation discipline DMN applies to a BKM's
-// parameters.
+// bindAgentInputs evaluates the declared bindings, returning native FEEL
+// values. The agent sees these values and nothing else — the same
+// encapsulation discipline DMN applies to a BKM's parameters.
 func (p *Program) bindAgentInputs(ec *Context, a *model.AgentDecision) (map[string]any, error) {
 	out := make(map[string]any, len(a.Bindings))
 	for _, b := range a.Bindings {
@@ -212,7 +217,7 @@ func (p *Program) bindAgentInputs(ec *Context, a *model.AgentDecision) (map[stri
 			return nil, diag.Errorf(diag.CodeExpressionError,
 				"agent input binding %q: %v", b.Name, err).At(a.ExprID(), "")
 		}
-		out[b.Name] = feel.ToGo(v)
+		out[b.Name] = v
 	}
 	return out, nil
 }
@@ -234,22 +239,40 @@ func (p *Program) renderPrompt(a *model.AgentDecision, inputs map[string]any) (s
 	return buf.String(), nil
 }
 
-// templateData renders values the way a prompt wants to read them: structured
-// values as indented JSON rather than as Go's `map[k:v]` spelling, which models
-// parse poorly.
+// templateData renders values the way a prompt wants to read them. A scalar
+// prints in its FEEL lexical form — 1000000 rather than Go's 1e+06, a date as
+// 2024-03-05, a duration as P1DT2H, null as null — and a structured value as
+// indented JSON in the boundary shape (feel.ToGo) rather than as Go's
+// `map[k:v]` spelling, which models parse poorly.
 func templateData(inputs map[string]any) map[string]any {
 	out := make(map[string]any, len(inputs))
 	for k, v := range inputs {
-		switch v.(type) {
+		switch g := feel.ToGo(v).(type) {
 		case map[string]any, []any:
-			if b, err := json.MarshalIndent(v, "", "  "); err == nil {
+			if b, err := json.MarshalIndent(g, "", "  "); err == nil {
 				out[k] = string(b)
 				continue
 			}
 		}
-		out[k] = v
+		out[k] = lexical(v)
 	}
 	return out
+}
+
+// lexical prints a native FEEL scalar as FEEL prints it. Strings and booleans
+// are already plain; numbers, temporals and durations print through their own
+// String method, which is the FEEL lexical form.
+func lexical(v any) any {
+	switch x := v.(type) {
+	case string, bool:
+		return x
+	case fmt.Stringer:
+		return x.String()
+	}
+	if feel.IsNull(v) {
+		return "null"
+	}
+	return v
 }
 
 // validateAgentValue runs the optional FEEL validator with the coerced answer

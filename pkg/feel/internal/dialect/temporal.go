@@ -130,6 +130,12 @@ func hasFixedOffset(loc *time.Location) bool {
 // layout, then nothing for a local value, `@zone-id` for one placed by an IANA
 // zone id, and otherwise its offset — `Z` for UTC, `+05:00` for any other — so
 // that parsing the string gives the value back.
+//
+// VERDICT DIVERGENCE: callers pass a layout ending in `05.999999999`, so a
+// fraction of a second prints only when it is non-zero, without trailing zeros
+// (`10:00:00.5`, never `10:00:00.500` or `10:00:00.0`). Upstream printed whole
+// seconds only, so `string(time("10:00:00.5"))` was `10:00:00`, which parses
+// back to a different time.
 func formatZoned(t time.Time, layout string, hasOffset, zoneID bool) string {
 	switch {
 	case !hasOffset:
@@ -249,7 +255,7 @@ func (t FEELTime) MarshalJSON() ([]byte, error) {
 // `10:00:00Z`, `10:00:00+02:00` or `10:00:00@Etc/UTC`, so that
 // time(string(t)) is t again.
 func (t FEELTime) String() string {
-	return formatZoned(t.t, "15:04:05", t.hasOffset, t.zoneID)
+	return formatZoned(t.t, "15:04:05.999999999", t.hasOffset, t.zoneID)
 }
 
 type FEELDate struct {
@@ -365,7 +371,7 @@ func (dt FEELDatetime) MarshalJSON() ([]byte, error) {
 // layout, so `+05:00` printed as `@+0500` and `Z` as `@UTC`, neither of which
 // is DMN's lexical form.
 func (dt FEELDatetime) String() string {
-	return formatZoned(dt.t, "2006-01-02T15:04:05", dt.hasOffset, dt.zoneID)
+	return formatZoned(dt.t, "2006-01-02T15:04:05.999999999", dt.hasOffset, dt.zoneID)
 }
 
 // Add is date and time ± duration (DMN 1.5 §10.3.2.15, Table 57); a negative
@@ -710,6 +716,30 @@ func scaleDuration(d *FEELDuration, factor *Number, divide bool) (res *FEELDurat
 		return NewYearsMonthsDuration(q.Int64()), true, nil
 	}
 	return NewFEELDuration(time.Duration(q.Int64())), true, nil
+}
+
+// divideDurations is duration / duration (DMN 1.5 §10.3.2.15, Table 59): for
+// two years and months durations valueymd(e1) / valueymd(e2), the ratio of
+// their total months; for two days and time durations valuedtd(e1) /
+// valuedtd(e2), the ratio of their lengths. The result is a number. ok is false
+// — the operator's null — when the divisor is zero or the kinds differ: Table
+// 59 has no cell for a mixed pair, and one kind is never coerced to the other.
+//
+// VERDICT DIVERGENCE: upstream had no duration case in `/`.
+func divideDurations(a, b *FEELDuration) (*Number, bool) {
+	if a.isYearsMonths() != b.isYearsMonths() {
+		return nil, false
+	}
+	var x, y int64
+	if a.isYearsMonths() {
+		x, y = a.signedMonths(), b.signedMonths()
+	} else {
+		x, y = int64(a.Duration()), int64(b.Duration())
+	}
+	if y == 0 {
+		return nil, false
+	}
+	return NewNumberFromInt64(x).Div(NewNumberFromInt64(y)), true
 }
 
 // compareDurations orders two durations of the same kind: years-and-months by

@@ -22,54 +22,34 @@ func contextGetByKeys(ctx map[string]any, keys []string) (any, bool) {
 	return nil, false
 }
 
-func contextProbePut(ctx map[string]any, keys []string) bool {
-	for i, key := range keys {
-		if i == len(keys)-1 {
-			return true
-		} else {
-			v, ok := ctx[key]
-			if !ok {
-				// empty cell can be put
-				return true
-			}
-			if subctx, ok := v.(map[string]any); ok {
-				ctx = subctx
-			} else {
-				// sub ctx is not map
-				return false
-			}
-		}
+// contextPutCopy is ctx with value put under the key path keys, as a new
+// context: each context along the path is copied, never written in place, and
+// a missing one is created. false when an existing entry along the path is not
+// a context.
+func contextPutCopy(ctx map[string]any, keys []string, value any) (map[string]any, bool) {
+	out := make(map[string]any, len(ctx)+1)
+	for k, v := range ctx {
+		out[k] = v
 	}
-	return false
-}
-
-func contextPutKeys(ctx map[string]any, keys []string, value any) (map[string]any, bool) {
-	if !contextProbePut(ctx, keys) {
-		// cannot put keys
-		return ctx, false
+	if len(keys) == 1 {
+		out[keys[0]] = value
+		return out, true
 	}
-
-	rootCtx := ctx
-	for i, key := range keys {
-		if i == len(keys)-1 {
-			// the last key
-			ctx[key] = value
-			return rootCtx, true
-		} else {
-			if v, ok := ctx[key]; ok {
-				if subctx, ok := v.(map[string]any); ok {
-					ctx = subctx
-				} else {
-					return rootCtx, false
-				}
-			} else {
-				subctx := make(map[string]any)
-				ctx[key] = subctx
-				ctx = subctx
-			}
-		}
+	var inner map[string]any
+	switch sub := ctx[keys[0]].(type) {
+	case nil:
+		inner = map[string]any{}
+	case map[string]any:
+		inner = sub
+	default:
+		return nil, false
 	}
-	return rootCtx, false
+	put, ok := contextPutCopy(inner, keys[1:], value)
+	if !ok {
+		return nil, false
+	}
+	out[keys[0]] = put
+	return out, true
 }
 
 func installContextFunctions(prelude *Prelude) {
@@ -99,9 +79,15 @@ func installContextFunctions(prelude *Prelude) {
 			}
 		}
 
+		// VERDICT DIVERGENCE: a context or key path mapstructure cannot
+		// decode — null, a list holding a non-string — is null rather than
+		// an error (DMN 1.5 §10.3.4.10, §10.3.4); so is an empty key path.
+		if isNullValue(kwargs["context"]) {
+			return null, nil
+		}
 		argsByKeys := getvalueByKeys{}
-		if err := decodeKWArgs(kwargs, &argsByKeys); err != nil {
-			return nil, err
+		if err := decodeKWArgs(kwargs, &argsByKeys); err != nil || len(argsByKeys.Keys) == 0 {
+			return null, nil
 		}
 
 		if v, ok := contextGetByKeys(argsByKeys.Context, argsByKeys.Keys); ok {
@@ -123,43 +109,68 @@ func installContextFunctions(prelude *Prelude) {
 		return entries, nil
 	}).Required("context"))
 
+	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure,
+	// so a null context, key or keys raised, a context built from a non-map
+	// was empty, and a put under a nested key wrote into the argument's own
+	// nested context — a value other expressions still held. DMN 1.5 §10.3.4.10
+	// Table 81: context is a context, key a string or keys a non-empty list of
+	// strings, and value "any element including null"; the result is a new
+	// context, the entry overriding one with the same key. §10.3.4 makes any
+	// other argument null (TCK 1146, 1147), and the fork reads a key path
+	// through an existing entry that is not a context as outside the domain
+	// too, where upstream returned the context unchanged.
 	prelude.Bind("context put", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		type putByKey struct {
-			Context map[string]any `json:"context"`
-			Key     string         `json:"key"`
-			Value   any            `json:"value"`
+		ctx, ok := kwargs["context"].(map[string]any)
+		if !ok {
+			return null, nil
 		}
-
-		type putByKeys struct {
-			Context map[string]any `json:"context"`
-			Keys    []string       `json:"key"`
-			Value   any            `json:"value"`
-		}
-
-		argsByKey := putByKey{}
-
-		if err := decodeKWArgs(kwargs, &argsByKey); err != nil {
-			argsByKeys := putByKeys{}
-			if err := decodeKWArgs(kwargs, &argsByKeys); err != nil {
-				return nil, err
+		var keys []string
+		switch k := kwargs["key"].(type) {
+		case string:
+			keys = []string{k}
+		case []any:
+			for _, e := range k {
+				s, ok := e.(string)
+				if !ok {
+					return null, nil
+				}
+				keys = append(keys, s)
 			}
-			ctx, _ := contextPutKeys(argsByKeys.Context, argsByKeys.Keys, argsByKeys.Value)
-			return ctx, nil
-		} else {
-			ctx, _ := contextPutKeys(argsByKey.Context, []string{argsByKey.Key}, argsByKey.Value)
-			return ctx, nil
 		}
+		if len(keys) == 0 {
+			return null, nil
+		}
+		out, ok := contextPutCopy(ctx, keys, kwargs["value"])
+		if !ok {
+			return null, nil
+		}
+		return out, nil
 	}).Required("context", "key", "value"))
 
-	prelude.Bind("context merge", wrapTyped(func(contexts []map[string]any) (map[string]any, error) {
+	// VERDICT DIVERGENCE: upstream bound its parameter as "contextx", so the
+	// named form `context merge(contexts: ...)` failed, and decoded it through
+	// mapstructure, so `context merge({a: 1})` raised "source data must be an
+	// array or slice". DMN 1.5 §10.3.4.10 Table 81: contexts is a list of
+	// contexts, later entries overriding earlier ones with the same key; a
+	// lone context is the singleton list §10.3.2.9.4 converts it to, and
+	// §10.3.4 makes null, or an item that is not a context, null.
+	prelude.Bind("context merge", NewNativeFunc(func(kwargs map[string]any) (any, error) {
+		list, ok := listArg(kwargs["contexts"])
+		if !ok {
+			return null, nil
+		}
 		merged := make(map[string]any)
-		for _, ctx := range contexts {
+		for _, item := range list {
+			ctx, ok := item.(map[string]any)
+			if !ok {
+				return null, nil
+			}
 			for k, v := range ctx {
 				merged[k] = v
 			}
 		}
 		return merged, nil
-	}).Required("contextx"))
+	}).Required("contexts"))
 
 }
 

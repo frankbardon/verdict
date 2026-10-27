@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -259,9 +258,13 @@ func (p *Program) evalInvocation(ec *Context, e *model.Invocation) (any, error) 
 	return v, err
 }
 
-// memoKey builds a stable cache key from a call site and its arguments. Values
-// that do not render deterministically make the key unusable, in which case the
-// entry simply never hits — a wrong cache hit would be far worse than a miss.
+// memoKey builds a stable cache key from a call site and its arguments. Each
+// argument is keyed by feel.KeyOf — its kind and FEEL lexical form — so two
+// distinct FEEL values never share a key: a zoneless date and time and the same
+// wall clock at UTC, a date and its midnight date and time, and a time and a
+// date and time all differ. Values that do not render deterministically make
+// the key unusable, in which case the entry simply never hits — a wrong cache
+// hit would be far worse than a miss.
 func memoKey(id string, args map[string]any) string {
 	names := make([]string, 0, len(args))
 	for k := range args {
@@ -275,11 +278,11 @@ func memoKey(id string, args map[string]any) string {
 		b.WriteByte(0x1f)
 		b.WriteString(n)
 		b.WriteByte('=')
-		blob, err := json.Marshal(feel.ToGoExact(args[n]))
-		if err != nil {
+		key, ok := feel.KeyOf(args[n])
+		if !ok {
 			return ""
 		}
-		b.Write(blob)
+		b.WriteString(key)
 	}
 	return b.String()
 }

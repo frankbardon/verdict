@@ -18,13 +18,16 @@ import (
 
 // RequestBody is what the bridge POSTs.
 type RequestBody struct {
-	DecisionID   string         `json:"decision_id"`
-	DecisionName string         `json:"decision_name,omitempty"`
-	Prompt       string         `json:"prompt"`
-	Inputs       map[string]any `json:"inputs,omitempty"`
-	OutputType   TypeSpec       `json:"output_type"`
-	SessionHint  string         `json:"session_hint,omitempty"`
-	Attempt      int            `json:"attempt"`
+	DecisionID   string `json:"decision_id"`
+	DecisionName string `json:"decision_name,omitempty"`
+	Prompt       string `json:"prompt"`
+	// Inputs is agent.Request.Inputs as-is: numbers as JSON numbers, every
+	// temporal and duration as its FEEL lexical string ("2024-03-05",
+	// "2024-03-05T10:00:00", "P1DT2H").
+	Inputs      map[string]any `json:"inputs,omitempty"`
+	OutputType  TypeSpec       `json:"output_type"`
+	SessionHint string         `json:"session_hint,omitempty"`
+	Attempt     int            `json:"attempt"`
 }
 
 // ResponseBody is what the bridge expects back. `value` is the only required

@@ -134,14 +134,24 @@ func fromGoReflect(v any) any {
 	return v
 }
 
-// ToGo converts a FEEL value back into plain Go: numbers become float64, FEEL
-// temporals become time.Time or time.Duration, null becomes nil, and contexts
+// ToGo converts a FEEL value into the plain Go value Verdict hands to the
+// outside world: Result.Outputs, every trace node, an agent's Request.Inputs,
+// and so every JSON surface built on them (MCP, Twirp, the CLI, Nexus). It is
+// the one boundary conversion, so every one of those surfaces shows a value
+// the same way.
+//
+// Numbers become float64. Every temporal and both duration kinds become their
+// FEEL lexical string, so the value says what kind it is and keeps its
+// zone-ness: a date is "2024-03-05", a time "10:00:00" (or "10:00:00Z",
+// "10:00:00+02:00"), a date and time "2024-03-05T10:00:00" when zoneless and
+// "...Z", "...+02:00" or "...@Europe/Paris" when zoned, and a duration
+// "P1DT2H" or "P1Y2M". Each string parses back to the same FEEL value through
+// date(), time(), date and time() or duration(). Null becomes nil, and contexts
 // and lists are converted element-wise.
 //
 // FEEL numbers carry more precision than a float64 can hold. ToGo is the
 // interop boundary, not the arithmetic one — every calculation happens in full
 // precision inside the evaluator and only the final value is narrowed here.
-// Use ToGoExact when the extra digits matter.
 func ToGo(v any) any {
 	switch x := v.(type) {
 	case nil:
@@ -154,19 +164,32 @@ func ToGo(v any) any {
 		}
 		return x.Float64()
 	case *pfeel.FEELDate:
-		return x.Date()
-	case *pfeel.FEELTime:
-		return x.Time()
-	case *pfeel.FEELDatetime:
-		return x.Time()
-	case *pfeel.FEELDuration:
-		return durationToGo(x)
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, e := range x {
-			out[k] = ToGo(e)
+		if x == nil {
+			return nil
 		}
-		return out
+		return x.String()
+	case *pfeel.FEELTime:
+		if x == nil {
+			return nil
+		}
+		return x.String()
+	case *pfeel.FEELDatetime:
+		if x == nil {
+			return nil
+		}
+		return x.String()
+	case *pfeel.FEELDuration:
+		if x == nil {
+			return nil
+		}
+		return x.String()
+	case map[string]any:
+		return contextToGo(x)
+	case pfeel.Scope:
+		// A context built by the evaluator (a context literal, a boxed
+		// context) is the fork's named map type; it is the same FEEL context
+		// and must not reach the boundary unconverted.
+		return contextToGo(x)
 	case []any:
 		out := make([]any, len(x))
 		for i, e := range x {
@@ -178,40 +201,142 @@ func ToGo(v any) any {
 	}
 }
 
-// ToGoExact is ToGo except that numbers are rendered as their exact decimal
-// string. Trace serialisation uses it when configured for full fidelity.
-func ToGoExact(v any) any {
-	if n, ok := v.(*pfeel.Number); ok && n != nil {
-		return n.String()
+func contextToGo(x map[string]any) map[string]any {
+	out := make(map[string]any, len(x))
+	for k, e := range x {
+		out[k] = ToGo(e)
 	}
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, e := range x {
-			out[k] = ToGoExact(e)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, e := range x {
-			out[i] = ToGoExact(e)
-		}
-		return out
-	}
-	return ToGo(v)
+	return out
 }
 
-// durationToGo narrows a FEEL duration to a time.Duration. Years-and-months
-// durations have no exact nanosecond length, so they are returned as their
-// canonical ISO-8601 string rather than a wrong number.
-func durationToGo(d *pfeel.FEELDuration) any {
-	if d == nil {
-		return nil
+// KeyOf renders v as a string that identifies it as a FEEL value: two values
+// get the same key only if they are the same kind and print the same lexical
+// form. Every scalar is tagged with its kind, so a string never meets a number
+// or a temporal that prints alike, a date never meets the midnight date and
+// time of that day, and a zoneless date and time never meets the same wall
+// clock at UTC (its lexical form has no `Z`). Numbers use their exact decimal
+// form. Values with no deterministic rendering (functions, unknown Go types)
+// report ok=false, so a caller using the key as a cache key can decline to
+// cache rather than risk a wrong hit.
+//
+// Two equal FEEL values can still get different keys (`1` and `1.0`, the same
+// instant at two offsets); that costs a cache miss, never a wrong answer.
+func KeyOf(v any) (string, bool) {
+	var b strings.Builder
+	if !writeKey(&b, v) {
+		return "", false
 	}
-	if d.IsYearsMonths() {
-		return d.String()
+	return b.String(), true
+}
+
+func writeKey(b *strings.Builder, v any) bool {
+	quote := func(tag, s string) {
+		b.WriteString(tag)
+		b.WriteByte(':')
+		b.WriteString(fmt.Sprintf("%q", s))
 	}
-	return d.Duration()
+	switch x := v.(type) {
+	case nil, *pfeel.NullValue:
+		b.WriteString("null")
+	case bool:
+		if x {
+			b.WriteString("true")
+		} else {
+			b.WriteString("false")
+		}
+	case string:
+		quote("s", x)
+	case *pfeel.Number:
+		if x == nil {
+			b.WriteString("null")
+			return true
+		}
+		quote("n", x.String())
+	case *pfeel.FEELDate:
+		if x == nil {
+			return false
+		}
+		quote("date", x.String())
+	case *pfeel.FEELTime:
+		if x == nil {
+			return false
+		}
+		quote("time", x.String())
+	case *pfeel.FEELDatetime:
+		if x == nil {
+			return false
+		}
+		quote("dt", x.String())
+	case *pfeel.FEELDuration:
+		if x == nil {
+			return false
+		}
+		if x.IsYearsMonths() {
+			quote("ymd", x.String())
+		} else {
+			quote("dtd", x.String())
+		}
+	case *pfeel.RangeValue:
+		if x == nil {
+			return false
+		}
+		b.WriteString("range(")
+		if x.StartOpen {
+			b.WriteByte('(')
+		} else {
+			b.WriteByte('[')
+		}
+		if !writeKey(b, x.Start) {
+			return false
+		}
+		b.WriteString("..")
+		if !writeKey(b, x.End) {
+			return false
+		}
+		if x.EndOpen {
+			b.WriteByte(')')
+		} else {
+			b.WriteByte(']')
+		}
+		b.WriteByte(')')
+	case map[string]any:
+		names := make([]string, 0, len(x))
+		for k := range x {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		b.WriteByte('{')
+		for i, k := range names {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(fmt.Sprintf("%q", k))
+			b.WriteByte(':')
+			if !writeKey(b, x[k]) {
+				return false
+			}
+		}
+		b.WriteByte('}')
+	case []any:
+		b.WriteByte('[')
+		for i, e := range x {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			if !writeKey(b, e) {
+				return false
+			}
+		}
+		b.WriteByte(']')
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
+		float32, float64, json.Number, time.Time, time.Duration:
+		// A plain Go scalar is keyed as the FEEL value it converts to.
+		return writeKey(b, FromGo(x))
+	default:
+		// Functions and anything else have no rendering the key can trust.
+		return false
+	}
+	return true
 }
 
 // Equal reports whether a = b is true in FEEL (DMN 1.5 §10.3.2.15, Tables 52
@@ -236,65 +361,26 @@ func equal3(a, b any) (eq, known bool) {
 	}
 }
 
-// Compare orders two FEEL values, reporting ok=false when they are not
-// comparable. Numbers, strings, booleans and temporals are ordered; contexts
-// and functions are not. COLLECT MIN/MAX and OUTPUT ORDER depend on it.
+// Compare orders two FEEL values as FEEL's `<` does, reporting ok=false when
+// FEEL defines no order between them. Numbers, strings, durations of one kind,
+// times, and dates with date and times are ordered (DMN 1.5 Table 54);
+// booleans, lists, contexts, ranges and functions are not, nor is any pair of
+// different kinds or a null operand (§10.3.2.15). This is the ordering FEEL's
+// min and max use, so COLLECT MIN/MAX agree with them, and the analyser picks
+// its witnesses by it too.
 func Compare(a, b any) (int, bool) {
-	an, aok := a.(*pfeel.Number)
-	bn, bok := b.(*pfeel.Number)
-	if aok && bok {
-		return an.Cmp(bn), true
+	if IsNull(a) || IsNull(b) {
+		return 0, false
 	}
-	as, aok := a.(string)
-	bs, bok := b.(string)
-	if aok && bok {
-		return strings.Compare(as, bs), true
-	}
-	ab, aok := a.(bool)
-	bb, bok := b.(bool)
-	if aok && bok {
-		switch {
-		case ab == bb:
-			return 0, true
-		case !ab:
-			return -1, true
-		default:
-			return 1, true
+	if at, ok := a.(time.Time); ok {
+		// A raw Go time is not a FEEL value, but callers outside the
+		// evaluator may still hand one over; order two of them by instant.
+		if bt, ok := b.(time.Time); ok {
+			return at.Compare(bt), true
 		}
+		return 0, false
 	}
-	if IsTemporal(a) && IsTemporal(b) {
-		// The fork's ordering, so that a zoneless time or date and time
-		// against a zoned one adopts the zoned one's offset as `<` does
-		// (DMN 1.5 Table 54). Two FEEL temporals always order there.
-		return pfeel.CompareValues(a, b), true
-	}
-	at, aok := timeOf(a)
-	bt, bok := timeOf(b)
-	if aok && bok {
-		switch {
-		case at.Before(bt):
-			return -1, true
-		case at.After(bt):
-			return 1, true
-		default:
-			return 0, true
-		}
-	}
-	return 0, false
-}
-
-func timeOf(v any) (time.Time, bool) {
-	switch x := v.(type) {
-	case *pfeel.FEELDate:
-		return x.Date(), true
-	case *pfeel.FEELTime:
-		return x.Time(), true
-	case *pfeel.FEELDatetime:
-		return x.Time(), true
-	case time.Time:
-		return x, true
-	}
-	return time.Time{}, false
+	return pfeel.OrderValues(a, b)
 }
 
 // SortValues sorts a list of FEEL values in ascending order, leaving values it
@@ -336,10 +422,11 @@ func TypeName(v any) string {
 // datetimeFromGo builds a FEEL date-and-time from a Go time. The embedded
 // library keeps its temporal fields unexported and offers only string parsing,
 // so the conversion round-trips through the offset-bearing ISO-8601 form it
-// accepts. Sub-second precision is not representable in that form and is
-// dropped, which matches DMN's own second-resolution literal grammar.
+// accepts. The fraction of a second is kept to the nanosecond, as a FEEL date
+// and time holds it, so a sub-second input is not silently truncated. The
+// result is always zoned: a time.Time has no zoneless form.
 func datetimeFromGo(t time.Time) any {
-	dt, err := pfeel.ParseDatetime(t.Format("2006-01-02T15:04:05-07:00"))
+	dt, err := pfeel.ParseDatetime(t.Format("2006-01-02T15:04:05.999999999-07:00"))
 	if err != nil {
 		return Null
 	}

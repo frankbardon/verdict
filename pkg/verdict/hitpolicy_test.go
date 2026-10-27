@@ -80,6 +80,13 @@ func TestHitPolicies(t *testing.T) {
 		{"collect_max", 25, 9.0},
 		{"collect_count", 25, 3.0},
 
+		// MIN and MAX order as FEEL's min and max do: booleans have no
+		// order and different kinds do not compare, so either is null.
+		{"collect_min_boolean", 25, nil},
+		{"collect_min_boolean", 5, nil},
+		{"collect_max_mixed", 25, nil},
+		{"collect_max_mixed", 5, 5.0},
+
 		// An empty collect is the empty list, not null.
 		{"collect_table", -1, []any{}},
 		{"collect_count", -1, 0.0},

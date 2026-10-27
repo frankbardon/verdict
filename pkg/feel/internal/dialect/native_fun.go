@@ -36,6 +36,30 @@ type NativeFun struct {
 	// overloads, when set, replaces requiredArgNames/optionalArgNames: each
 	// entry is one signature's parameter names in order. See Overloads.
 	overloads [][]string
+
+	// standard marks a DMN standard built-in: a call whose arguments do not
+	// fit its parameters is null rather than an error (see EvalNativeFun).
+	// The prelude sets it on every native function it binds; Standard sets
+	// it on one bound elsewhere.
+	standard bool
+}
+
+// Standard marks the function as a DMN standard built-in, so a call to it
+// with the wrong arguments is null (DMN 1.5 §10.3.4) instead of an error.
+//
+// VERDICT DIVERGENCE: fork-only; see EvalNativeFun.
+func (nativeFun *NativeFun) Standard() *NativeFun {
+	nativeFun.standard = true
+	return nativeFun
+}
+
+// bindFailure is the result of a call whose arguments fit no parameter list:
+// null for a standard built-in, the binding error for anything else.
+func (nativeFun *NativeFun) bindFailure(err error) (any, error) {
+	if nativeFun.standard {
+		return null, nil
+	}
+	return nil, err
 }
 
 func NewNativeFunc(fn NativeFunDef) *NativeFun {
@@ -275,6 +299,9 @@ func (self *Prelude) Load() {
 func (self *Prelude) Bind(name string, value interface{}) *Prelude {
 	if _, ok := self.vars[name]; ok {
 		panic(fmt.Sprintf("bind(), name '%s' already bound", name))
+	}
+	if nf, ok := value.(*NativeFun); ok {
+		nf.standard = true
 	}
 	self.vars[name] = normalizeValue(value)
 	return self

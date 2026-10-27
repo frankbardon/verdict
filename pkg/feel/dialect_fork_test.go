@@ -929,9 +929,9 @@ func TestForkedDefects(t *testing.T) {
 		for expr, want := range map[string]any{
 			"abs(2)": 2.0, "abs(-2)": 2.0, "abs(-2.5)": 2.5, "abs(0)": 0.0, "abs(10)": 10.0, "abs(-10)": 10.0,
 			"abs(x)": 3.0, "abs(n: -7)": 7.0, "abs(-x)": 3.0,
-			`abs(duration("-PT5H"))`: 5 * time.Hour, `abs(duration("PT5H"))`: 5 * time.Hour,
-			`abs(@"-PT5H")`: 5 * time.Hour, "abs(d)": 5 * time.Hour, "-d": 5 * time.Hour,
-			`abs(date and time("2024-01-01T00:00:00") - date and time("2024-01-02T01:00:00"))`:    25 * time.Hour,
+			`abs(duration("-PT5H"))`: "PT5H", `abs(duration("PT5H"))`: "PT5H",
+			`abs(@"-PT5H")`: "PT5H", "abs(d)": "PT5H", "-d": "PT5H",
+			`abs(date and time("2024-01-01T00:00:00") - date and time("2024-01-02T01:00:00"))`:    "P1DT1H",
 			`string(date and time("2024-01-01T00:00:00") - date and time("2024-01-02T01:00:00"))`: "-P1DT1H",
 			`string(d)`: "-PT5H",
 			`abs(duration("-P1Y")) = duration("P1Y")`:     true,
@@ -1027,16 +1027,15 @@ func TestForkedDefects(t *testing.T) {
 			"1 / 0": nil, "0 / 0": nil,
 			"1 + 2": 3.0, "x - 1": 2.0, "x * 2": 6.0, "x / 2": 1.5,
 			`"a" + "b"`: "ab",
-			`@"2024-01-02T00:00:00" - @"2024-01-01T00:00:00"`: 24 * time.Hour,
+			`@"2024-01-02T00:00:00" - @"2024-01-01T00:00:00"`: "P1D",
 		} {
 			if got := mustEval(t, e, expr, vars); got != want {
 				t.Errorf("%s = %#v, want %#v", expr, got, want)
 			}
 		}
-		want := time.Date(2024, time.January, 1, 1, 0, 0, 0, time.UTC)
-		got, ok := mustEval(t, e, `@"2024-01-01T00:00:00" + duration("PT1H")`, nil).(time.Time)
-		if !ok || !got.Equal(want) {
-			t.Errorf("date and time + duration = %#v, want %v", got, want)
+		// The sum keeps the operand's zone-ness: zoneless in, zoneless out.
+		if got := mustEval(t, e, `@"2024-01-01T00:00:00" + duration("PT1H")`, nil); got != "2024-01-01T01:00:00" {
+			t.Errorf("date and time + duration = %#v, want 2024-01-01T01:00:00", got)
 		}
 	})
 
@@ -1048,7 +1047,7 @@ func TestForkedDefects(t *testing.T) {
 			"-x": -3.0, "- x": -3.0, "-(x + 1)": -4.0, "--x": 3.0, "1 - -x": 4.0,
 			"-x ** 2": 9.0, "-2 ** 2": 4.0,
 			"0 ** -1": nil, "(-8) ** 0.5": nil, "10 ** 100000": nil,
-			`-duration("PT1H")`: -time.Hour,
+			`-duration("PT1H")`: "-PT1H",
 		} {
 			if got := mustEval(t, e, expr, vars); got != want {
 				t.Errorf("%s = %#v, want %#v", expr, got, want)
@@ -1257,7 +1256,7 @@ func TestForkedDefects(t *testing.T) {
 				t.Errorf("%s = %#v, want %v", expr, got, want)
 			}
 		}
-		if got := mustEval(t, e, `duration("PT1.5S")`, nil); got != 1500*time.Millisecond {
+		if got := mustEval(t, e, `duration("PT1.5S")`, nil); got != "PT1.5S" {
 			t.Errorf(`duration("PT1.5S") = %#v, want 1.5s`, got)
 		}
 		// Adding the two kinds is outside + 's domain (§10.3.2.15): null.
@@ -1298,7 +1297,7 @@ func TestForkedDefects(t *testing.T) {
 			`string(time("23:00:00Z") + duration("PT2H"))`:      "01:00:00Z",
 			`string(time("01:00:00Z") - duration("PT2H"))`:      "23:00:00Z",
 			`string(time("10:00:00Z") + duration("P3DT1H"))`:    "11:00:00Z",
-			`string(time("10:00:00Z") - duration("-PT1.5S"))`:   "10:00:01Z",
+			`string(time("10:00:00Z") - duration("-PT1.5S"))`:   "10:00:01.5Z",
 			`string(duration("PT90M") + time("10:00:00Z"))`:     "11:30:00Z",
 			// date ± years and months duration, and commuted.
 			`string(date("2026-01-15") + duration("P1M"))`: "2026-02-15",
@@ -1522,12 +1521,19 @@ func TestForkedDefects(t *testing.T) {
 				t.Errorf("%s = %#v, want null", expr, ToGo(got))
 			}
 		}
-		// A call that fits no signature still fails, as for any built-in, and
-		// so does a second finer than the fork can hold.
-		for _, expr := range []string{`date()`, `date(2026, 2)`, `time(10, 0)`, `date(year: 2026, month: 2)`, `date(foo: 1)`, `time(10, 0, 0.0000000001)`} {
-			if v, err := e.EvalText(expr, nil); err == nil {
-				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
+		// A call that fits no signature is null, as for any standard
+		// built-in (DMN 1.5 §10.3.4; TCK 1145, 1155).
+		for _, expr := range []string{`date()`, `date(2026, 2)`, `time(10, 0)`, `date(year: 2026, month: 2)`, `date(foo: 1)`} {
+			got, err := e.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(got) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(got))
 			}
+		}
+		// A second finer than the fork can hold still fails.
+		if v, err := e.EvalText(`time(10, 0, 0.0000000001)`, nil); err == nil {
+			t.Errorf("time(10, 0, 0.0000000001) = %#v, want an evaluation error", ToGo(v))
 		}
 	})
 
@@ -1955,6 +1961,109 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("range built-ins apply the mixed-zone rule to every comparison", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.7 Table 78 defines each range built-in by `<`, `>`,
+		// `=`, `<=` and `>=`, so a zoned against a zoneless endpoint inherits
+		// Tables 53 and 54: `<`/`>` adopt the zoned offset, `=` is null, and
+		// `<=`/`>=` are true only when the strict comparison is. Upstream (and
+		// Verdict before issue #47) ordered every tie by the adopted offset.
+		cases := map[string]any{
+			// strict comparisons still adopt the offset
+			`before(time("10:00:00"), time("11:00:00Z"))`:                                            true,
+			`before(time("10:00:00"), time("10:00:00Z"))`:                                            false,
+			`before([time("09:00:00")..time("10:00:00")], time("10:00:00Z"))`:                        false,
+			`before([time("09:00:00")..time("10:00:00")], time("11:00:00Z"))`:                        true,
+			`overlaps([time("09:00:00")..time("10:30:00")], [time("10:00:00Z")..time("11:00:00Z")])`: true,
+			`includes([time("09:00:00Z")..time("11:00:00Z")], time("10:00:00"))`:                     true,
+			`includes([time("09:00:00Z")..time("11:00:00Z")], [time("09:30:00")..time("10:00:00")])`: true,
+			`after([time("10:00:00Z")..time("11:00:00Z")], (time("09:00:00")..time("10:00:00")])`:    false,
+			// a tie against an open endpoint, or an `=`, is null
+			`before([time("09:00:00")..time("10:00:00")), time("10:00:00Z"))`:                                                                                                     nil,
+			`before([time("09:00:00")..time("10:00:00")), [time("10:00:00Z")..time("11:00:00Z")])`:                                                                                nil,
+			`before(time("10:00:00Z"), (time("10:00:00")..time("11:00:00")])`:                                                                                                     nil,
+			`after(time("10:00:00Z"), [time("09:00:00")..time("10:00:00")))`:                                                                                                      nil,
+			`meets([time("09:00:00")..time("10:00:00")], [time("10:00:00Z")..time("11:00:00Z")])`:                                                                                 nil,
+			`met by([time("10:00:00Z")..time("11:00:00Z")], [time("09:00:00")..time("10:00:00")])`:                                                                                nil,
+			`overlaps([time("09:00:00")..time("10:00:00")], [time("10:00:00Z")..time("11:00:00Z")])`:                                                                              nil,
+			`overlaps before([time("09:00:00")..time("10:00:00")], [time("10:00:00Z")..time("11:00:00Z")])`:                                                                       nil,
+			`overlaps after([time("10:00:00Z")..time("11:00:00Z")], [time("09:00:00")..time("10:00:00")])`:                                                                        nil,
+			`finishes(time("10:00:00"), [time("09:00:00Z")..time("10:00:00Z")])`:                                                                                                  nil,
+			`finishes([time("09:30:00")..time("10:00:00")], [time("09:00:00Z")..time("10:00:00Z")])`:                                                                              nil,
+			`finished by([time("09:00:00Z")..time("10:00:00Z")], time("10:00:00"))`:                                                                                               nil,
+			`starts(time("09:00:00"), [time("09:00:00Z")..time("10:00:00Z")])`:                                                                                                    nil,
+			`started by([time("09:00:00Z")..time("10:00:00Z")], time("09:00:00"))`:                                                                                                nil,
+			`includes([time("09:00:00Z")..time("11:00:00Z")], time("09:00:00"))`:                                                                                                  nil,
+			`includes([time("09:00:00Z")..time("11:00:00Z")], [time("09:00:00")..time("10:00:00")])`:                                                                              nil,
+			`during(time("11:00:00"), [time("09:00:00Z")..time("11:00:00Z")])`:                                                                                                    nil,
+			`during(time("12:00:00"), [time("09:00:00Z")..time("11:00:00Z")])`:                                                                                                    nil,
+			`coincides(time("10:00:00"), time("10:00:00Z"))`:                                                                                                                      nil,
+			`coincides(time("10:00:00"), time("11:00:00Z"))`:                                                                                                                      nil,
+			`coincides([time("09:00:00")..time("10:00:00")], [time("09:00:00Z")..time("10:00:00Z")])`:                                                                             nil,
+			`coincides(date and time("2024-01-01T10:00:00"), date and time("2024-01-01T10:00:00Z"))`:                                                                              nil,
+			`meets([date and time("2024-01-01T09:00:00")..date and time("2024-01-01T10:00:00")], [date and time("2024-01-01T10:00:00Z")..date and time("2024-01-01T11:00:00Z")])`: nil,
+			// an open end needs no comparison, so it is still false
+			`meets([time("09:00:00")..time("10:00:00")), [time("10:00:00Z")..time("11:00:00Z")])`: false,
+			// operands of one zone-ness are unaffected
+			`meets([time("09:00:00")..time("10:00:00")], [time("10:00:00")..time("11:00:00")])`:               true,
+			`meets([time("09:00:00Z")..time("10:00:00Z")], [time("12:00:00+02:00")..time("13:00:00+02:00")])`: true,
+			`coincides(time("10:00:00+02:00"), time("08:00:00Z"))`:                                            true,
+			`starts(time("09:00:00"), [time("09:00:00")..time("10:00:00")])`:                                  true,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("a time is not comparable with a date or a date and time", func(t *testing.T) {
+		// DMN 1.5 Tables 53 and 54 compare a time only with a time, and a date
+		// with a date and time (as its UTC midnight, §10.3.2.3.5); any other
+		// temporal pair is outside the operators' domain and null
+		// (§10.3.2.15). Upstream ordered every temporal pair by instant, so a
+		// time compared as an instant on 0000-01-01 (issue #48).
+		cases := map[string]any{
+			`time("10:00:00") < date and time("2024-01-01T10:00:00")`:                                                  nil,
+			`time("10:00:00") > date and time("2024-01-01T10:00:00")`:                                                  nil,
+			`time("10:00:00") <= date and time("2024-01-01T10:00:00")`:                                                 nil,
+			`time("10:00:00") = date and time("2024-01-01T10:00:00")`:                                                  nil,
+			`time("10:00:00") != date and time("2024-01-01T10:00:00")`:                                                 nil,
+			`time("10:00:00Z") = date and time("2024-01-01T10:00:00Z")`:                                                nil,
+			`date("2024-01-01") < time("10:00:00")`:                                                                    nil,
+			`date("2024-01-01") = time("00:00:00Z")`:                                                                   nil,
+			`time("10:00:00") in [date and time("2024-01-01T09:00:00")..date and time("2024-01-01T11:00:00")]`:         nil,
+			`max(time("10:00:00"), date and time("2024-01-01T11:00:00"))`:                                              nil,
+			`before(time("10:00:00"), date and time("2024-01-01T11:00:00"))`:                                           nil,
+			`coincides(time("10:00:00"), date and time("2024-01-01T10:00:00"))`:                                        nil,
+			`includes([date and time("2024-01-01T09:00:00")..date and time("2024-01-01T11:00:00")], time("10:00:00"))`: nil,
+			// a date against a date and time keeps the #29 adoption rule
+			`date("2024-01-01") < date and time("2024-01-01T10:00:00")`:           true,
+			`date("2024-01-01") < date and time("2024-01-01T10:00:00Z")`:          true,
+			`date("2024-01-01") = date and time("2024-01-01T00:00:00")`:           true,
+			`before(date("2024-01-01"), date and time("2024-01-01T10:00:00Z"))`:   true,
+			`coincides(date("2024-01-01"), date and time("2024-01-01T00:00:00"))`: true,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		tm, err := ParseTemporal("10:00:00", "time")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dt, err := ParseTemporal("2024-01-01T10:00:00", "date and time")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r, ok := Compare(tm, dt); ok {
+			t.Errorf("Compare(time, date and time) = %d, true; want not comparable", r)
+		}
+		if Equal(tm, dt) {
+			t.Errorf("Equal(time, date and time) = true, want false (null)")
+		}
+	})
+
 	t.Run("zoned and zoneless values in the Go-side comparisons and unary tests", func(t *testing.T) {
 		// feel.Equal and the unary-test layer derive from the fork's `=`, and
 		// feel.Compare from its `<`, so decision tables, the ANY hit policy
@@ -2183,6 +2292,65 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("a duration divided by one of its kind is a number", func(t *testing.T) {
+		// Issue #43. Upstream had no duration case in `/`, and the scaling fix
+		// still made duration / duration null. DMN 1.5 §10.3.2.15 Table 59:
+		// valueymd(e1) / valueymd(e2) and valuedtd(e1) / valuedtd(e2) are
+		// numbers; a zero divisor, mixed kinds and number / duration are null.
+		// TCK 0100-arithmetic (divide_lhs_*Duration_by_rhs_*Duration_*).
+		for expr, want := range map[string]float64{
+			`@"P10Y" / @"P5Y"`:            2,
+			`@"P10D" / @"P5D"`:            2,
+			`@"P1Y" / @"P1M"`:             12,
+			`@"P1D" / @"PT1H"`:            24,
+			`@"-P1Y" / @"P6M"`:            -2,
+			`@"P1M" / @"P1Y"`:             1.0 / 12,
+			`@"PT1.5S" / @"PT0.5S"`:       3,
+			`@"PT1S" / @"PT0.000000001S"`: 1e9,
+		} {
+			got, ok := mustEval(t, e, expr, nil).(float64)
+			if !ok || !approx(got, want) {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// Exact, not float64: a third of a year is 4 months to every digit.
+		if got := mustEval(t, e, `@"P1Y" / @"P3M" = 4 and @"P1M" / @"P3M" = 1 / 3`, nil); got != true {
+			t.Errorf("duration ratios are not exact decimals: %#v", got)
+		}
+		for _, expr := range []string{
+			`@"P10D" / @"P0D"`,
+			`@"P10Y" / @"P0Y"`,
+			`@"P10D" / @"P0Y"`,
+			`@"P10Y" / @"PT0S"`,
+			`@"P1D" / @"P1Y"`,
+			`@"P1Y" / @"P1D"`,
+			`10 / @"P1D"`,
+			`10 / @"P1Y"`,
+			`@"P1D" / null`,
+			`@"P1D" / "P1D"`,
+			`@"P1D" * @"P1D"`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+	})
+
+	t.Run("a number's exact value reaches the supplement", func(t *testing.T) {
+		// Issue #41. Upstream exposed a Number only through Float64, Int64 and
+		// String, so the supplement's odd, even, sqrt, log and exp read it as a
+		// float64. Number.BigFloat hands over the full-precision value.
+		for _, expr := range []string{
+			`odd(9007199254740993)`,
+			`even(9007199254740994)`,
+			`sqrt(2) = 1.414213562373095048801688724209698`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+	})
+
 	t.Run("syntax errors report a 1-based line and column", func(t *testing.T) {
 		// Upstream printed the scanner's 0-based row and column, so an error
 		// at the very start read "at 0 0", like an unset position, and every
@@ -2232,6 +2400,356 @@ func TestForkedDefects(t *testing.T) {
 			}
 			if got := mustEval(t, e, fmt.Sprintf(`today() = date(%q) or today() = date(%q)`, before, after), nil); got != true {
 				t.Errorf("with time.Local = %s, today() is not the UTC date: %v", zone, got)
+			}
+		}
+	})
+
+	// evalCases evaluates each expression and compares it, through ToGo,
+	// with its expected value; an evaluation error fails the case.
+	evalCases := func(t *testing.T, cases []struct {
+		expr string
+		want any
+	}) {
+		t.Helper()
+		for _, c := range cases {
+			v, err := e.EvalText(c.expr, nil)
+			if err != nil {
+				t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+				continue
+			}
+			if got := ToGo(v); !deepEqualNum(got, c.want) {
+				t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+			}
+		}
+	}
+
+	t.Run("string() renders FEEL form", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.1 Table 72; upstream used fmt's %s, so
+		// string(true) was "%!s(bool=true)" and string([1,2]) "[1 2]".
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`string(true)`, "true"},
+			{`string(false)`, "false"},
+			{`string([1,2])`, "[1, 2]"},
+			{`string({a: 1, b: "x"})`, `{a: 1, b: "x"}`},
+			{`string([1, "a", null, [true], {c: {d: "e"}}])`, `[1, "a", null, [true], {c: {d: "e"}}]`},
+			{`string(["say \"hi\""])`, `["say \"hi\""]`},
+			{`string({"a b": 1, "1x": 2, "": 3})`, `{"": 3, "1x": 2, a b: 1}`},
+			{`string([])`, "[]"},
+			{`string({})`, "{}"},
+			{`string([1..2])`, "[1..2]"},
+			{`string([date("2020-01-01")])`, "[2020-01-01]"},
+			{`string("abc")`, "abc"},
+			{`string(1.5)`, "1.5"},
+			{`string(date("2020-01-01"))`, "2020-01-01"},
+			{`string(null)`, nil},
+		})
+	})
+
+	t.Run("context merge and list contains convert a singleton instead of raising", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.9.4 and §10.3.2.15: a non-list argument to a list
+		// parameter is a singleton list; null is outside the domain. Upstream
+		// raised "source data must be an array or slice", and bound context
+		// merge's parameter as "contextx".
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`context merge({a: 1})`, map[string]any{"a": 1.0}},
+			{`context merge([{a: 1}, {b: 2}])`, map[string]any{"a": 1.0, "b": 2.0}},
+			{`context merge(contexts: [{a: 1}, {a: 2}])`, map[string]any{"a": 2.0}},
+			{`context merge(null)`, nil},
+			{`context merge([{a: 1}, 5])`, nil},
+			{`context merge([{a: 1}, null])`, nil},
+			{`context merge(5)`, nil},
+			{`list contains(5, 5)`, true},
+			{`list contains(5, 6)`, false},
+			{`list contains(null, 5)`, nil},
+			{`list contains([1, null], null)`, true},
+		})
+	})
+
+	t.Run("typed built-ins are null outside their domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4: "Whenever a parameter is outside its domain, the
+		// result of the built-in is null." Upstream decoded through
+		// mapstructure: a mismatch raised, and null became an empty
+		// context. The "including null" parameters keep taking null.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`contains(null, null)`, nil},
+			{`contains(null, "bar")`, nil},
+			{`contains("bar", null)`, nil},
+			{`string length(null)`, nil},
+			{`string length(1)`, nil},
+			{`upper case(1)`, nil},
+			{`lower case(null)`, nil},
+			{`starts with(null, "a")`, nil},
+			{`ends with("a", 1)`, nil},
+			{`get entries(null)`, nil},
+			{`get entries(1)`, nil},
+			{`reverse(null)`, nil},
+			{`distinct values(null)`, nil},
+			{`flatten(null)`, nil},
+			{`index of(null, 1)`, nil},
+			{`index of([1, null], null)`, []any{2.0}},
+			{`insert before(null, 1, 2)`, nil},
+			{`insert before([1, 2], 1, null)`, []any{nil, 1.0, 2.0}},
+			{`append(null, 1)`, nil},
+			{`append([1], null)`, []any{1.0, nil}},
+			{`append([1], 2, 3)`, []any{1.0, 2.0, 3.0}},
+			{`append(1, 2)`, []any{1.0, 2.0}},
+			{`get value(null, "a")`, nil},
+			{`get value({a: 1}, null)`, nil},
+			{`get value({a: 1}, [])`, nil},
+			{`get value({a: {b: 1}}, ["a", "b"])`, 1.0},
+		})
+	})
+
+	t.Run("a standard built-in called with the wrong arguments is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.4; TCK 1140, 1145, 1155 pin a wrong argument count
+		// and an unknown parameter name as null. Upstream raised on the
+		// first and ignored the second; it also dropped a named variadic
+		// argument.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`string length()`, nil},
+			{`string length("a", "b")`, nil},
+			{`contains("a")`, nil},
+			{`list contains([1])`, nil},
+			{`substring("abc")`, nil},
+			{`string join()`, nil},
+			{`string join(["a"], "x", "y")`, nil},
+			{`string length(strin: "a")`, nil},
+			{`string length(string: "ab", foo: 1)`, nil},
+			{`string join(list: ["a"], delimeter: "-")`, nil},
+			{`substring before("abc")`, nil},
+			{`string length(string: "ab")`, 2.0},
+			{`count(list: [1, 2])`, 2.0},
+		})
+		// A function that is not a standard built-in still raises.
+		lib := FunctionLibrary{Namespace: "acme", Functions: map[string]Function{
+			"twice": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) { return a["n"], nil }},
+		}}
+		le, err := NewEvaluator(FEEL, WithLibraries(lib))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, expr := range []string{`acme.twice()`, `acme.twice(1, 2)`, `acme.twice(n: 1, m: 2)`} {
+			if v, err := le.EvalText(expr, nil); err == nil {
+				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
+			}
+		}
+	})
+
+	t.Run("positions count characters and items, from the end when negative, and are null outside", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.3 Table 73 footnote 1 and §10.3.4.4. Upstream
+		// sliced bytes, read a negative position as a byte index, and
+		// panicked for insert before and remove at position 0 or a negative
+		// one; sublist returned "" past the end.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`substring("foobar", 3)`, "obar"},
+			{`substring("foobar", 3, 3)`, "oba"},
+			{`substring("foobar", -2, 1)`, "a"},
+			{`substring("🐎ab", 2)`, "ab"},
+			{`substring(null, 1)`, nil},
+			{`substring("abc", null)`, nil},
+			{`substring("abc", 0)`, nil},
+			{`substring("abc", 4)`, nil},
+			{`substring("abc", -4)`, nil},
+			{`substring("abc", 1.5)`, nil},
+			{`substring("abc", 1, 0)`, nil},
+			{`substring("abc", 1, 4)`, nil},
+			{`sublist([1, 2, 3], 2)`, []any{2.0, 3.0}},
+			{`sublist([1, 2, 3], 1, 2)`, []any{1.0, 2.0}},
+			{`sublist([1, 2, 3], -2)`, []any{2.0, 3.0}},
+			{`sublist(null, 1)`, nil},
+			{`sublist([1, 2, 3], 0)`, nil},
+			{`sublist([1, 2, 3], 4)`, nil},
+			{`sublist([1, 2, 3], 2, 3)`, nil},
+			{`insert before([1, 3], 1, 2)`, []any{2.0, 1.0, 3.0}},
+			{`insert before([1, 3], -1, 2)`, []any{1.0, 2.0, 3.0}},
+			{`insert before([1, 2], 0, 9)`, nil},
+			{`insert before([1, 2], 3, 9)`, nil},
+			{`insert before([1, 2], -3, 9)`, nil},
+			{`remove([1, 2, 3], 2)`, []any{1.0, 3.0}},
+			{`remove([1, 2, 3], -1)`, []any{1.0, 2.0}},
+			{`remove([1, 2, 3], 0)`, nil},
+			{`remove([1, 2, 3], 4)`, nil},
+		})
+	})
+
+	t.Run("concatenate, union and string join honour their domains", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.3, §10.3.4.4; TCK 1140. Upstream raised on a null
+		// list or delimiter and took a prefix and suffix DMN does not define.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`concatenate([1], [2])`, []any{1.0, 2.0}},
+			{`concatenate([1], 2)`, []any{1.0, 2.0}},
+			{`concatenate([1], null)`, nil},
+			{`union([1, 2], [2, 3])`, []any{1.0, 2.0, 3.0}},
+			{`union([1], null)`, nil},
+			{`string join(["a", "b", "c"], null)`, "abc"},
+			{`string join(["a", null, "c"])`, "ac"},
+			{`string join([])`, ""},
+			{`string join(["a", "b"], "-")`, "a-b"},
+			{`string join(list: ["a", "b"], delimiter: "-")`, "a-b"},
+			{`string join(["a", 1])`, nil},
+			{`string join(null)`, nil},
+			{`string join(["a"], 1)`, nil},
+		})
+	})
+
+	t.Run("all and any are three-valued and null outside their domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.4; TCK 0059-feel-all-function, 0060-feel-any-function.
+		// Upstream coerced each item through boolValue, so a null item was
+		// falsy, and raised on a null list.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`all([])`, true},
+			{`all([true, true])`, true},
+			{`all([true, false, true])`, false},
+			{`all([false, null, true])`, false},
+			{`all([true, null, true])`, nil},
+			{`all([true, 123, true])`, nil},
+			// Interpretation: the domain is checked before a decisive item.
+			{`all([false, 123])`, nil},
+			{`all(true)`, true},
+			{`all(false)`, false},
+			{`all(null)`, nil},
+			{`all(0)`, nil},
+			{`all(true, false, true)`, false},
+			{`all(true, null, true)`, nil},
+			{`all(true, 123, true)`, nil},
+			{`all()`, nil},
+			{`all(list: [true, false])`, false},
+			{`all(list: true)`, true},
+			{`all(list: null)`, nil},
+			{`all(l: [true])`, nil},
+			{`any([])`, false},
+			{`any([false, false])`, false},
+			{`any([false, null, true])`, true},
+			{`any([true, null])`, true},
+			{`any([null, false])`, nil},
+			{`any([123, false])`, nil},
+			{`any([true, 123])`, nil},
+			{`any(false)`, false},
+			{`any(null)`, nil},
+			{`any(0)`, nil},
+			{`any(false, null)`, nil},
+			{`any(false, true)`, true},
+			{`any()`, nil},
+			{`any(list: [false, true])`, true},
+			{`any(list: null)`, nil},
+			// The fork's aliases share the semantics.
+			{`and([true, null])`, nil},
+			{`and([false, null])`, false},
+			{`or([true, null])`, true},
+			{`or([false, null])`, nil},
+			{`or([1])`, nil},
+		})
+	})
+
+	t.Run("in with a scalar right side is equality", func(t *testing.T) {
+		// DMN 1.5 Table 55: `e1 in e2`, e2 not a list or range, is `e1 = e2`;
+		// TCK 0072-feel-in. Upstream raised a bad-op error.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`1 in 1`, true},
+			{`1 in 2`, false},
+			{`"a" in "a"`, true},
+			{`true in true`, true},
+			{`date("2018-12-05") in date("2018-12-05")`, true},
+			{`duration("P1Y") in duration("P1Y")`, true},
+			{`{a: "foo"} in {a: "foo"}`, true},
+			{`1 in "a"`, nil},
+			{`null in null`, true},
+			{`1 in null`, false},
+			// The list and range shapes are unchanged.
+			{`1 in [2,3,1]`, true},
+			{`1 in [2,3,4]`, false},
+			{`[1,2,3] in [[1,2,3,4], [1,2,3]]`, true},
+			{`5 in [1..10]`, true},
+			{`11 in [1..10]`, false},
+			{`"a" in [1, 2]`, nil},
+		})
+	})
+
+	t.Run("context put returns a new context and is null outside its domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.10 Table 81; TCK 1146, 1147. Upstream raised on a
+		// null context or key and wrote a nested put into the argument's own
+		// nested context.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`context put({}, null, 1)`, nil},
+			{`context put(null, "a", 1)`, nil},
+			{`context put([], "a", 1)`, nil},
+			{`context put({}, 1, 1)`, nil},
+			{`context put({}, "a", null)`, map[string]any{"a": nil}},
+			{`context put({x: 1}, ["y", null], 2)`, nil},
+			{`context put({x: 1}, [], 2)`, nil},
+			{`context put({x: 1}, ["x", "a"], 2)`, nil},
+			{`context put({x: 1, y: {a: 0}}, ["y", "a"], 2)`, map[string]any{"x": 1.0, "y": map[string]any{"a": 2.0}}},
+			{`context put({x: 1}, ["y", "a"], 2)`, map[string]any{"x": 1.0, "y": map[string]any{"a": 2.0}}},
+		})
+		// The argument is not written: its nested context still holds 0.
+		vars := map[string]any{"c": FromGo(map[string]any{"y": map[string]any{"a": 0}})}
+		if _, err := e.EvalText(`context put(c, ["y", "a"], 2)`, vars); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustEval(t, e, `c.y.a`, vars); got != 0.0 {
+			t.Errorf("after context put(c, [\"y\", \"a\"], 2), c.y.a = %#v, want 0", got)
+		}
+	})
+
+	t.Run("string() keeps a fraction of a second", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.1 Table 72: time and date and time strings carry
+		// fractional seconds, and string() must print what parses back to
+		// the same value. Upstream printed whole seconds only, so
+		// string(time("10:00:00.5")) was "10:00:00". A zero fraction prints
+		// nothing and trailing zeros are trimmed.
+		strs := map[string]string{
+			`string(time("10:00:00.500"))`:                                "10:00:00.5",
+			`string(time("10:00:00.000"))`:                                "10:00:00",
+			`string(time("10:00:00"))`:                                    "10:00:00",
+			`string(time("10:00:00.123456789"))`:                          "10:00:00.123456789",
+			`string(time("10:00:00.25Z"))`:                                "10:00:00.25Z",
+			`string(time("10:00:00.25+02:00"))`:                           "10:00:00.25+02:00",
+			`string(date and time("2024-03-05T10:00:00.120"))`:            "2024-03-05T10:00:00.12",
+			`string(date and time("2024-03-05T10:00:00.5Z"))`:             "2024-03-05T10:00:00.5Z",
+			`string(date and time("2024-03-05T10:00:00.5-05:00"))`:        "2024-03-05T10:00:00.5-05:00",
+			`string(date and time("2024-03-05T10:00:00.5@Europe/Paris"))`: "2024-03-05T10:00:00.5@Europe/Paris",
+			`string(date and time("2024-03-05T10:00:00"))`:                "2024-03-05T10:00:00",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		// The printed form parses back to an equal value.
+		bools := []string{
+			`time(string(time("10:00:00.5"))) = time("10:00:00.5")`,
+			`date and time(string(date and time("2024-03-05T10:00:00.5Z"))) = date and time("2024-03-05T10:00:00.5Z")`,
+		}
+		for _, expr := range bools {
+			if got := mustEval(t, e, expr, nil); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
 			}
 		}
 	})

@@ -51,49 +51,8 @@ func nullOnNullOperand(nf *NativeFun) *NativeFun {
 	return nf
 }
 
-func (rv RangeValue) BeforePoint(p any) (bool, error) {
-	pos, err := rv.Position(p)
-	if err != nil {
-		return false, err
-	}
-	return pos > 0, nil
-
-}
-
-func (rv RangeValue) AfterPoint(p any) (bool, error) {
-	pos, err := rv.Position(p)
-	if err != nil {
-		return false, err
-	}
-	return pos < 0, nil
-}
-
-func (rv RangeValue) BeforeRange(other RangeValue) (bool, error) {
-	r, err := compareInterfaces(rv.End, other.Start)
-	if err != nil {
-		return false, err
-	}
-
-	if !rv.EndOpen && !other.StartOpen {
-		// two ranges meet
-		return r < 0, nil
-	} else {
-		return r <= 0, nil
-	}
-}
-
-func (rv RangeValue) AfterRange(other RangeValue) (bool, error) {
-	r, err := compareInterfaces(rv.Start, other.End)
-	if err != nil {
-		return false, err
-	}
-	if !rv.StartOpen && !other.EndOpen {
-		return r > 0, nil
-	} else {
-		return r >= 0, nil
-	}
-}
-
+// Position and Contains are the `in` operator's (see In); the range built-ins
+// use the three-valued within instead.
 func (rv RangeValue) Position(p any) (int, error) {
 	cmpStart, err := compareInterfaces(p, rv.Start)
 	if err != nil {
@@ -124,29 +83,6 @@ func (rv RangeValue) Position(p any) (int, error) {
 
 }
 
-func (rv RangeValue) Includes(other RangeValue) (bool, error) {
-	cmpStart, err := compareInterfaces(rv.Start, other.Start)
-	if err != nil {
-		return false, err
-	}
-	cmpEnd, err := compareInterfaces(rv.End, other.End)
-	if err != nil {
-		return false, err
-	}
-	if cmpStart > 0 || cmpEnd < 0 {
-		return false, nil
-	}
-
-	if !(cmpStart < 0 || !rv.StartOpen || other.StartOpen) {
-		return false, nil
-	}
-
-	if !(cmpEnd > 0 || !rv.EndOpen || other.EndOpen) {
-		return false, nil
-	}
-	return true, nil
-}
-
 func (rv RangeValue) Contains(p any) bool {
 	r, err := rv.Position(p)
 	if err != nil {
@@ -155,239 +91,329 @@ func (rv RangeValue) Contains(p any) bool {
 	return r == 0
 }
 
-func (rv RangeValue) overlapsBefore(other RangeValue) (bool, error) {
-	pos, err := other.Position(rv.End)
+// The range built-ins below are written as three-valued formulas over the
+// comparisons between points and endpoints, folded with Table 51's `and`,
+// `or` and `not`, rather than as Go booleans over compareInterfaces' sign.
+//
+// VERDICT DIVERGENCE: upstream (and earlier Verdict) read every comparison
+// from compareInterfaces, which orders a zoned and a zoneless time or date and
+// time by adopting the zoned operand's offset, so `meets`, `coincides`,
+// `starts` and the rest answered true or false for a tie that `=` calls null.
+// DMN 1.5 §10.3.4.7 (Table 78) defines each range built-in by `<`, `>`, `=`,
+// `<=` and `>=` between points and endpoints, so each inherits those
+// operators' rule for mixed operands (see mixedZones): `<` and `>` adopt the
+// zoned offset, `=` is null, and `<=`/`>=` are true when the strict
+// comparison is and null otherwise. For operands that are not mixed every
+// comparison is a boolean and each formula gives the answer it gave before.
+
+// rangeCmp is a three-valued `<`, `<=`, `=`, `>=` or `>` between a and b, as
+// the FEEL operators compute it: true, false or null. The error is
+// compareInterfaces' (nullOnNullOperand turns a kind mismatch into null).
+func rangeCmp(a any, op string, b any) (any, error) {
+	r, err := compareInterfaces(a, b)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	if pos != 0 {
-		return false, nil
-	} else if rv.EndOpen && CompareValues(rv.End, other.Start) == 0 {
-		return false, nil
-	} else {
-		return true, nil
+	mixed := mixedZones(a, b)
+	switch op {
+	case "<":
+		return r < 0, nil
+	case ">":
+		return r > 0, nil
+	case "=":
+		if mixed {
+			return null, nil
+		}
+		return r == 0, nil
+	case "<=":
+		if mixed && r >= 0 {
+			return null, nil
+		}
+		return r <= 0, nil
+	case ">=":
+		if mixed && r <= 0 {
+			return null, nil
+		}
+		return r >= 0, nil
 	}
+	panic("rangeCmp: unknown operator " + op)
 }
 
-func (rv RangeValue) overlapsAfter(other RangeValue) (bool, error) {
-	pos, err := other.Position(rv.Start)
+// and3 is FEEL's `and` over true, false and null (DMN 1.5 Table 51): false if
+// any operand is false, otherwise null if any is null, otherwise true.
+func and3(vs ...any) any {
+	unknown := false
+	for _, v := range vs {
+		switch v {
+		case false:
+			return false
+		case true:
+		default:
+			unknown = true
+		}
+	}
+	if unknown {
+		return null
+	}
+	return true
+}
+
+// or3 is FEEL's `or` (Table 51): true if any operand is true, otherwise null
+// if any is null, otherwise false.
+func or3(vs ...any) any {
+	unknown := false
+	for _, v := range vs {
+		switch v {
+		case true:
+			return true
+		case false:
+		default:
+			unknown = true
+		}
+	}
+	if unknown {
+		return null
+	}
+	return false
+}
+
+// not3 is FEEL's `not`: null stays null.
+func not3(v any) any {
+	switch v {
+	case true:
+		return false
+	case false:
+		return true
+	}
+	return null
+}
+
+// cmps evaluates several rangeCmp comparisons eagerly, so that a kind mismatch
+// in any of them reaches nullOnNullOperand whatever the formula would have
+// short-circuited, as it did when every comparison ran up front.
+type cmps struct{ err error }
+
+func (c *cmps) cmp(a any, op string, b any) any {
+	if c.err != nil {
+		return null
+	}
+	v, err := rangeCmp(a, op, b)
 	if err != nil {
-		return false, err
+		c.err = err
+		return null
 	}
-	if pos != 0 {
-		return false, nil
-	} else if rv.EndOpen && CompareValues(rv.Start, other.End) == 0 {
-		return false, nil
-	} else {
-		return true, nil
+	return v
+}
+
+// lower is p's comparison with rv's start for membership: `p > start` for an
+// open start, `p >= start` for a closed one.
+func (rv RangeValue) lower(c *cmps, p any) any {
+	if rv.StartOpen {
+		return c.cmp(p, ">", rv.Start)
 	}
+	return c.cmp(p, ">=", rv.Start)
+}
+
+// upper is p's comparison with rv's end for membership.
+func (rv RangeValue) upper(c *cmps, p any) any {
+	if rv.EndOpen {
+		return c.cmp(p, "<", rv.End)
+	}
+	return c.cmp(p, "<=", rv.End)
+}
+
+// within is `p in rv`: the conjunction of the endpoint comparisons (Table 49).
+func (rv RangeValue) within(c *cmps, p any) any {
+	return and3(rv.lower(c, p), rv.upper(c, p))
+}
+
+// beforePoint is `before(rv, p)`: Table 78's `range.end < point or
+// (range.end = point and not(range.end included))`, which is `p >= end` for
+// an open end and `p > end` for a closed one.
+func (rv RangeValue) beforePoint(c *cmps, p any) any {
+	if rv.EndOpen {
+		return c.cmp(p, ">=", rv.End)
+	}
+	return c.cmp(p, ">", rv.End)
+}
+
+// afterPoint is `after(rv, p)`: `p <= start` for an open start, `p < start`
+// for a closed one.
+func (rv RangeValue) afterPoint(c *cmps, p any) any {
+	if rv.StartOpen {
+		return c.cmp(p, "<=", rv.Start)
+	}
+	return c.cmp(p, "<", rv.Start)
+}
+
+// beforeRange is `before(rv, other)`: rv's end is short of other's start —
+// strictly when both meet them closed.
+func (rv RangeValue) beforeRange(c *cmps, other RangeValue) any {
+	if !rv.EndOpen && !other.StartOpen {
+		return c.cmp(rv.End, "<", other.Start)
+	}
+	return c.cmp(rv.End, "<=", other.Start)
+}
+
+// afterRange is `after(rv, other)`.
+func (rv RangeValue) afterRange(c *cmps, other RangeValue) any {
+	if !rv.StartOpen && !other.EndOpen {
+		return c.cmp(rv.Start, ">", other.End)
+	}
+	return c.cmp(rv.Start, ">=", other.End)
+}
+
+// includesRange is `includes(rv, other)`: other's start is at or after rv's
+// (equal starts need rv's closed or other's open), and likewise at the end.
+func (rv RangeValue) includesRange(c *cmps, other RangeValue) any {
+	startOK := or3(c.cmp(rv.Start, "<", other.Start),
+		and3(c.cmp(rv.Start, "=", other.Start), !rv.StartOpen || other.StartOpen))
+	endOK := or3(c.cmp(rv.End, ">", other.End),
+		and3(c.cmp(rv.End, "=", other.End), !rv.EndOpen || other.EndOpen))
+	return and3(startOK, endOK)
+}
+
+// overlapsBefore keeps upstream's formula: rv's end lies in other, and does
+// not touch other's start through an open end. (It is not Table 78's
+// `overlaps before`; see the follow-up noted in NOTICE.md.)
+func (rv RangeValue) overlapsBefore(c *cmps, other RangeValue) any {
+	return and3(other.within(c, rv.End),
+		not3(and3(rv.EndOpen, c.cmp(rv.End, "=", other.Start))))
+}
+
+// overlapsAfter keeps upstream's formula, as overlapsBefore does.
+func (rv RangeValue) overlapsAfter(c *cmps, other RangeValue) any {
+	return and3(other.within(c, rv.Start),
+		not3(and3(rv.EndOpen, c.cmp(rv.Start, "=", other.End))))
+}
+
+// rangeFn adapts a three-valued formula to a built-in's return, letting a
+// comparison error through to nullOnNullOperand.
+func rangeFn(f func(c *cmps) any) (any, error) {
+	c := &cmps{}
+	v := f(c)
+	if c.err != nil {
+		return nil, c.err
+	}
+	return v, nil
 }
 
 func installRangeFunctions(p *Prelude) {
 	prelude := rangePrelude{p}
 	prelude.Bind("before", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		a := kwargs["a"]
-		b := kwargs["b"]
-		switch va := a.(type) {
-		case *RangeValue:
-			switch vb := b.(type) {
-			case *RangeValue:
-				return va.BeforeRange(*vb)
+		a, b := kwargs["a"], kwargs["b"]
+		return rangeFn(func(c *cmps) any {
+			ra, aRange := a.(*RangeValue)
+			rb, bRange := b.(*RangeValue)
+			switch {
+			case aRange && bRange:
+				return ra.beforeRange(c, *rb)
+			case aRange:
+				return ra.beforePoint(c, b)
+			case bRange:
+				return rb.afterPoint(c, a)
 			default:
-				return va.BeforePoint(vb)
+				return c.cmp(a, "<", b)
 			}
-		default:
-			switch vb := b.(type) {
-			case *RangeValue:
-				return vb.AfterPoint(va)
-			default:
-				cmp, err := compareInterfaces(va, vb)
-				if err != nil {
-					return nil, err
-				} else {
-					return cmp < 0, nil
-				}
-			}
-		}
+		})
 	}).Required("a", "b"))
 
 	prelude.Bind("after", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		a := kwargs["a"]
-		b := kwargs["b"]
-		switch va := a.(type) {
-		case *RangeValue:
-			switch vb := b.(type) {
-			case *RangeValue:
-				return va.AfterRange(*vb)
+		a, b := kwargs["a"], kwargs["b"]
+		return rangeFn(func(c *cmps) any {
+			ra, aRange := a.(*RangeValue)
+			rb, bRange := b.(*RangeValue)
+			switch {
+			case aRange && bRange:
+				return ra.afterRange(c, *rb)
+			case aRange:
+				return ra.afterPoint(c, b)
+			case bRange:
+				return rb.beforePoint(c, a)
 			default:
-				return va.AfterPoint(vb)
+				return c.cmp(a, ">", b)
 			}
-		default:
-			switch vb := b.(type) {
-			case *RangeValue:
-				return vb.BeforePoint(va)
-			default:
-				cmp, err := compareInterfaces(va, vb)
-				if err != nil {
-					return nil, err
-				} else {
-					return cmp > 0, nil
-				}
-			}
-		}
+		})
 	}).Required("a", "b"))
 
-	prelude.Bind("meets", wrapTyped(func(a *RangeValue, b *RangeValue) (bool, error) {
-		r, err := compareInterfaces(a.End, b.Start)
-		if err != nil {
-			return false, err
-		}
-		return !a.EndOpen && !b.StartOpen && r == 0, nil
+	prelude.Bind("meets", wrapTyped(func(a *RangeValue, b *RangeValue) (any, error) {
+		return rangeFn(func(c *cmps) any {
+			return and3(c.cmp(a.End, "=", b.Start), !a.EndOpen, !b.StartOpen)
+		})
 	}).Required("a", "b"))
 
-	prelude.Bind("met by", wrapTyped(func(a *RangeValue, b *RangeValue) (bool, error) {
-		r, err := compareInterfaces(a.Start, b.End)
-		if err != nil {
-			return false, err
-		}
-		return !b.EndOpen && !a.StartOpen && r == 0, nil
+	prelude.Bind("met by", wrapTyped(func(a *RangeValue, b *RangeValue) (any, error) {
+		return rangeFn(func(c *cmps) any {
+			return and3(c.cmp(a.Start, "=", b.End), !b.EndOpen, !a.StartOpen)
+		})
 	}).Required("a", "b"))
 
-	prelude.Bind("overlaps", wrapTyped(func(a *RangeValue, b *RangeValue) (bool, error) {
-		obefore, err := a.overlapsBefore(*b)
-		if err != nil {
-			return false, err
-		} else if obefore {
-			return true, nil
-		}
-		oafter, err := a.overlapsAfter(*b)
-		if err != nil {
-			return false, err
-		} else if oafter {
-			return true, nil
-		}
-		return false, nil
+	prelude.Bind("overlaps", wrapTyped(func(a *RangeValue, b *RangeValue) (any, error) {
+		return rangeFn(func(c *cmps) any {
+			return or3(a.overlapsBefore(c, *b), a.overlapsAfter(c, *b))
+		})
 	}).Required("a", "b"))
 
-	prelude.Bind("overlaps before", wrapTyped(func(a *RangeValue, b *RangeValue) (bool, error) {
-		return a.overlapsBefore(*b)
+	prelude.Bind("overlaps before", wrapTyped(func(a *RangeValue, b *RangeValue) (any, error) {
+		return rangeFn(func(c *cmps) any { return a.overlapsBefore(c, *b) })
 	}).Required("a", "b"))
 
-	prelude.Bind("overlaps after", wrapTyped(func(a *RangeValue, b *RangeValue) (bool, error) {
-		return a.overlapsAfter(*b)
+	prelude.Bind("overlaps after", wrapTyped(func(a *RangeValue, b *RangeValue) (any, error) {
+		return rangeFn(func(c *cmps) any { return a.overlapsAfter(c, *b) })
 	}).Required("a", "b"))
 
-	prelude.Bind("finishes", wrapTyped(func(a any, b *RangeValue) (bool, error) {
-		switch va := a.(type) {
-		case *RangeValue:
-			r, err := compareInterfaces(va.End, b.End)
-			if err != nil {
-				return false, err
+	prelude.Bind("finishes", wrapTyped(func(a any, b *RangeValue) (any, error) {
+		return rangeFn(func(c *cmps) any {
+			if va, ok := a.(*RangeValue); ok {
+				return and3(c.cmp(va.End, "=", b.End), !b.EndOpen)
 			}
-			return r == 0 && !b.EndOpen, nil
-		default:
-			r, err := compareInterfaces(a, b.End)
-			if err != nil {
-				return false, err
-			}
-			return r == 0 && !b.EndOpen, nil
-		}
+			return and3(c.cmp(a, "=", b.End), !b.EndOpen)
+		})
 	}).Required("a", "b"))
 
-	prelude.Bind("starts", wrapTyped(func(a any, b *RangeValue) (bool, error) {
-		switch va := a.(type) {
-		case *RangeValue:
-			r, err := compareInterfaces(va.Start, b.Start)
-			if err != nil {
-				return false, err
+	prelude.Bind("starts", wrapTyped(func(a any, b *RangeValue) (any, error) {
+		return rangeFn(func(c *cmps) any {
+			if va, ok := a.(*RangeValue); ok {
+				return and3(c.cmp(va.Start, "=", b.Start), va.StartOpen == b.StartOpen)
 			}
-			if r != 0 {
-				return false, nil
-			}
-			if va.StartOpen && !b.StartOpen {
-				return false, nil
-			}
-			if !va.StartOpen && b.StartOpen {
-				return false, nil
-			}
-			return true, nil
-		default:
-			r, err := compareInterfaces(a, b.Start)
-			if err != nil {
-				return false, err
-			}
-			return r == 0 && !b.StartOpen, nil
-		}
+			return and3(c.cmp(a, "=", b.Start), !b.StartOpen)
+		})
 	}).Required("a", "b"))
 
-	prelude.Bind("finished by", wrapTyped(func(a *RangeValue, b any) (bool, error) {
-		switch vb := b.(type) {
-		case *RangeValue:
-			r, err := compareInterfaces(vb.End, a.End)
-			if err != nil {
-				return false, err
+	prelude.Bind("finished by", wrapTyped(func(a *RangeValue, b any) (any, error) {
+		return rangeFn(func(c *cmps) any {
+			if vb, ok := b.(*RangeValue); ok {
+				return and3(c.cmp(vb.End, "=", a.End), !a.EndOpen)
 			}
-
-			return r == 0 && !a.EndOpen, nil
-		default:
-			r, err := compareInterfaces(b, a.End)
-			if err != nil {
-				return false, err
-			}
-			return r == 0 && !a.EndOpen, nil
-		}
+			return and3(c.cmp(b, "=", a.End), !a.EndOpen)
+		})
 	}).Required("a", "b"))
 
-	prelude.Bind("started by", wrapTyped(func(a *RangeValue, b any) (bool, error) {
-		switch vb := b.(type) {
-		case *RangeValue:
-			r, err := compareInterfaces(vb.Start, a.Start)
-			if err != nil {
-				return false, err
+	prelude.Bind("started by", wrapTyped(func(a *RangeValue, b any) (any, error) {
+		return rangeFn(func(c *cmps) any {
+			if vb, ok := b.(*RangeValue); ok {
+				return and3(c.cmp(vb.Start, "=", a.Start), vb.StartOpen == a.StartOpen)
 			}
-			if r != 0 {
-				return false, nil
-			}
-			if vb.StartOpen && !a.StartOpen {
-				return false, nil
-			}
-			if !vb.StartOpen && a.StartOpen {
-				return false, nil
-			}
-			return true, nil
-		default:
-			r, err := compareInterfaces(b, a.Start)
-			if err != nil {
-				return false, err
-			}
-			return r == 0 && !a.StartOpen, nil
-		}
+			return and3(c.cmp(b, "=", a.Start), !a.StartOpen)
+		})
 	}).Required("a", "b"))
 
-	prelude.Bind("includes", wrapTyped(func(a *RangeValue, b any) (bool, error) {
-		switch vb := b.(type) {
-		case *RangeValue:
-			return a.Includes(*vb)
-		default:
-			r, err := a.Position(vb)
-			if err != nil {
-				return false, err
+	prelude.Bind("includes", wrapTyped(func(a *RangeValue, b any) (any, error) {
+		return rangeFn(func(c *cmps) any {
+			if vb, ok := b.(*RangeValue); ok {
+				return a.includesRange(c, *vb)
 			}
-			return r == 0, nil
-		}
+			return a.within(c, b)
+		})
 	}).Required("a", "b"))
 
-	prelude.Bind("during", wrapTyped(func(a any, b *RangeValue) (bool, error) {
-		switch va := a.(type) {
-		case *RangeValue:
-			return b.Includes(*va)
-		default:
-			r, err := b.Position(va)
-			if err != nil {
-				return false, err
+	prelude.Bind("during", wrapTyped(func(a any, b *RangeValue) (any, error) {
+		return rangeFn(func(c *cmps) any {
+			if va, ok := a.(*RangeValue); ok {
+				return b.includesRange(c, *va)
 			}
-			return r == 0, nil
-		}
+			return b.within(c, a)
+		})
 	}).Required("a", "b"))
 
 	// coincides dispatches on the argument types rather than decoding them
@@ -405,23 +431,13 @@ func installRangeFunctions(p *Prelude) {
 			if a.StartOpen != b.StartOpen || a.EndOpen != b.EndOpen {
 				return false, nil
 			}
-			cmpStart, err := compareInterfaces(a.Start, b.Start)
-			if err != nil {
-				return nil, err
-			}
-			cmpEnd, err := compareInterfaces(a.End, b.End)
-			if err != nil {
-				return nil, err
-			}
-			return cmpStart == 0 && cmpEnd == 0, nil
+			return rangeFn(func(c *cmps) any {
+				return and3(c.cmp(a.Start, "=", b.Start), c.cmp(a.End, "=", b.End))
+			})
 		case aRange || bRange:
 			return null, nil
 		default:
-			r, err := compareInterfaces(kwargs["a"], kwargs["b"])
-			if err != nil {
-				return nil, err
-			}
-			return r == 0, nil
+			return rangeFn(func(c *cmps) any { return c.cmp(kwargs["a"], "=", kwargs["b"]) })
 		}
 	}).Required("a", "b"))
 

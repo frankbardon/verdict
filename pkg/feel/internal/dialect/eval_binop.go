@@ -78,6 +78,19 @@ func CompareValues(leftVal, rightVal any) int {
 	}
 }
 
+// OrderValues orders two values as `<` does and reports ok=false when FEEL
+// defines no order between them (different kinds, such as a time and a date
+// and time, or an unordered kind), where CompareValues would panic.
+//
+// VERDICT DIVERGENCE: upstream exported only CompareValues. pkg/feel's Compare
+// used it for any two temporals, which was safe while every temporal pair
+// ordered; now that a time and a date and time do not (DMN 1.5 Table 54), it
+// needs a form that reports the pair instead.
+func OrderValues(leftVal, rightVal any) (int, bool) {
+	r, err := compareInterfaces(leftVal, rightVal)
+	return r, err == nil
+}
+
 func compareInterfaces(leftVal, rightVal any) (int, error) {
 	if _, ok := leftVal.(*NullValue); ok {
 		if _, ok = rightVal.(*NullValue); ok {
@@ -139,8 +152,20 @@ func compareInterfaces(leftVal, rightVal any) (int, error) {
 	// type error. Date comparison is the bread and butter of a decision table
 	// ("before the cutoff", "older than 18"), so a decision engine cannot ship
 	// without it.
+	//
+	// VERDICT DIVERGENCE: a time is comparable only with a time. Upstream (and
+	// earlier Verdict) ordered any two temporals by instant, so a time against
+	// a date and time compared the time's instant on 0000-01-01 and a date
+	// against a time its UTC midnight. DMN 1.5 Tables 53 and 54 define `=` and
+	// `<` over two times, or over dates and date and times (a date standing
+	// for its UTC midnight, §10.3.2.3.5), and no other temporal pair; outside
+	// an operator's domain the result is null (§10.3.2.15), so the pair is
+	// reported as codeIncomparable (see comparisonKind).
 	if leftTime, ok := instantOf(leftVal); ok {
 		if rightTime, ok := instantOf(rightVal); ok {
+			if comparisonKind(leftVal) != comparisonKind(rightVal) {
+				return 0, NewEvalError(codeIncomparable, "incomparable types", fmt.Sprintf("cannot compare %T with %T", leftVal, rightVal))
+			}
 			leftTime, rightTime = adoptOffset(leftVal, rightVal, leftTime, rightTime)
 			switch {
 			case leftTime.Equal(rightTime):
@@ -179,9 +204,11 @@ func isIncomparable(err error) bool {
 }
 
 // comparisonKind names the FEEL kind a value is compared as. Values of
-// different kinds are never comparable. The three temporal types share one
-// kind because compareInterfaces orders their mixtures through instantOf; the
-// two duration types do not, because DMN keeps them distinct.
+// different kinds are never comparable. A date and a date and time share one
+// kind because compareInterfaces orders them through instantOf (a date as its
+// UTC midnight, DMN 1.5 §10.3.2.3.5); a time is a kind of its own, since
+// Tables 53 and 54 compare it with nothing but a time. The two duration types
+// are distinct kinds too, because DMN keeps them distinct.
 func comparisonKind(v any) string {
 	switch x := v.(type) {
 	case string:
@@ -202,8 +229,12 @@ func comparisonKind(v any) string {
 		}
 		return "days and time duration"
 	}
+	switch v.(type) {
+	case *FEELTime, FEELTime:
+		return "time"
+	}
 	if _, ok := instantOf(v); ok {
-		return "temporal"
+		return "date and time"
 	}
 	return fmt.Sprintf("%T", v)
 }
@@ -611,8 +642,8 @@ func (binop Binop) mulOp(intp *Interpreter) (any, error) {
 //
 // VERDICT DIVERGENCE: upstream routed both through numberOp, so a duration
 // operand was null (DMN 1.5 §10.3.2.15, Table 59 defines duration * number,
-// number * duration and duration / number). Every other pairing, null
-// included, is still null.
+// number * duration, duration / number and duration / duration of one kind,
+// the last a number). Every other pairing, null included, is still null.
 func (binop Binop) scaleOp(intp *Interpreter, en evalNumbers, divide bool) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
@@ -635,8 +666,15 @@ func (binop Binop) scaleOp(intp *Interpreter, en evalNumbers, divide bool) (any,
 			}
 		}
 	case *FEELDuration:
-		if r, ok := rightVal.(*Number); ok {
+		switch r := rightVal.(type) {
+		case *Number:
 			dur, factor = l, r
+		case *FEELDuration:
+			if divide {
+				if q, ok := divideDurations(l, r); ok {
+					return q, nil
+				}
+			}
 		}
 	}
 	if dur == nil {
@@ -971,8 +1009,8 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	return In(leftVal, rightVal)
 }
 
-// In implements FEEL's `e in container` for a range or a list container, and
-// yields true, false or null. inOp evaluates its operands and delegates here.
+// In implements FEEL's `e in container` for a range or a list container, or
+// any other value as equality, and yields true, false or null. inOp evaluates its operands and delegates here.
 //
 // VERDICT DIVERGENCE: upstream had no exported membership test. Verdict's
 // unary-test layer (pkg/feel/unarytest.go) interprets a range or list cell as
@@ -1032,6 +1070,9 @@ func In(leftVal, rightVal any) (any, error) {
 		}
 		return false, nil
 	default:
-		return nil, NewErrBadOp(typeName(leftVal), "in", typeName(rightVal))
+		// VERDICT DIVERGENCE: upstream raised a bad-op error. DMN 1.5 Table
+		// 55: `e1 in e2` with e2 neither a list nor a range is `e1 = e2`, so
+		// `1 in 1` is true and `1 in "a"` null (TCK 0072-feel-in).
+		return feelEqual(leftVal, rightVal)
 	}
 }
