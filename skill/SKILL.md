@@ -324,7 +324,11 @@ opens as an empty canvas.
   component), `date(null)` and
   `string(null)` are null, not an error — so a bad string input surfaces as a
   null output, and `number("1,000")` is null (use the grouping form,
-  `number("1,000", ",", ".")`). The literal `@"P1Y2D"` (or `@"P"`) is a syntax error instead:
+  `number("1,000", ",", ".")`). An argument of the wrong kind is null too:
+  `number(5)` (`from` must be a string), `date(true)`, `date and time(5)`,
+  `duration(5)`, `context(5)` or an entry lacking `key`/`value`, and
+  `years and months duration(date, date and time)` — both must be dates or both
+  date and times. `string(x)` takes any non-null value. The literal `@"P1Y2D"` (or `@"P"`) is a syntax error instead:
   `VERDICT_LOAD_013` when the model loads, with the literal's 1-based
   `line L, column C` in the message. A string the spec allows but Verdict
   cannot hold still fails the evaluation (`VERDICT_EVAL_005`) rather than

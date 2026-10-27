@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	pfeel "github.com/frankbardon/verdict/pkg/feel/internal/dialect"
 )
@@ -292,15 +293,12 @@ func buildSupplement() {
 
 	bind("years and months duration", Function{
 		Params: []string{"from", "to"},
-		Help:   "the whole years and months between two dates, null unless both are dates or date and times",
+		Help:   "the whole years and months between two dates, null unless both are dates or both are date and times",
 		Fn: func(a map[string]any) (any, error) {
-			// DMN 1.5 §10.3.4.1 Table 72: from and to are dates or date and
-			// times; §10.3.4 makes anything else, null included, null.
-			from, ok := timeOf(a["from"])
-			if !ok {
-				return Null, nil
-			}
-			to, ok := timeOf(a["to"])
+			// DMN 1.5 §10.3.4.1 Table 72: from and to are both dates or both
+			// date and times; §10.3.4 makes anything else — a time, a mixed
+			// pair, null — null.
+			from, to, ok := sameKindInstants(a["from"], a["to"])
 			if !ok {
 				return Null, nil
 			}
@@ -323,11 +321,20 @@ func buildSupplement() {
 	})
 	bind("context", Function{
 		Params: []string{"entries"},
-		Help:   "builds a context from a list of {key, value} entries",
+		Help:   "builds a context from a list of {key, value} entries, null unless every entry has a string key and a value",
 		Fn: func(a map[string]any) (any, error) {
-			l, err := asList(a["entries"], "entries")
-			if err != nil {
-				return nil, err
+			// DMN 1.5 §10.3.4.7: entries is a list of contexts each holding a
+			// key and a value; §10.3.4 makes anything else null rather than an
+			// error. A lone context is the singleton list §10.3.2.9.4 converts
+			// it to.
+			var l []any
+			switch x := a["entries"].(type) {
+			case []any:
+				l = x
+			case map[string]any:
+				l = []any{x}
+			default:
+				return Null, nil
 			}
 			out := map[string]any{}
 			for _, e := range l {
@@ -339,7 +346,11 @@ func buildSupplement() {
 				if !ok {
 					return Null, nil
 				}
-				out[k] = m["value"]
+				v, ok := m["value"]
+				if !ok {
+					return Null, nil
+				}
+				out[k] = v
 			}
 			return out, nil
 		},
@@ -347,6 +358,23 @@ func buildSupplement() {
 }
 
 // ---- helpers --------------------------------------------------------------
+
+// sameKindInstants is a pair of arguments as instants when both are dates or
+// both are date and times, the domain Table 72 gives years and months
+// duration. A time, a mixed pair or a null is outside it.
+func sameKindInstants(a, b any) (time.Time, time.Time, bool) {
+	switch x := a.(type) {
+	case *pfeel.FEELDate:
+		if y, ok := b.(*pfeel.FEELDate); ok {
+			return x.Date(), y.Date(), true
+		}
+	case *pfeel.FEELDatetime:
+		if y, ok := b.(*pfeel.FEELDatetime); ok {
+			return x.Time(), y.Time(), true
+		}
+	}
+	return time.Time{}, time.Time{}, false
+}
 
 func asString(v any, name string) (string, error) {
 	s, ok := v.(string)

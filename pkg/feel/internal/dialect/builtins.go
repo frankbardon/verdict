@@ -190,22 +190,23 @@ func installBuiltinFunctions(prelude *Prelude) {
 	// numeric literal and for an argument it cannot read, instead of 0 (the
 	// big.Float that SetString left untouched) or an error. DMN 1.5 §10.3.4.1
 	// Table 72: from must conform to the numeric-literal grammar, and §10.3.4
-	// makes a parameter outside its domain null.
+	// makes a parameter outside its domain null. A from that is not a string
+	// — number(5), number(true) — is null too, in both overloads; upstream
+	// passed a number through.
 	prelude.Bind("number", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		from := kwargs["from"]
-		if _, ok := kwargs["decimal separator"]; ok {
-			s, ok := from.(string)
-			if !ok {
-				return null, nil
-			}
-			if from, ok = separatedNumber(s, kwargs["grouping separator"], kwargs["decimal separator"]); !ok {
-				return null, nil
-			}
-		}
-		if s, ok := from.(string); ok && !numericLiteral.MatchString(s) {
+		s, ok := kwargs["from"].(string)
+		if !ok {
 			return null, nil
 		}
-		n, err := ParseNumberWithErr(from)
+		if _, ok := kwargs["decimal separator"]; ok {
+			if s, ok = separatedNumber(s, kwargs["grouping separator"], kwargs["decimal separator"]); !ok {
+				return null, nil
+			}
+		}
+		if !numericLiteral.MatchString(s) {
+			return null, nil
+		}
+		n, err := ParseNumberWithErr(s)
 		if err != nil {
 			return null, nil
 		}

@@ -1320,6 +1320,52 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("conversion built-ins are null for an argument of the wrong kind", func(t *testing.T) {
+		// DMN 1.5 §10.3.4: a well-formed call whose argument lies outside the
+		// function's domain is null. number(5) and the mixed-pair years and
+		// months duration failed on upstream v1.0.6 / the earlier supplement
+		// (returning 5 and P5M); the context cases raised.
+		for _, expr := range []string{
+			`number(5)`, `number(from: 5)`, `number(5, ".", ",")`, `number(true, null, null)`,
+			`years and months duration(date("2026-01-01"), date and time("2026-06-01T00:00:00"))`,
+			`years and months duration(date and time("2026-01-01T00:00:00"), date("2026-06-01"))`,
+			`years and months duration(time("10:00:00"), time("11:00:00"))`,
+			`date(true)`, `date(5)`, `date(time("10:00:00"))`, `date(2026, "2", 3)`,
+			`time(true)`, `time(date("2026-01-01"))`, `time(10, 30, true)`,
+			`date and time(5)`, `date and time(date("2026-01-01"), 5)`, `date and time("2026-01-01", time("10:00:00"))`, `date and time(date("2026-01-01"), date("2026-01-01"))`,
+			`duration(5)`, `duration(true)`, `duration(date("2026-01-01"))`,
+			`context(5)`, `context("x")`, `context(null)`, `context([5])`, `context([{key: 5, value: 1}])`, `context([{key: "a"}])`,
+		} {
+			got, err := e.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(got) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(got))
+			}
+		}
+
+		// Inside the domain is unchanged; string(from) takes any non-null value.
+		strs := map[string]string{
+			`string(5)`: "5", `string(date("2026-01-01"))`: "2026-01-01",
+			`string(years and months duration(date and time("2026-01-01T00:00:00"), date and time("2026-06-01T00:00:00")))`: "P5M",
+			`string(years and months duration(date("2026-01-01"), date("2026-06-01")))`:                                     "P5M",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		if got := mustEval(t, e, `number("5")`, nil); got != 5.0 {
+			t.Errorf(`number("5") = %#v, want 5`, got)
+		}
+		for _, expr := range []string{`context({key: "a", value: 1})`, `context([{key: "a", value: 1}])`} {
+			got, ok := mustEval(t, e, expr, nil).(map[string]any)
+			if !ok || len(got) != 1 || got["a"] != 1.0 {
+				t.Errorf("%s = %#v, want {a: 1}", expr, got)
+			}
+		}
+	})
+
 	t.Run("conversion built-ins carry every Table 72 overload", func(t *testing.T) {
 		// DMN 1.5 §10.3.4.1 Table 72. Upstream had only the string form of
 		// date, time and date and time, and number(from) alone; each case
@@ -1442,7 +1488,7 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 		nums := map[string]float64{
-			`number("12")`: 12, `number("-1.5")`: -1.5, `number(".5")`: 0.5, `number("1e3")`: 1000, `number("-2E-1")`: -0.2, `number(7)`: 7,
+			`number("12")`: 12, `number("-1.5")`: -1.5, `number(".5")`: 0.5, `number("1e3")`: 1000, `number("-2E-1")`: -0.2,
 		}
 		for expr, want := range nums {
 			if got := mustEval(t, e, expr, nil); got != want {

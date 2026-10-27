@@ -220,10 +220,29 @@ func TestYearsAndMonthsDuration(t *testing.T) {
 		`years and months duration(1, date("2023-03-14"))`,
 		`years and months duration(date("2020-01-15"), null)`,
 		`years and months duration("2020-01-15", "2023-03-14")`,
+		// Both must be dates or both date and times: a mixed pair or a time
+		// is outside Table 72's domain.
+		`years and months duration(date("2026-01-01"), date and time("2026-06-01T00:00:00"))`,
+		`years and months duration(time("10:00:00"), time("11:00:00"))`,
 	} {
 		if got := mustEval(t, e, expr, nil); got != nil {
 			t.Errorf("%s = %#v, want null", expr, got)
 		}
+	}
+}
+
+func TestContextBuiltinDomain(t *testing.T) {
+	// DMN 1.5 §10.3.4.7: entries outside the domain are null, not an
+	// evaluation error; a lone context is converted to a singleton list.
+	e := newFEEL(t)
+	for _, expr := range []string{`context(5)`, `context(null)`, `context([5])`, `context([{key: "a"}])`} {
+		if got := mustEval(t, e, expr, nil); got != nil {
+			t.Errorf("%s = %#v, want null", expr, got)
+		}
+	}
+	got, ok := mustEval(t, e, `context({key: "a", value: 1})`, nil).(map[string]any)
+	if !ok || got["a"] != 1.0 {
+		t.Errorf(`context({key: "a", value: 1}) = %#v, want {a: 1}`, got)
 	}
 }
 
