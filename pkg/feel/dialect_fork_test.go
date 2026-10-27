@@ -702,6 +702,65 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("abs dispatches on the argument type", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.5: abs(n) over a number, a days and time duration or
+		// a years and months duration. Upstream decoded every argument into a
+		// duration, so abs(2) was the empty duration "PT" and abs(null) "PT"
+		// too. Anything outside the domain is null (§10.3.4). A negative Go
+		// duration or date-and-time difference also kept its sign in the
+		// fields rather than in Neg, so abs left it negative.
+		vars := map[string]any{"x": FromGo(-3), "d": FromGo(-5 * time.Hour)}
+		for expr, want := range map[string]any{
+			"abs(2)": 2.0, "abs(-2)": 2.0, "abs(-2.5)": 2.5, "abs(0)": 0.0, "abs(10)": 10.0, "abs(-10)": 10.0,
+			"abs(x)": 3.0, "abs(n: -7)": 7.0, "abs(-x)": 3.0,
+			`abs(duration("-PT5H"))`: 5 * time.Hour, `abs(duration("PT5H"))`: 5 * time.Hour,
+			`abs(@"-PT5H")`: 5 * time.Hour, "abs(d)": 5 * time.Hour, "-d": 5 * time.Hour,
+			`abs(date and time("2024-01-01T00:00:00") - date and time("2024-01-02T01:00:00"))`:    25 * time.Hour,
+			`string(date and time("2024-01-01T00:00:00") - date and time("2024-01-02T01:00:00"))`: "-P1DT1H",
+			`string(d)`: "-PT5H",
+			`abs(duration("-P1Y")) = duration("P1Y")`:     true,
+			`abs(duration("-P1Y2M")) = duration("P1Y2M")`: true,
+			`abs(duration("P1Y")) = duration("P1Y")`:      true,
+			"abs(null)":                                   nil, `abs("a")`: nil, "abs(true)": nil, "abs([1])": nil,
+			`abs(date("2024-01-01"))`: nil, "abs([1..2])": nil,
+		} {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("numeric built-ins answer numbers", func(t *testing.T) {
+		// The audit that found abs: the other DMN 1.5 §10.3.4.5 numeric
+		// built-ins are Verdict's supplement (pkg/feel/stdlib.go), which reads
+		// a *Number directly rather than through upstream's mapstructure
+		// decode, so none of them mis-dispatches a number. Pinned here with
+		// the spec's own examples so a re-sync that brings an upstream
+		// overload of any of these names (which would then take precedence
+		// over the supplement) cannot regress them silently.
+		for expr, want := range map[string]any{
+			"floor(1.5)": 1.0, "floor(-1.5)": -2.0, "floor(-1.56, 1)": -1.6, "floor(2)": 2.0,
+			"ceiling(1.5)": 2.0, "ceiling(-1.5)": -1.0, "ceiling(-1.56, 1)": -1.5, "ceiling(2)": 2.0,
+			"round up(5.5, 0)": 6.0, "round up(-5.5, 0)": -6.0, "round up(1.121, 2)": 1.13, "round up(-1.126, 2)": -1.13,
+			"round down(5.5, 0)": 5.0, "round down(-5.5, 0)": -5.0, "round down(1.121, 2)": 1.12, "round down(-1.126, 2)": -1.12,
+			"round half up(5.5, 0)": 6.0, "round half up(-5.5, 0)": -6.0, "round half up(1.121, 2)": 1.12, "round half up(-1.126, 2)": -1.13,
+			"round half down(5.5, 0)": 5.0, "round half down(-5.5, 0)": -5.0, "round half down(1.121, 2)": 1.12, "round half down(-1.126, 2)": -1.13,
+			"decimal(1/3, 2)": 0.33, "decimal(1.5, 0)": 2.0, "decimal(2.5, 0)": 2.0, "decimal(2, 0)": 2.0,
+			"modulo(12, 5)": 2.0, "modulo(-12, 5)": 3.0, "modulo(12, -5)": -3.0, "modulo(-12, -5)": -2.0, "modulo(10, 0)": nil,
+			"sqrt(16)": 4.0, "sqrt(-1)": nil,
+			"odd(5)": true, "odd(2)": false, "even(5)": false, "even(2)": true,
+		} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		for expr, want := range map[string]float64{"log(10)": 2.302585092994046, "exp(5)": 148.4131591025766} {
+			if got, ok := mustEval(t, e, expr, nil).(float64); !ok || !approx(got, want) {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
 	t.Run("a range unary test with a null endpoint never matches", func(t *testing.T) {
 		c := NewCompiler(FEEL)
 		cases := []struct {

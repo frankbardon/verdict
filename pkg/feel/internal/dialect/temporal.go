@@ -228,8 +228,17 @@ type FEELDuration struct {
 	Seconds int
 }
 
+// NewFEELDuration carries a negative duration's sign in Neg and keeps every
+// field non-negative, the form the parser produces for "-PT5H". Upstream left
+// the sign in the fields (Hours: -5, Neg: false), so a negative Go duration or
+// a negative date-and-time difference printed as "PT-5H" and survived abs and
+// negation still negative.
 func NewFEELDuration(dur time.Duration) *FEELDuration {
 	d := &FEELDuration{}
+	if dur < 0 {
+		d.Neg = true
+		dur = -dur
+	}
 	ndur := int(dur)
 	nhours := ndur / int(time.Hour)
 	remain := ndur - nhours*int(time.Hour)
@@ -527,11 +536,29 @@ func installDatetimeFunctions(prelude *Prelude) {
 		return v.Date().Month(), nil
 	}).Required("date"))
 
-	prelude.Bind("abs", wrapTyped(func(dur *FEELDuration) (interface{}, error) {
-		newDur := *dur
-		newDur.Neg = false
-		return newDur, nil
-	}).Required("dur"))
+	// abs dispatches on the argument type rather than decoding it into a
+	// duration: upstream's mapstructure decode turned a number (a struct) or
+	// null into a zero FEELDuration, so `abs(2)` was the empty duration "PT".
+	// DMN 1.5 §10.3.4.5 defines abs(n) over a number, a days and time duration
+	// or a years and months duration; anything else, null included, is outside
+	// the domain and yields null (§10.3.4).
+	prelude.Bind("abs", NewNativeFunc(func(kwargs map[string]any) (any, error) {
+		switch n := kwargs["n"].(type) {
+		case *Number:
+			if n.v.Sign() < 0 {
+				return NewNumberFromInt64(0).Sub(n), nil
+			}
+			return n, nil
+		case *FEELDuration:
+			abs := *n
+			abs.Neg = false
+			return &abs, nil
+		case FEELDuration:
+			n.Neg = false
+			return &n, nil
+		}
+		return null, nil
+	}).Required("n"))
 
 	// refs https://docs.camunda.io/docs/components/modeler/feel/builtin-functions/feel-built-in-functions-temporal/#last-day-of-monthdate
 	prelude.Bind("last day of month", wrapTyped(func(v HasDate) (interface{}, error) {
