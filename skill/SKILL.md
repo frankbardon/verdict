@@ -282,6 +282,13 @@ opens as an empty canvas.
   name: `some o in orders, l in o.lines satisfies l.qty > 10`.
   A non-list domain is a one-element list: `some x in 5 satisfies x > 1` is
   true, and `some x in null satisfies x > 1` is null (the condition sees null).
+  A range *value* is not iterated: `some x in [1..3] …` binds `x` to the range.
+- **`for` iterates lists or integer ranges.** `for i in 1..3 return i` is
+  `[1,2,3]` and `3..1` counts down; both endpoints are included and must be
+  integers, or the whole expression is null. `some`/`every` accept `a..b` too.
+  Several contexts yield one flat list: `for x in [1,2], y in 1..x return y` is
+  `[1,1,2]`. Write `1..3`, not `[1..3]` — the bracketed form is a range value,
+  which `for` rejects as not a list.
 - **Input names come from the input-data variable**, not the file. `verdict
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated

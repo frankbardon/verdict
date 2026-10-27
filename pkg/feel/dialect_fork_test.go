@@ -335,6 +335,62 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("an iteration context iterates an integer range", func(t *testing.T) {
+		// DMN 1.5 FEEL grammar rule 47 and §10.3.2.14: `name in a..b` iterates
+		// the integers from a to b inclusive, descending when b < a. Upstream
+		// rejected the `..` at parse time. Non-integer endpoints are outside
+		// the semantic domain and make the whole expression null. The fork
+		// also admits the form in some/every, where rule 58 has a plain
+		// expression.
+		lists := map[string]string{
+			"for i in 1..3 return i":                     "[1 2 3]",
+			"for i in 3..1 return i":                     "[3 2 1]",
+			"for i in 2..2 return i":                     "[2]",
+			"for i in -1..1 return i":                    "[-1 0 1]",
+			"for i in 1..-1 return i":                    "[1 0 -1]",
+			"for i in 0..4 return i ** 2":                "[0 1 4 9 16]",
+			"for i in 1 + 1..2 * 2 return i":             "[2 3 4]",
+			"for i in 1..2, j in [10, 20] return i + j":  "[11 21 12 22]",
+			"for i in [1, 2], j in i..1 return [i, j]":   "[[1 1] [2 2] [2 1]]",
+			"for i in 1..2, j in 1..i return j":          "[1 1 2]",
+			"for i in 1..n return i":                     "[1 2 3]",
+			"count(for i in 1..3, j in 1..3 return i*j)": "9",
+		}
+		vars := map[string]any{"n": FromGo(3)}
+		for expr, want := range lists {
+			if s := fmt.Sprint(mustEval(t, e, expr, vars)); s != want {
+				t.Errorf("%s = %s, want %s", expr, s, want)
+			}
+		}
+		cases := []struct {
+			expr string
+			want any
+		}{
+			{"some x in 1..3 satisfies x = 2", true},
+			{"some x in 1..3 satisfies x = 4", false},
+			{"every x in 1..3 satisfies x > 0", true},
+			{"every x in 3..1 satisfies x > 1", false},
+			{"some x in [1, 2], y in x..3 satisfies x + y = 6", false},
+			{"some x in [1, 3], y in x..3 satisfies x + y = 6", true},
+			// Non-integer endpoints: null, never a type mismatch or [null].
+			{"for i in 1..2.5 return i", nil},
+			{"for i in 1.5..3 return i", nil},
+			{"for i in null..3 return i", nil},
+			{`for i in "a"..3 return i`, nil},
+			{"for i in [1, 2], j in 1..1.5 return j", nil},
+			{"some x in 1..null satisfies x = 1", nil},
+			{"every x in 0.5..2 satisfies x > 0", nil},
+			// A range value is not an integer-range iteration context: it is
+			// still the singleton holding the range (E1-S5).
+			{"some x in [1..3] satisfies 2 in x", true},
+		}
+		for _, c := range cases {
+			if got := mustEval(t, e, c.expr, nil); got != c.want {
+				t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+			}
+		}
+	})
+
 	t.Run("a quantified result matches a true input entry", func(t *testing.T) {
 		c := NewCompiler(FEEL)
 		ut, err := c.CompileUnaryTest("true")

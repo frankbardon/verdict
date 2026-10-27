@@ -3,6 +3,7 @@ package dialect
 import (
 	"encoding/json"
 	"errors"
+	"math/big"
 	"reflect"
 )
 
@@ -325,10 +326,63 @@ func (ifExpr IfExpr) Eval(intp *Interpreter) (any, error) {
 	}
 }
 
+// Eval yields the integers from Start to End inclusive, ascending or
+// descending as the endpoints run, DMN 1.5 §10.3.2.14: `1..3` is [1, 2, 3]
+// and `3..1` is [3, 2, 1]. The grammar requires both endpoints to be integers;
+// any other endpoint, null included, is outside the semantic domain and the
+// result is null, which the enclosing for, some or every turns into a null
+// result of its own.
+func (ir IterationRange) Eval(intp *Interpreter) (any, error) {
+	startVal, err := ir.Start.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	endVal, err := ir.End.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	from, ok := iterationEndpoint(startVal)
+	if !ok {
+		return nil, nil
+	}
+	to, ok := iterationEndpoint(endVal)
+	if !ok {
+		return nil, nil
+	}
+	step := int64(1)
+	if to < from {
+		step = -1
+	}
+	results := make([]any, 0)
+	for i := from; ; i += step {
+		results = append(results, NewNumberFromInt64(i))
+		if i == to {
+			break
+		}
+	}
+	return results, nil
+}
+
+// iterationEndpoint reports v as an int64 when it is an integral FEEL number
+// that fits one exactly. A string is not a number here, even one that parses.
+func iterationEndpoint(v any) (int64, bool) {
+	n, ok := v.(*Number)
+	if !ok || !n.v.IsInt() {
+		return 0, false
+	}
+	i, acc := n.v.Int64()
+	return i, acc == big.Exact
+}
+
 func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 	listLike, err := fe.ListExpr.Eval(intp)
 	if err != nil {
 		return nil, err
+	}
+	if _, isRange := fe.ListExpr.(*IterationRange); isRange && listLike == nil {
+		// An integer-range context with a non-integer endpoint: the whole
+		// for expression is null, not a type mismatch.
+		return nil, nil
 	}
 
 	if aList, ok := listLike.([]any); ok {
@@ -343,6 +397,12 @@ func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 				return nil, err
 			}
 			if fe.Continues {
+				if res == nil {
+					// The inner context was an integer range with a
+					// non-integer endpoint; the whole expression is null.
+					intp.Pop()
+					return nil, nil
+				}
 				// DMN 1.5 FEEL grammar rule 46 and §10.3.2.14: several
 				// iteration contexts range over their cartesian product and
 				// yield one flat list. Only the inner context's own list is
@@ -380,6 +440,11 @@ func quantify(intp *Interpreter, varname string, listExpr, cond Node, decisive b
 	// value where a list is expected is the one-element list holding it. A
 	// null domain is therefore [null], not an error, and the condition decides
 	// what an absent value means.
+	if _, isRange := listExpr.(*IterationRange); isRange && listLike == nil {
+		// An integer-range context with a non-integer endpoint is null, not
+		// the singleton [null] a null domain expression would be.
+		return nil, nil
+	}
 	aList, ok := listLike.([]any)
 	if !ok {
 		aList = []any{listLike}

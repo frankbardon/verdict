@@ -917,7 +917,7 @@ func (p *Parser) parseForExpr() (Node, error) {
 		return nil, err
 	}
 
-	listExpr, err := p.expression()
+	listExpr, err := p.iterationContext()
 	if err != nil {
 		return nil, err
 	}
@@ -960,6 +960,35 @@ func (p *Parser) parseForExpr() (Node, error) {
 	}, nil
 }
 
+// iterationContext parses the domain of one iteration context, DMN 1.5 FEEL
+// grammar rule 47: `expression [ ".." expression ]`. The two-expression form
+// is an integer range and parses to an IterationRange; upstream parsed only
+// the list form, so `for i in 1..3` was a syntax error at the `..`.
+//
+// VERDICT DIVERGENCE: the spec's rule 58 gives `some` and `every` a plain
+// expression, not an iteration context; the fork accepts the integer-range
+// form there too (an open DMN issue proposes the same), see NOTICE.md.
+func (p *Parser) iterationContext() (Node, error) {
+	rng := p.startTextRange()
+	start, err := p.expression()
+	if err != nil {
+		return nil, err
+	}
+	if p.CurrentToken().Kind != ".." {
+		return start, nil
+	}
+	err = p.scanner.Next()
+	if err != nil {
+		return nil, err
+	}
+	end, err := p.expression()
+	if err != nil {
+		return nil, err
+	}
+	rng.End = p.CurrentToken().Pos
+	return &IterationRange{Start: start, End: end, textRange: rng}, nil
+}
+
 // parseSomeOrEvery parses a quantified expression with one or more
 // comma-separated iteration contexts, DMN 1.5 FEEL grammar rule 58:
 // `some x in A, y in B satisfies P`. Upstream accepted a single context only.
@@ -995,7 +1024,7 @@ func (p *Parser) parseSomeOrEvery() (Node, error) {
 			return nil, err
 		}
 
-		listExpr, err := p.expression()
+		listExpr, err := p.iterationContext()
 		if err != nil {
 			return nil, err
 		}

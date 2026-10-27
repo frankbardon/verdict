@@ -331,6 +331,23 @@ func (fe ForExpr) Repr() string {
 	return fmt.Sprintf("(for %s %s %s)", fe.Varname, fe.ListExpr.Repr(), fe.ReturnExpr.Repr())
 }
 
+// IterationRange is the integer-range form of an iteration context,
+// `name in Start .. End`, DMN 1.5 FEEL grammar rule 47. It is only ever the
+// ListExpr of a ForExpr, SomeExpr or EveryExpr; a bare `a..b` is not an
+// expression anywhere else.
+type IterationRange struct {
+	Start     Node
+	End       Node
+	textRange TextRange
+}
+
+func (ir IterationRange) TextRange() TextRange {
+	return ir.textRange
+}
+func (ir IterationRange) Repr() string {
+	return fmt.Sprintf("(iterrange %s %s)", ir.Start.Repr(), ir.End.Repr())
+}
+
 // SomeExpr some expression
 type SomeExpr struct {
 	Varname    string
