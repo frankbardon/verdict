@@ -367,9 +367,13 @@ func quantify(intp *Interpreter, varname string, listExpr, cond Node, decisive b
 	if err != nil {
 		return nil, err
 	}
+	// DMN 1.5 implicit conversion to a singleton list (§10.3.2.9): a single
+	// value where a list is expected is the one-element list holding it. A
+	// null domain is therefore [null], not an error, and the condition decides
+	// what an absent value means.
 	aList, ok := listLike.([]any)
 	if !ok {
-		return nil, NewErrTypeMismatch("list")
+		aList = []any{listLike}
 	}
 
 	intp.PushEmpty()

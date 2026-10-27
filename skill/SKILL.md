@@ -272,6 +272,8 @@ opens as an empty canvas.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration
   contexts range over the cartesian product, and a later one may use an earlier
   name: `some o in orders, l in o.lines satisfies l.qty > 10`.
+  A non-list domain is a one-element list: `some x in 5 satisfies x > 1` is
+  true, and `some x in null satisfies x > 1` is null (the condition sees null).
 - **Input names come from the input-data variable**, not the file. `verdict
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated

@@ -274,6 +274,42 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("a quantifier over a non-list iterates the singleton list", func(t *testing.T) {
+		// DMN 1.5 implicit conversion: a single value where a list is expected
+		// is the one-element list holding it. Upstream raised a type mismatch,
+		// failing the evaluation. Null is the singleton [null], so the
+		// condition decides what an absent domain means.
+		cases := []struct {
+			expr string
+			want any
+		}{
+			{"some x in 5 satisfies x > 1", true},
+			{"every x in 5 satisfies x > 10", false},
+			{"every x in 5 satisfies x = 5", true},
+			{`some s in "a" satisfies s = "a"`, true},
+			// Null domain: the predicate is evaluated once, over null.
+			{"some x in null satisfies x > 1", nil},
+			{"every x in null satisfies x > 1", nil},
+			{"some x in null satisfies x = null", true},
+			{"every x in null satisfies x != null", false},
+			// Every iteration context, including a dependent one.
+			{"some x in 1, y in [2, 3] satisfies x + y = 4", true},
+			{"some x in [1, 2], y in 3 satisfies x + y = 5", true},
+			{"every x in [1, 2], y in x satisfies y > 0", true},
+			{"some x in [1, 2], y in x satisfies y > 1", true},
+			{"every x in 1, y in null satisfies y = null", true},
+		}
+		for _, c := range cases {
+			if got := mustEval(t, e, c.expr, nil); got != c.want {
+				t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+			}
+		}
+		vars := map[string]any{"n": FromGo(7)}
+		if got := mustEval(t, e, "some x in n satisfies x = 7", vars); got != true {
+			t.Errorf("some over a scalar variable = %#v, want true", got)
+		}
+	})
+
 	t.Run("a quantified result matches a true input entry", func(t *testing.T) {
 		c := NewCompiler(FEEL)
 		ut, err := c.CompileUnaryTest("true")
