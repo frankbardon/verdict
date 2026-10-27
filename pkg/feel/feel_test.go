@@ -227,6 +227,25 @@ func TestYearsAndMonthsDuration(t *testing.T) {
 	}
 }
 
+func TestConversionOverloadsTakeModelValues(t *testing.T) {
+	// DMN 1.5 §10.3.4.1 Table 72: the component overloads of date and time,
+	// fed from model inputs as a decision would feed them.
+	e := newFEEL(t)
+	vars := map[string]any{"y": FromGo(2026), "m": FromGo(2), "d": FromGo(28), "amount": FromGo("1.250,75")}
+	if got := mustEval(t, e, `date(y, m, d) = date("2026-02-28")`, vars); got != true {
+		t.Errorf("date(y, m, d) = %#v, want 2026-02-28", got)
+	}
+	if got := mustEval(t, e, `string(date(year: y, month: m + 1, day: d) - date(y, m, d))`, vars); got != "P28D" {
+		t.Errorf("date difference = %#v, want P28D", got)
+	}
+	if got := mustEval(t, e, `date(y, 13, d)`, vars); got != nil {
+		t.Errorf("date(y, 13, d) = %#v, want null", got)
+	}
+	if got := mustEval(t, e, `number(amount, ".", ",")`, vars); got != 1250.75 {
+		t.Errorf(`number(amount, ".", ",") = %#v, want 1250.75`, got)
+	}
+}
+
 func TestFunctionLibraryIsNamespaced(t *testing.T) {
 	lib := FunctionLibrary{
 		Namespace: "acme",

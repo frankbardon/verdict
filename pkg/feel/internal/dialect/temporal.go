@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"regexp"
 	"strconv"
@@ -907,65 +908,226 @@ func ParseTemporalValue(temporalStr string) (interface{}, error) {
 	return ParseDuration(temporalStr)
 }
 
-// stringConversion builds a one-argument string → value conversion built-in
-// that yields null outside its domain (DMN 1.5 §10.3.4, Table 72): a string
-// the parser rejects as malformed (ErrParseTemporal), null, or an argument of
-// any other type. Inputs inside the domain that the fork falls short on still
-// raise, so they never read as malformed: a parser error other than
-// ErrParseTemporal (an IANA zone id, a duration beyond the fork's range or
-// precision), and an argument for which unimplemented reports a spec
-// overload the fork lacks (date(date and time), time(time | date and time)).
-func stringConversion[T any](parse func(string) (T, error), unimplemented func(any) bool) *NativeFun {
+// fromString is a string → value conversion that yields null outside its
+// domain (DMN 1.5 §10.3.4, Table 72): a string the parser rejects as
+// malformed (ErrParseTemporal). Inputs inside the domain that the fork falls
+// short on still raise, so they never read as malformed: a parser error other
+// than ErrParseTemporal (an IANA zone id, a duration beyond the fork's range
+// or precision).
+func fromString[T any](parse func(string) (T, error), s string) (any, error) {
+	v, err := parse(s)
+	if errors.Is(err, ErrParseTemporal) {
+		return null, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// stringConversion builds a one-argument string → value conversion built-in;
+// anything but a string, null included, is outside its domain and null.
+func stringConversion[T any](parse func(string) (T, error)) *NativeFun {
 	return NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		from := kwargs["from"]
-		if s, ok := from.(string); ok {
-			v, err := parse(s)
-			if errors.Is(err, ErrParseTemporal) {
-				return null, nil
-			}
-			if err != nil {
-				return nil, err
-			}
-			return v, nil
-		}
-		if unimplemented != nil && unimplemented(from) {
-			return nil, NewErrTypeMismatch("string")
+		if s, ok := kwargs["from"].(string); ok {
+			return fromString(parse, s)
 		}
 		return null, nil
 	})
 }
 
-func isDatetime(v any) bool {
-	switch v.(type) {
-	case *FEELDatetime, FEELDatetime:
-		return true
+// ErrTimePrecision reports a time() second finer than a nanosecond: inside
+// the built-in's domain, beyond what the fork can hold.
+var ErrTimePrecision = errors.New("time seconds finer than a nanosecond are not supported")
+
+// intComponent reads a date or time component: a number with an integer
+// value that fits an int. Anything else is outside the domain.
+func intComponent(v any) (int, bool) {
+	n, ok := v.(*Number)
+	if !ok || !n.v.IsInt() {
+		return 0, false
 	}
-	return false
+	i, acc := n.v.Int64()
+	if acc != big.Exact || i < math.MinInt32 || i > math.MaxInt32 {
+		return 0, false
+	}
+	return int(i), true
 }
 
-func isTimeOrDatetime(v any) bool {
-	switch v.(type) {
-	case *FEELTime, FEELTime:
-		return true
+func asDatetime(v any) (*FEELDatetime, bool) {
+	switch dt := v.(type) {
+	case *FEELDatetime:
+		return dt, true
+	case FEELDatetime:
+		return &dt, true
 	}
-	return isDatetime(v)
+	return nil, false
+}
+
+func asTime(v any) (*FEELTime, bool) {
+	switch tm := v.(type) {
+	case *FEELTime:
+		return tm, true
+	case FEELTime:
+		return &tm, true
+	}
+	return nil, false
+}
+
+// dateBuiltin is date(from) and date(year, month, day), DMN 1.5 §10.3.4.1
+// Table 72. from is a date string or a date and time, whose calendar date
+// (in its own offset or zone) is the result. The components must be integers
+// naming a real date — month 13 or 30 February is null.
+func dateBuiltin(kwargs map[string]any) (any, error) {
+	if from, ok := kwargs["from"]; ok {
+		if v, ok := from.(string); ok {
+			return fromString(ParseDate, v)
+		}
+		if dt, ok := asDatetime(from); ok {
+			return &FEELDate{t: time.Date(dt.t.Year(), dt.t.Month(), dt.t.Day(), 0, 0, 0, 0, time.UTC)}, nil
+		}
+		return null, nil
+	}
+	y, okY := intComponent(kwargs["year"])
+	m, okM := intComponent(kwargs["month"])
+	d, okD := intComponent(kwargs["day"])
+	if !okY || !okM || !okD || y < -999999999 || y > 999999999 {
+		return null, nil
+	}
+	t := time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC)
+	if t.Year() != y || int(t.Month()) != m || t.Day() != d {
+		return null, nil
+	}
+	return &FEELDate{t: t}, nil
+}
+
+// timeBuiltin is time(from) and time(hour, minute, second, offset?), DMN 1.5
+// §10.3.4.1 Table 72. from is a time string, a time (returned as is) or a
+// date and time, whose time of day keeps its offset or its lack of one. hour
+// and minute are integers in range, second a number in [0, 60), and offset a
+// days and time duration within ±14 hours (xs:time's offset range) or null,
+// which leaves the time zoneless.
+func timeBuiltin(kwargs map[string]any) (any, error) {
+	if from, ok := kwargs["from"]; ok {
+		if s, ok := from.(string); ok {
+			return fromString(ParseTime, s)
+		}
+		if tm, ok := asTime(from); ok {
+			return tm, nil
+		}
+		if dt, ok := asDatetime(from); ok {
+			return timeOfDay(dt), nil
+		}
+		return null, nil
+	}
+	h, okH := intComponent(kwargs["hour"])
+	m, okM := intComponent(kwargs["minute"])
+	sec, okS := kwargs["second"].(*Number)
+	if !okH || !okM || !okS || h < 0 || h > 23 || m < 0 || m > 59 {
+		return null, nil
+	}
+	nanos := new(big.Rat).Mul(sec.rat(), big.NewRat(int64(time.Second), 1))
+	if nanos.Sign() < 0 || nanos.Cmp(big.NewRat(int64(time.Minute), 1)) >= 0 {
+		return null, nil
+	}
+	if !nanos.IsInt() {
+		return nil, ErrTimePrecision
+	}
+	ns := nanos.Num().Int64()
+	loc, hasOffset := time.UTC, false
+	if offset, ok := kwargs["offset"]; ok {
+		if o, ok := offset.(FEELDuration); ok {
+			offset = &o
+		}
+		switch o := offset.(type) {
+		case *NullValue, nil:
+		case *FEELDuration:
+			d := o.Duration()
+			if o.isYearsMonths() || d%time.Second != 0 || d > 14*time.Hour || d < -14*time.Hour {
+				return null, nil
+			}
+			hasOffset = true
+			if d != 0 {
+				loc = time.FixedZone("", int(d/time.Second))
+			}
+		default:
+			return null, nil
+		}
+	}
+	t := time.Date(0, 1, 1, h, m, 0, int(ns), loc)
+	return &FEELTime{t: t, hasOffset: hasOffset}, nil
+}
+
+// timeOfDay is a date and time's time of day on time's reference date
+// (0000-01-01), keeping its offset or its lack of one. A zone id whose offset
+// is fixed is kept; one whose offset varies by date (which a time cannot
+// carry, see ErrTimeZoneIDOnTime) becomes the offset in force at that date and
+// time.
+func timeOfDay(dt *FEELDatetime) *FEELTime {
+	loc, zoneID := dt.t.Location(), dt.zoneID
+	if zoneID && !hasFixedOffset(loc) {
+		_, offset := dt.t.Zone()
+		loc, zoneID = time.UTC, false
+		if offset != 0 {
+			loc = time.FixedZone("", offset)
+		}
+	}
+	t := time.Date(0, 1, 1, dt.t.Hour(), dt.t.Minute(), dt.t.Second(), dt.t.Nanosecond(), loc)
+	return &FEELTime{t: t, hasOffset: dt.hasOffset, zoneID: zoneID}
+}
+
+// datetimeBuiltin is date and time(from) and date and time(date, time), DMN
+// 1.5 §10.3.4.1 Table 72. date is a date or a date and time (whose calendar
+// date is used); the result has time's time of day and its offset, zone or
+// lack of one.
+func datetimeBuiltin(kwargs map[string]any) (any, error) {
+	if from, ok := kwargs["from"]; ok {
+		if s, ok := from.(string); ok {
+			return fromString(ParseDatetime, s)
+		}
+		return null, nil
+	}
+	var day time.Time
+	switch d := kwargs["date"].(type) {
+	case *FEELDate:
+		day = d.t
+	case FEELDate:
+		day = d.t
+	default:
+		dt, ok := asDatetime(d)
+		if !ok {
+			return null, nil
+		}
+		day = dt.t
+	}
+	tm, ok := asTime(kwargs["time"])
+	if !ok {
+		return null, nil
+	}
+	t := time.Date(day.Year(), day.Month(), day.Day(),
+		tm.t.Hour(), tm.t.Minute(), tm.t.Second(), tm.t.Nanosecond(), tm.t.Location())
+	return &FEELDatetime{t: t, hasOffset: tm.hasOffset, zoneID: tm.zoneID}, nil
 }
 
 // installDatetimeFunctions builtin functions
 func installDatetimeFunctions(prelude *Prelude) {
 	// conversions
 	//
-	// VERDICT DIVERGENCE: the four string conversions yield null for a string
+	// VERDICT DIVERGENCE: the four conversions yield null for a string
 	// outside their lexical domain, and for an argument that is no overload's
 	// domain, instead of failing the evaluation. DMN 1.5 §10.3.4: "Whenever a
 	// parameter is outside its domain, the result of the built-in is null."
-	// date(date and time) and time(time | date and time) still raise: they
-	// are overloads the spec defines and the fork has not implemented, and
-	// nulling them would hide that gap behind a wrong answer.
-	prelude.Bind("date", stringConversion(ParseDate, isDatetime).Required("from"))
-	prelude.Bind("time", stringConversion(ParseTime, isTimeOrDatetime).Required("from"))
-	prelude.Bind("date and time", stringConversion(ParseDatetime, nil).Required("from"))
-	prelude.Bind("duration", stringConversion(ParseDuration, nil).Required("from"))
+	//
+	// VERDICT DIVERGENCE: date, time and date and time carry every overload
+	// of DMN 1.5 §10.3.4.1 Table 72, positionally or by the spec's parameter
+	// names; upstream had only the string form.
+	prelude.Bind("date", NewNativeFunc(dateBuiltin).Overloads(
+		[]string{"from"}, []string{"year", "month", "day"}))
+	prelude.Bind("time", NewNativeFunc(timeBuiltin).Overloads(
+		[]string{"from"}, []string{"hour", "minute", "second"}, []string{"hour", "minute", "second", "offset"}))
+	prelude.Bind("date and time", NewNativeFunc(datetimeBuiltin).Overloads(
+		[]string{"from"}, []string{"date", "time"}))
+	prelude.Bind("duration", stringConversion(ParseDuration).Required("from"))
 
 	// temporal functions
 	prelude.Bind("now", wrapTyped(func() (interface{}, error) {

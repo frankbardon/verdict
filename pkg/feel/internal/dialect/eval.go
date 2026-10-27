@@ -584,6 +584,9 @@ func (fc FunCall) Eval(intp *Interpreter) (any, error) {
 }
 
 func (fc FunCall) EvalNativeFun(intp *Interpreter, funDef *NativeFun) (any, error) {
+	if len(funDef.overloads) > 0 {
+		return fc.evalOverloaded(intp, funDef)
+	}
 	argVals := make(map[string]any)
 	if fc.keywordArgs {
 		kwArgMap, err := fc.evalArgsToMap(intp)
@@ -634,6 +637,33 @@ func (fc FunCall) EvalNativeFun(intp *Interpreter, funDef *NativeFun) (any, erro
 		}
 	}
 	return funDef.Call(intp, argVals)
+}
+
+// evalOverloaded calls a built-in declared with NativeFun.Overloads.
+func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, error) {
+	var args map[string]any
+	var err error
+	if fc.keywordArgs {
+		named, err := fc.evalArgsToMap(intp)
+		if err != nil {
+			return nil, err
+		}
+		args, err = funDef.bindOverload(nil, named)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		positional := make([]any, len(fc.Args))
+		for i, argNode := range fc.Args {
+			if positional[i], err = argNode.arg.Eval(intp); err != nil {
+				return nil, err
+			}
+		}
+		if args, err = funDef.bindOverload(positional, nil); err != nil {
+			return nil, err
+		}
+	}
+	return funDef.Call(intp, args)
 }
 
 func (fc FunCall) evalArgsToMap(intp *Interpreter) (map[string]any, error) {

@@ -163,6 +163,8 @@ modulo(-10.1, 4.5) = 3.4   sqrt(-1) = null           // numeric fns: exact decim
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
 date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
 number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
+date(2026, 2, 28)   time(10, 30, 0)   time(10, 30, 0, duration("PT2H"))   // components; bad ones null
+date(dt)   time(dt)   date and time(d, t)   number("1.000,5", ".", ",")   // Table 72 overloads
 [1..10]  [1..10)  [1..10[  (1..10]  ]1..10]           // both bracket spellings
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
 ```
@@ -321,15 +323,27 @@ opens as an empty canvas.
   `duration("P1Y2D")` (mixes the two duration kinds), `duration("P")` (no
   component), `date(null)` and
   `string(null)` are null, not an error — so a bad string input surfaces as a
-  null output, and `number("1,000")` is null (the grouping form is not
-  supported). The literal `@"P1Y2D"` (or `@"P"`) is a syntax error instead:
+  null output, and `number("1,000")` is null (use the grouping form,
+  `number("1,000", ",", ".")`). The literal `@"P1Y2D"` (or `@"P"`) is a syntax error instead:
   `VERDICT_LOAD_013` when the model loads, with the literal's 1-based
   `line L, column C` in the message. A string the spec allows but Verdict
   cannot hold still fails the evaluation (`VERDICT_EVAL_005`) rather than
   reading as malformed: a zone id the time zone database does not know
   (`"2026-01-01T10:00:00@Mars/Olympus"`), a duration finer than a nanosecond (`PT0.0000000001S`) or longer
-  than about 292 years of days and time (`P200000D`), and `date(<date and
-  time>)` / `time(<time or date and time>)`.
+  than about 292 years of days and time (`P200000D`), and a `time()` second
+  finer than a nanosecond.
+- **Every Table 72 conversion overload works, positionally or by name.**
+  `date(2026, 2, 28)` = `date(year: 2026, month: 2, day: 28)`;
+  `date(<date and time>)` is its calendar date. `time(10, 30, 0)` is
+  **zoneless**; `time(10, 30, 0, duration("PT2H"))` is `10:30:00+02:00`
+  (`PT0S` gives `Z`, `offset: null` stays zoneless). `second` may be
+  fractional. `time(<date and time>)` keeps its offset or zonelessness (a DST
+  zone id becomes the offset at that instant). `date and time(date, time)`
+  takes the time's zone-ness. Invalid components — month 13, 29 February in
+  a common year, hour 24, second 60, a non-integer year, an offset beyond
+  ±14h — are null. `number(from, grouping separator, decimal separator)`:
+  grouping `" "`, `","`, `"."` or null; decimal `"."`, `","` or null (= `"."`);
+  they must differ, else null.
 - **Durations are normalised.** `duration("P26M")` is `P2Y2M` and
   `duration("PT36H")` is `P1DT12H` — `string()` and `.days`/`.hours`/... read
   the canonical form, and `PT36H = P1DT12H`. Seconds may be fractional

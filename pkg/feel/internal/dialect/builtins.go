@@ -124,6 +124,49 @@ func extractList(args map[string]any, argName string) ([]any, error) {
 	}
 }
 
+// separatedNumber rewrites s, written with the given separators, as a plain
+// numeric literal: number(from, grouping separator, decimal separator), DMN
+// 1.5 §10.3.4.1 Table 72. grouping is " ", "," or "." and decimal "." or ",",
+// and they must differ; either may be null — no grouping separator, and the
+// default decimal point "." — and anything else is outside the domain.
+//
+// VERDICT DIVERGENCE: upstream had only number(from). Table 72 does not say
+// what a null separator means; the fork reads it as the one-argument form
+// does, so number("1.000", ".", null) is null (grouping and decimal clash).
+func separatedNumber(s string, grouping, decimal any) (string, bool) {
+	g, d := "", "."
+	switch v := grouping.(type) {
+	case *NullValue, nil:
+	case string:
+		if v != " " && v != "," && v != "." {
+			return "", false
+		}
+		g = v
+	default:
+		return "", false
+	}
+	switch v := decimal.(type) {
+	case *NullValue, nil:
+	case string:
+		if v != "." && v != "," {
+			return "", false
+		}
+		d = v
+	default:
+		return "", false
+	}
+	if g == d {
+		return "", false
+	}
+	if g != "" {
+		s = strings.ReplaceAll(s, g, "")
+	}
+	if d != "." && strings.Contains(s, ".") {
+		return "", false
+	}
+	return strings.ReplaceAll(s, d, "."), true
+}
+
 // numericLiteral is DMN 1.5 grammar rule 35, the domain of number(from).
 // Table 72's footnote cites "grammar rule 37", which is digits; and rule 35's
 // parentheses do not close, so the exponent is read as applying to either
@@ -149,15 +192,25 @@ func installBuiltinFunctions(prelude *Prelude) {
 	// Table 72: from must conform to the numeric-literal grammar, and §10.3.4
 	// makes a parameter outside its domain null.
 	prelude.Bind("number", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		if s, ok := kwargs["from"].(string); ok && !numericLiteral.MatchString(s) {
+		from := kwargs["from"]
+		if _, ok := kwargs["decimal separator"]; ok {
+			s, ok := from.(string)
+			if !ok {
+				return null, nil
+			}
+			if from, ok = separatedNumber(s, kwargs["grouping separator"], kwargs["decimal separator"]); !ok {
+				return null, nil
+			}
+		}
+		if s, ok := from.(string); ok && !numericLiteral.MatchString(s) {
 			return null, nil
 		}
-		n, err := ParseNumberWithErr(kwargs["from"])
+		n, err := ParseNumberWithErr(from)
 		if err != nil {
 			return null, nil
 		}
 		return n, nil
-	}).Required("from"))
+	}).Overloads([]string{"from"}, []string{"from", "grouping separator", "decimal separator"}))
 
 	// boolean functions
 	// VERDICT DIVERGENCE: upstream negated boolValue(v), so `not(null)` and

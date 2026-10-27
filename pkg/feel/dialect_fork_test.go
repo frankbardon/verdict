@@ -1320,6 +1320,87 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("conversion built-ins carry every Table 72 overload", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.1 Table 72. Upstream had only the string form of
+		// date, time and date and time, and number(from) alone; each case
+		// below raised (or, for number, too many arguments) on v1.0.6.
+		strs := map[string]string{
+			`string(date(2026, 2, 28))`:                                                               "2026-02-28",
+			`string(date(year: 2028, month: 2, day: 29))`:                                             "2028-02-29",
+			`string(date(date and time("2026-02-28T10:00:00")))`:                                      "2026-02-28",
+			`string(date(from: date and time("2026-02-28T23:30:00-05:00")))`:                          "2026-02-28",
+			`string(time(10, 30, 0))`:                                                                 "10:30:00",
+			`string(time(10, 30, 0, duration("PT2H")))`:                                               "10:30:00+02:00",
+			`string(time(10, 30, 0, duration("-PT5H30M")))`:                                           "10:30:00-05:30",
+			`string(time(10, 30, 0, duration("PT0S")))`:                                               "10:30:00Z",
+			`string(time(10, 30, 0, null))`:                                                           "10:30:00",
+			`string(time(hour: 1, minute: 2, second: 3, offset: duration("PT1H")))`:                   "01:02:03+01:00",
+			`string(time(date and time("2026-02-28T10:00:00")))`:                                      "10:00:00",
+			`string(time(date and time("2026-02-28T10:00:00+02:00")))`:                                "10:00:00+02:00",
+			`string(time(date and time("2026-07-01T10:00:00@Europe/Paris")))`:                         "10:00:00+02:00",
+			`string(time(time("10:00:00Z")))`:                                                         "10:00:00Z",
+			`string(date and time(date("2026-02-28"), time("10:00:00Z")))`:                            "2026-02-28T10:00:00Z",
+			`string(date and time(date: date("2026-02-28"), time: time("10:00:00")))`:                 "2026-02-28T10:00:00",
+			`string(date and time(date and time("2026-02-28T23:00:00"), time("10:00:00@Etc/GMT+5")))`: "2026-02-28T10:00:00@Etc/GMT+5",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		bools := map[string]bool{
+			`time(10, 0, 0) = time("10:00:00")`:                         true,
+			`time(10, 0, 0, duration("PT2H")) = time("10:00:00+02:00")`: true,
+			`time(10, 0, 30.5) > time(10, 0, 30)`:                       true,
+			`date(2026, 2, 28) = @"2026-02-28"`:                         true,
+		}
+		for expr, want := range bools {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// time(h, m, s) is zoneless, so it does not equal a zoned time.
+		if got := mustEval(t, e, `time(10, 0, 0) = time("10:00:00Z")`, nil); got != nil {
+			t.Errorf(`time(10, 0, 0) = time("10:00:00Z") = %#v, want null`, got)
+		}
+		nums := map[string]float64{
+			`number("1.000,5", ".", ",")`: 1000.5,
+			`number("1 000,0", " ", ",")`: 1000,
+			`number("1,000.5", ",", ".")`: 1000.5,
+			`number("12", null, null)`:    12,
+			`number("1,5", null, ",")`:    1.5,
+			`number(from: "1,000.5", grouping separator: ",", decimal separator: ".")`: 1000.5,
+		}
+		for expr, want := range nums {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// Invalid components, separators and argument kinds are null.
+		for _, expr := range []string{
+			`date(2026, 2, 29)`, `date(2026, 13, 1)`, `date(2026, 0, 1)`, `date(2026.5, 1, 1)`, `date(null, 1, 1)`, `date("2026", 1, 1)`,
+			`date(time("10:00:00"))`,
+			`time(24, 0, 0)`, `time(10, 60, 0)`, `time(10, 0, 60)`, `time(10, 0, -1)`, `time(10.5, 0, 0)`, `time(null, 0, 0)`,
+			`time(10, 0, 0, duration("P1Y"))`, `time(10, 0, 0, duration("PT15H"))`, `time(10, 0, 0, "PT1H")`, `time(date("2026-01-01"))`,
+			`date and time(date("2026-02-28"), "10:00:00")`, `date and time(null, time("10:00:00"))`, `date and time(time("10:00:00"), time("10:00:00"))`,
+			`number("1.5", ".", ".")`, `number("1.5", "x", ".")`, `number("1.5", null, ",")`, `number("1.000", ".", null)`, `number("1,5", ",", ";")`, `number(15, ",", ".")`,
+		} {
+			got, err := e.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(got) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(got))
+			}
+		}
+		// A call that fits no signature still fails, as for any built-in, and
+		// so does a second finer than the fork can hold.
+		for _, expr := range []string{`date()`, `date(2026, 2)`, `time(10, 0)`, `date(year: 2026, month: 2)`, `date(foo: 1)`, `time(10, 0, 0.0000000001)`} {
+			if v, err := e.EvalText(expr, nil); err == nil {
+				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
+			}
+		}
+	})
+
 	t.Run("conversion built-ins are null outside their domain", func(t *testing.T) {
 		// DMN 1.5 §10.3.4: "Whenever a parameter is outside its domain, the
 		// result of the built-in is null." Upstream raised "fail to parse
@@ -1387,12 +1468,10 @@ func TestForkedDefects(t *testing.T) {
 
 		// Inside the domain but beyond the fork: still an evaluation error,
 		// never a null that reads as "the input was malformed". An IANA zone
-		// id, a days and time duration beyond time.Duration's range or finer
-		// than a nanosecond, and the date(date and time) / time(time | date
-		// and time) overloads, which the fork does not implement.
+		// id, and a days and time duration beyond time.Duration's range or
+		// finer than a nanosecond.
 		for _, expr := range []string{
 			`duration("P200000D")`, `duration("PT0.0000000001S")`,
-			`date(date and time("2012-12-25T11:00:00"))`, `time(time("10:00:00"))`, `time(date and time("2012-12-25T11:00:00"))`,
 		} {
 			if v, err := e.EvalText(expr, nil); err == nil {
 				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
