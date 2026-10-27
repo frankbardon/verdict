@@ -210,6 +210,12 @@ func interpretTestResult(v, input any, literalBool bool) (bool, error) {
 	case *pfeel.RangeValue:
 		return rangeContains(tv, input)
 	case []any:
+		// DMN 1.5 §7.3.2 (UnaryTests, alternatives a and b): the tested value satisfies a list
+		// either by being equal to it — a list-valued input against a list
+		// literal cell — or by being equal to one of its items.
+		if Equal(tv, input) {
+			return true, nil
+		}
 		for _, item := range tv {
 			if Equal(item, input) {
 				return true, nil

@@ -3,7 +3,6 @@ module github.com/frankbardon/verdict
 go 1.26.1
 
 require (
-	github.com/google/go-cmp v0.7.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0

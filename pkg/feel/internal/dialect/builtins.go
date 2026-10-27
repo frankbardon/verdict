@@ -239,8 +239,8 @@ func installBuiltinFunctions(prelude *Prelude) {
 	// list functions
 	prelude.Bind("list contains", wrapTyped(func(list []any, elem any) (bool, error) {
 		for _, entry := range list {
-			if cmp, err := compareInterfaces(entry, elem); err == nil && cmp == 0 {
-				return true, err
+			if valuesEqual(entry, elem) {
+				return true, nil
 			}
 		}
 		return false, nil
@@ -540,7 +540,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 	prelude.Bind("index of", wrapTyped(func(list []any, match any) ([]any, error) {
 		matched := make([]any, 0)
 		for i, elem := range list {
-			if cmp, err := compareInterfaces(elem, match); err == nil && cmp == 0 {
+			if valuesEqual(elem, match) {
 				matched = append(matched, N(toFEELIndex(i)))
 			}
 		}
@@ -560,7 +560,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 			for _, elem := range list {
 				found := false
 				for _, setElem := range elemSet {
-					if cmp, err := compareInterfaces(elem, setElem); err == nil && cmp == 0 {
+					if valuesEqual(elem, setElem) {
 						found = true
 						break
 					}
@@ -578,7 +578,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 		for _, elem := range list {
 			found := false
 			for _, setElem := range elemSet {
-				if cmp, err := compareInterfaces(elem, setElem); err == nil && cmp == 0 {
+				if valuesEqual(elem, setElem) {
 					found = true
 					break
 				}

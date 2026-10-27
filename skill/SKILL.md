@@ -284,6 +284,13 @@ opens as an empty canvas.
   null. In a table, a `< 5` cell against a string input simply does not match,
   and neither does `not(< 5)`; an equality cell such as `"gold"` against a
   number does not match, so `not("gold")` does.
+- **Lists and contexts compare element by element; they have no order.**
+  `[1, 2] = [1, 2]` and `{a: 1, b: 2} = {b: 2, a: 1}` are true, `[1, 2] =
+  [2, 1]` and `{a: 1} = {b: 1}` false; a mixed-kind element pair makes it null
+  (`[1, "a"] = [1, 2]`) unless another pair is false. `[1, 2] < [1, 3]` is
+  null. `list contains`, `index of`, `union`, `distinct values`,
+  `duplicate values` and `in` find list and context elements by value, and a
+  `[1, 2]` cell matches a list input equal to it as well as `1` or `2`.
 - **A malformed conversion is null; a malformed `@"..."` does not load.**
   `date("nope")`, `time("25:00")`, `date and time("x")`, `number("abc")`,
   `duration("P1Y2D")` (mixes the two duration kinds), `date(null)` and

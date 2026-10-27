@@ -209,6 +209,62 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("lists and contexts compare element-wise", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 53: lists are equal when they have the same
+		// length and every element pair is `=`; contexts when they have the
+		// same keys and every value pair is `=`. The result is the three-valued
+		// conjunction of those comparisons. Table 54 gives neither kind an
+		// order, so `<` and friends are null. Upstream answered false for any
+		// two equal lists and ordered lists lexicographically.
+		for expr, want := range map[string]any{
+			`[1, 2] = [1, 2]`: true, `[1, 2] = [2, 1]`: false, `[1] = [1, 2]`: false, `[] = []`: true,
+			`[[1, 2], [3]] = [[1, 2], [3]]`: true, `[[1, 2], [3]] = [[1, 2], [4]]`: false,
+			`[1, null] = [1, null]`: true, `[1, null] = [1, 2]`: false, `[1, 2] = [1.0, 2.00]`: true,
+			`[1, "a"] = [2, 2]`: false,
+			`{a: 1} = {a: 1}`:   true, `{a: 1} = {a: 2}`: false, `{a: 1} = {b: 1}`: false,
+			`{a: 1, b: 2} = {b: 2, a: 1}`: true, `{a: 1} = {a: 1, b: 2}`: false,
+			`{a: [1, {b: 2}]} = {a: [1, {b: 2}]}`: true, `{a: null} = {a: null}`: true,
+			`[1, 2] != [1, 2]`: false, `[1, 2] != [2, 1]`: true, `{a: 1} != {a: 2}`: true,
+			`[1, 2] = null`: false, `null != {a: 1}`: true,
+		} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		for _, expr := range []string{
+			`[1, "a"] = [1, 2]`, `[1, "a"] != [1, 2]`, `{a: 1, b: "x"} = {a: 1, b: 2}`, `[[1, "a"]] = [[1, 2]]`,
+			`[1, 2] < [1, 3]`, `[1, 2] <= [1, 2]`, `[1] > []`, `[1] >= [1]`,
+			`{a: 1} < {a: 2}`, `{a: 1} >= {a: 1}`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+	})
+
+	t.Run("list built-ins find lists and contexts by value", func(t *testing.T) {
+		// `in`, `list contains`, `index of`, `union`, `distinct values` and
+		// `duplicate values` all search by `=`, so they inherit Table 53.
+		for expr, want := range map[string]string{
+			`[1, 2] in [[1, 2], [3]]`:                   "true",
+			`{a: 1} in [{a: 1}]`:                        "true",
+			`[2, 1] in [[1, 2], [3]]`:                   "false",
+			`list contains([[1, 2], [3]], [1, 2])`:      "true",
+			`list contains([{a: 1}], {a: 1})`:           "true",
+			`list contains([[1, 2]], [2, 1])`:           "false",
+			`index of([[1], [2], [1]], [1])`:            "[1 3]",
+			`index of([{a: 1}, {a: 2}], {a: 2})`:        "[2]",
+			`union([[1], [2]], [[1], [3]])`:             "[[1] [2] [3]]",
+			`distinct values([[1, 2], [1, 2], [2, 1]])`: "[[1 2] [2 1]]",
+			`distinct values([{a: 1}, {a: 1}])`:         "[map[a:1]]",
+			`duplicate values([[1], [2], [1]])`:         "[[1]]",
+		} {
+			if got := fmt.Sprint(mustEval(t, e, expr, nil)); got != want {
+				t.Errorf("%s = %s, want %s", expr, got, want)
+			}
+		}
+	})
+
 	t.Run("a unary test of another kind than its input does not match", func(t *testing.T) {
 		// A decision table mixing kinds across rules must not error out: a
 		// mismatched test is "not satisfied" (the comparisons are null), and
@@ -225,6 +281,8 @@ func TestForkedDefects(t *testing.T) {
 			{"[1..10]", "a", false}, {`["a".."z"]`, 5, false},
 			{"not(< 5)", "a", false}, {`not(< 5, "a")`, "a", false}, {`not(< 5, "b")`, "a", false}, {`not("b")`, "a", true},
 			{`< 5`, 3, true},
+			{"[1, 2]", []any{1, 2}, true}, {"[1, 2]", []any{2, 1}, false}, {"[1, 2]", 2, true},
+			{"? = [1, 2]", []any{1, 2}, true}, {"not([1, 2])", []any{1, 2}, false},
 		}
 		for _, tc := range cases {
 			ut, err := c.CompileUnaryTest(tc.src)

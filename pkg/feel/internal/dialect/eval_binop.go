@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/google/go-cmp/cmp"
 )
 
 func (binop Binop) Eval(intp *Interpreter) (any, error) {
@@ -113,12 +111,12 @@ func compareInterfaces(leftVal, rightVal any) (int, error) {
 			}
 		}
 	case []any:
-		if rightArr, ok := rightVal.([]any); ok {
-			return compareArrays(v, rightArr)
+		if _, ok := rightVal.([]any); ok {
+			return 0, NewEvalError(codeUnordered, "unordered type", "lists have no order")
 		}
 	case map[string]any:
-		if rightMap, ok := rightVal.(map[string]any); ok {
-			return compareMaps(v, rightMap)
+		if _, ok := rightVal.(map[string]any); ok {
+			return 0, NewEvalError(codeUnordered, "unordered type", "contexts have no order")
 		}
 	case *FEELDuration:
 		// Upstream had no duration case, so every duration comparison raised.
@@ -216,61 +214,117 @@ func instantOf(v any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func compareArrays(a, b []any) (int, error) {
-	minSize := len(a)
-	if minSize > len(b) {
-		minSize = len(b)
-	}
-	for i := 0; i < minSize; i++ {
-		leftVal := a[i]
-		rightVal := b[i]
-		r, err := compareInterfaces(leftVal, rightVal)
-		if err != nil {
-			return 0, err
-		}
-		if r != 0 {
-			return r, nil
-		}
-	}
-	if len(b) > minSize {
-		return -1, nil
-	} else {
-		return 1, nil
-	}
+// codeUnordered is the EvalError code compareInterfaces reports for two lists
+// or two contexts: values of one kind that FEEL defines equality over but no
+// order (DMN 1.5 Table 54 lists no `<` for either).
+//
+// VERDICT DIVERGENCE: upstream ordered lists lexicographically and contexts by
+// size, and its list comparison answered 1 for two equal lists of the same
+// length, so `[1, 2] = [1, 2]` was false and `[1, 2] < [1, 3]` true. Equality
+// now goes through feelEqual, and the ordering operators turn this code into
+// null (§10.3.2.15: inputs outside an operator's domain are null).
+const codeUnordered = -3108
+
+// isUnordered reports whether err is compareInterfaces' no-order error.
+func isUnordered(err error) bool {
+	var evalError *EvalError
+	return errors.As(err, &evalError) && evalError.Code == codeUnordered
 }
 
-func compareMaps(a, b map[string]any) (int, error) {
-	if len(a) > len(b) {
-		return 1, nil
-	} else if len(a) < len(b) {
-		return -1, nil
+// feelEqual implements FEEL's `=` (DMN 1.5 §10.3.2.15, Tables 52 and 53) and
+// yields true, false or null:
+//
+//   - a null operand makes a boolean: `null = null` is true, `2 = null` false;
+//   - two lists are equal when they have the same length N and e1[i] = e2[i]
+//     for every i; two contexts when they have the same set of keys K and
+//     e1.k = e2.k for every k. Both are the three-valued conjunction of the
+//     element comparisons, so one false pair makes the result false and,
+//     failing that, one null pair (`[1, "a"] = [1, 2]`) makes it null;
+//   - operands of different kinds are null (§10.3.2.2: `"1" = 1` is null);
+//   - anything else is compareInterfaces' verdict.
+//
+// VERDICT DIVERGENCE: upstream compared lists through an ordering that never
+// answered 0 for two equal lists, so `[1, 2] = [1, 2]` was false.
+func feelEqual(a, b any) (any, error) {
+	if isNullValue(a) || isNullValue(b) {
+		return isNullValue(a) && isNullValue(b), nil
 	}
-	for k, leftVal := range a {
-		if rightVal, ok := b[k]; ok {
-			r, err := compareInterfaces(leftVal, rightVal)
+	switch av := a.(type) {
+	case []any:
+		bv, ok := b.([]any)
+		if !ok {
+			break
+		}
+		if len(av) != len(bv) {
+			return false, nil
+		}
+		unknown := false
+		for i := range av {
+			r, err := feelEqual(av[i], bv[i])
 			if err != nil {
-				return 0, err
+				return nil, err
 			}
-			if r != 0 {
-				return r, nil
+			switch r {
+			case false:
+				return false, nil
+			case true:
+			default:
+				unknown = true
 			}
-		} else {
-			return 1, nil
 		}
+		if unknown {
+			return null, nil
+		}
+		return true, nil
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok {
+			break
+		}
+		if len(av) != len(bv) {
+			return false, nil
+		}
+		for k := range av {
+			if _, ok := bv[k]; !ok {
+				return false, nil
+			}
+		}
+		unknown := false
+		for k, v := range av {
+			r, err := feelEqual(v, bv[k])
+			if err != nil {
+				return nil, err
+			}
+			switch r {
+			case false:
+				return false, nil
+			case true:
+			default:
+				unknown = true
+			}
+		}
+		if unknown {
+			return null, nil
+		}
+		return true, nil
 	}
-	return 0, nil
+	r, err := compareInterfaces(a, b)
+	if err != nil {
+		if isIncomparable(err) {
+			return null, nil
+		}
+		return nil, err
+	}
+	return r == 0, nil
 }
 
-func (binop Binop) compareValues(intp *Interpreter) (int, error) {
-	leftVal, err := binop.Left.Eval(intp)
-	if err != nil {
-		return 0, err
-	}
-	rightVal, err := binop.Right.Eval(intp)
-	if err != nil {
-		return 0, err
-	}
-	return compareInterfaces(leftVal, rightVal)
+// valuesEqual reports whether a = b is true. The list built-ins that search or
+// deduplicate by equality (`list contains`, `index of`, `union`,
+// `distinct values`) and list membership (`in`) use it, so a list or a context
+// element is found by value, as it is by `=`.
+func valuesEqual(a, b any) bool {
+	r, err := feelEqual(a, b)
+	return err == nil && r == true
 }
 
 // typedOp implements FEEL's `+` and `-`.
@@ -504,7 +558,7 @@ func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool) (any, e
 	}
 	r, err := compareInterfaces(leftVal, rightVal)
 	if err != nil {
-		if isIncomparable(err) {
+		if isIncomparable(err) || isUnordered(err) {
 			return null, nil
 		}
 		return false, err
@@ -536,38 +590,50 @@ func (binop Binop) compareLEOp(intp *Interpreter) (any, error) {
 	return binop.orderingOp(intp, func(r int) bool { return r <= 0 })
 }
 
-// equalOp implements FEEL's `=`. Operands of different kinds compare as null
-// (DMN 1.5 §10.3.2.2: `"1" = 1` is null); a null operand still makes a
-// boolean, so `null = null` is true and `2 = null` is false.
+// equalOp implements FEEL's `=` through feelEqual: operands of different kinds
+// compare as null (DMN 1.5 §10.3.2.2: `"1" = 1` is null); a null operand still
+// makes a boolean, so `null = null` is true and `2 = null` is false; lists and
+// contexts compare element by element.
 func (binop Binop) equalOp(intp *Interpreter) (any, error) {
-	r, err := binop.compareValues(intp)
+	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
-		if isIncomparable(err) {
-			return null, nil
-		}
 		return false, err
-	} else {
-		return r == 0, nil
 	}
+	rightVal, err := binop.Right.Eval(intp)
+	if err != nil {
+		return false, err
+	}
+	r, err := feelEqual(leftVal, rightVal)
+	if err != nil {
+		return false, err
+	}
+	return r, nil
 }
 
 // notEqalOp implements FEEL's `!=`, which DMN 1.5 §10.3.2.15 defines as
-// not(e1 = e2): null for operands of different kinds, as `=` is.
+// not(e1 = e2): null wherever `=` is null.
 func (binop Binop) notEqalOp(intp *Interpreter) (any, error) {
-	r, err := binop.compareValues(intp)
+	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
-		if isIncomparable(err) {
-			return null, nil
-		}
+		return false, err
+	}
+	rightVal, err := binop.Right.Eval(intp)
+	if err != nil {
+		return false, err
+	}
+	r, err := feelEqual(leftVal, rightVal)
+	if err != nil {
 		var evalError *EvalError
 		if errors.As(err, &evalError) && evalError.Code == -3106 {
 			// type mismatch
 			return false, nil
 		}
 		return false, err
-	} else {
-		return r != 0, nil
 	}
+	if b, ok := r.(bool); ok {
+		return !b, nil
+	}
+	return null, nil
 }
 
 func (binop Binop) modOp(intp *Interpreter) (any, error) {
@@ -682,7 +748,7 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 		return rv.Contains(leftVal), nil
 	case []any:
 		for _, kv := range rv {
-			if cmp.Equal(leftVal, kv) {
+			if valuesEqual(leftVal, kv) {
 				return true, nil
 			}
 		}

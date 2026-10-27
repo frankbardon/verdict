@@ -55,6 +55,11 @@ of one kind), so neither `< 10` nor `not(< 10)` matches, and the table does not
 fail. An equality entry such as `"gold"` against a number is simply not equal,
 so `not("gold")` matches it.
 
+A list literal entry such as `[1, 2]` matches an input equal to one of its
+items, and also a list-valued input equal to the list itself (DMN 1.5 §7.3.2):
+lists are equal when they have the same length and equal elements in order,
+so `[1, 2]` matches `[1, 2]` but not `[2, 1]` (§10.3.2.15, Table 53).
+
 A range with a null endpoint, such as `[null..10]` or `(5..null]`, is not
 "unbounded" — its endpoint comparisons are null, so it matches no input, and
 `not([null..10])` matches none either. Write an open-ended test as a
