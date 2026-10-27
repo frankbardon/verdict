@@ -418,7 +418,9 @@ opens as an empty canvas.
 - **`string()` of a temporal is its lexical form**, and parses back to the same
   value: `"2026-02-28T23:59:59+05:00"`, `"...Z"` for a zero offset,
   `"...@Europe/Paris"` only for a zone id, `"2026-02-28T23:59:59"` with none;
-  likewise for `time`.
+  likewise for `time`. A fraction of a second prints only when it is non-zero,
+  with trailing zeros trimmed: `string(time("10:00:00.500"))` is `"10:00:00.5"`,
+  `string(time("10:00:00.000"))` is `"10:00:00"`.
 - **`today()` is the UTC date**, not the host's: with `feel.timezone` set (the
   engine clock's zone, UTC by default) it is the date in that zone.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,

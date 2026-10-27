@@ -1298,7 +1298,7 @@ func TestForkedDefects(t *testing.T) {
 			`string(time("23:00:00Z") + duration("PT2H"))`:      "01:00:00Z",
 			`string(time("01:00:00Z") - duration("PT2H"))`:      "23:00:00Z",
 			`string(time("10:00:00Z") + duration("P3DT1H"))`:    "11:00:00Z",
-			`string(time("10:00:00Z") - duration("-PT1.5S"))`:   "10:00:01Z",
+			`string(time("10:00:00Z") - duration("-PT1.5S"))`:   "10:00:01.5Z",
 			`string(duration("PT90M") + time("10:00:00Z"))`:     "11:30:00Z",
 			// date ± years and months duration, and commuted.
 			`string(date("2026-01-15") + duration("P1M"))`: "2026-02-15",
@@ -2716,6 +2716,42 @@ func TestForkedDefects(t *testing.T) {
 		}
 		if got := mustEval(t, e, `c.y.a`, vars); got != 0.0 {
 			t.Errorf("after context put(c, [\"y\", \"a\"], 2), c.y.a = %#v, want 0", got)
+		}
+	})
+
+	t.Run("string() keeps a fraction of a second", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.1 Table 72: time and date and time strings carry
+		// fractional seconds, and string() must print what parses back to
+		// the same value. Upstream printed whole seconds only, so
+		// string(time("10:00:00.5")) was "10:00:00". A zero fraction prints
+		// nothing and trailing zeros are trimmed.
+		strs := map[string]string{
+			`string(time("10:00:00.500"))`:                                "10:00:00.5",
+			`string(time("10:00:00.000"))`:                                "10:00:00",
+			`string(time("10:00:00"))`:                                    "10:00:00",
+			`string(time("10:00:00.123456789"))`:                          "10:00:00.123456789",
+			`string(time("10:00:00.25Z"))`:                                "10:00:00.25Z",
+			`string(time("10:00:00.25+02:00"))`:                           "10:00:00.25+02:00",
+			`string(date and time("2024-03-05T10:00:00.120"))`:            "2024-03-05T10:00:00.12",
+			`string(date and time("2024-03-05T10:00:00.5Z"))`:             "2024-03-05T10:00:00.5Z",
+			`string(date and time("2024-03-05T10:00:00.5-05:00"))`:        "2024-03-05T10:00:00.5-05:00",
+			`string(date and time("2024-03-05T10:00:00.5@Europe/Paris"))`: "2024-03-05T10:00:00.5@Europe/Paris",
+			`string(date and time("2024-03-05T10:00:00"))`:                "2024-03-05T10:00:00",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		// The printed form parses back to an equal value.
+		bools := []string{
+			`time(string(time("10:00:00.5"))) = time("10:00:00.5")`,
+			`date and time(string(date and time("2024-03-05T10:00:00.5Z"))) = date and time("2024-03-05T10:00:00.5Z")`,
+		}
+		for _, expr := range bools {
+			if got := mustEval(t, e, expr, nil); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
 		}
 	})
 }

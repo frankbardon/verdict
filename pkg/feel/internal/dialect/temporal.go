@@ -130,6 +130,12 @@ func hasFixedOffset(loc *time.Location) bool {
 // layout, then nothing for a local value, `@zone-id` for one placed by an IANA
 // zone id, and otherwise its offset — `Z` for UTC, `+05:00` for any other — so
 // that parsing the string gives the value back.
+//
+// VERDICT DIVERGENCE: callers pass a layout ending in `05.999999999`, so a
+// fraction of a second prints only when it is non-zero, without trailing zeros
+// (`10:00:00.5`, never `10:00:00.500` or `10:00:00.0`). Upstream printed whole
+// seconds only, so `string(time("10:00:00.5"))` was `10:00:00`, which parses
+// back to a different time.
 func formatZoned(t time.Time, layout string, hasOffset, zoneID bool) string {
 	switch {
 	case !hasOffset:
@@ -249,7 +255,7 @@ func (t FEELTime) MarshalJSON() ([]byte, error) {
 // `10:00:00Z`, `10:00:00+02:00` or `10:00:00@Etc/UTC`, so that
 // time(string(t)) is t again.
 func (t FEELTime) String() string {
-	return formatZoned(t.t, "15:04:05", t.hasOffset, t.zoneID)
+	return formatZoned(t.t, "15:04:05.999999999", t.hasOffset, t.zoneID)
 }
 
 type FEELDate struct {
@@ -365,7 +371,7 @@ func (dt FEELDatetime) MarshalJSON() ([]byte, error) {
 // layout, so `+05:00` printed as `@+0500` and `Z` as `@UTC`, neither of which
 // is DMN's lexical form.
 func (dt FEELDatetime) String() string {
-	return formatZoned(dt.t, "2006-01-02T15:04:05", dt.hasOffset, dt.zoneID)
+	return formatZoned(dt.t, "2006-01-02T15:04:05.999999999", dt.hasOffset, dt.zoneID)
 }
 
 // Add is date and time ± duration (DMN 1.5 §10.3.2.15, Table 57); a negative
