@@ -122,7 +122,7 @@ Pick the policy that says what you mean; do not encode it in the rules.
 | `P` PRIORITY | Most-preferred output wins, ranked by `outputValues` | Precedence is about *outcomes*, not row order |
 | `F` FIRST | First matching rule in row order | Precedence is genuinely positional, e.g. a catch-all last row |
 | `C` COLLECT | List of every match | Collecting reasons, flags, applicable rules |
-| `C+` `C<` `C>` `C#` | Collect and sum / min / max / count | Stacking discounts, worst-case limits, counting hits |
+| `C+` `C<` `C>` `C#` | Collect and sum / min / max / count. `C<`/`C>` order as FEEL `min`/`max`: null over booleans, mixed kinds or a null output | Stacking discounts, worst-case limits, counting hits |
 | `R` RULE ORDER | Every match, in row order | The order rules were written is meaningful |
 | `O` OUTPUT ORDER | Every match, ranked by `outputValues` | A ranked list of outcomes |
 

@@ -592,6 +592,60 @@ func TestCompareAndEqual(t *testing.T) {
 	}
 }
 
+// TestCompareFollowsFEELOrdering pins Compare to FEEL's `<` (DMN 1.5 Table 54)
+// and to min/max (§10.3.4.4), which COLLECT MIN/MAX and the analyser share:
+// booleans, nulls and pairs of different kinds have no order.
+func TestCompareFollowsFEELOrdering(t *testing.T) {
+	e := newFEEL(t)
+	// Compare takes FEEL values, so evaluate without mustEval's ToGo.
+	feelValue := func(text string) any {
+		t.Helper()
+		v, err := e.EvalText(text, nil)
+		if err != nil {
+			t.Fatalf("EvalText(%q): %v", text, err)
+		}
+		return v
+	}
+	ordered := []struct {
+		a, b string
+		want int
+	}{
+		{`1`, `2`, -1},
+		{`"b"`, `"a"`, 1},
+		{`duration("P1D")`, `duration("PT24H")`, 0},
+		{`duration("P1Y")`, `duration("P11M")`, 1},
+		{`date("2024-01-01")`, `date and time("2024-01-01T00:00:00Z")`, 0},
+		{`time("10:00:00")`, `time("11:00:00")`, -1},
+	}
+	for _, p := range ordered {
+		a, b := feelValue(p.a), feelValue(p.b)
+		if c, ok := Compare(a, b); !ok || c != p.want {
+			t.Errorf("Compare(%s, %s) = %d, %v; want %d, true", p.a, p.b, c, ok, p.want)
+		}
+	}
+	unordered := [][2]string{
+		{`false`, `true`},
+		{`true`, `true`},
+		{`1`, `"1"`},
+		{`1`, `null`},
+		{`null`, `null`},
+		{`duration("P1D")`, `duration("P1M")`},
+		{`time("10:00:00")`, `date("2024-01-01")`},
+		{`[1]`, `[2]`},
+		{`[1..2]`, `[1..2]`},
+	}
+	for _, p := range unordered {
+		a, b := feelValue(p[0]), feelValue(p[1])
+		if c, ok := Compare(a, b); ok {
+			t.Errorf("Compare(%s, %s) = %d, true; want not comparable", p[0], p[1], c)
+		}
+		// Compare and min agree: wherever Compare has no order, min is null.
+		if got := mustEval(t, e, "min(["+p[0]+", "+p[1]+"])", nil); !IsNull(got) {
+			t.Errorf("min([%s, %s]) = %v; want null, as Compare has no order", p[0], p[1], got)
+		}
+	}
+}
+
 func TestUnaryTestSemantics(t *testing.T) {
 	e := newFEEL(t)
 	// A bare boolean literal is an equality test against the tested value, not

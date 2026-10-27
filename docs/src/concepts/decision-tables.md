@@ -119,8 +119,8 @@ as information rather than staying silent.
 |---|---|
 | `C` COLLECT | A list of every matching rule's output, in rule order |
 | `C+` COLLECT SUM | The sum |
-| `C<` COLLECT MIN | The minimum |
-| `C>` COLLECT MAX | The maximum |
+| `C<` COLLECT MIN | The minimum, as FEEL `min` orders it |
+| `C>` COLLECT MAX | The maximum, as FEEL `max` orders it |
 | `C#` COLLECT COUNT | The number of matches |
 | `R` RULE ORDER | Every match, in rule order |
 | `O` OUTPUT ORDER | Every match, sorted by `outputValues` |
@@ -128,6 +128,14 @@ as information rather than staying silent.
 A collecting policy that matches nothing yields the **empty list**, not null —
 except the aggregators, which yield null (`C#` yields `0`). If zero is what you
 mean, say so with a `defaultOutputEntry`.
+
+`C<` and `C>` order the matched outputs exactly as FEEL's `min` and `max` do
+(DMN 1.5 §10.3.4.4, ordered by Table 54): numbers, strings, durations of one
+kind, times, and dates with dates and times. Booleans have no order, so a
+`C<` or `C>` over boolean outputs is **null** — even with a single match, as
+`min([true])` is. So is one whose matches mix kinds (`5` and `"high"`) or
+include a null output. `verdict analyze` picks its witness values by the same
+ordering.
 
 ### The `outputValues` trap
 

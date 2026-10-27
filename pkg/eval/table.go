@@ -402,10 +402,10 @@ func (p *Program) collectHit(ec *Context, ct *compiledTable, matches []int) (any
 	}
 }
 
-// aggregate folds a collected list. DMN restricts SUM, MIN and MAX to
-// single-output tables of comparable values; a non-conforming table is an
-// error rather than a silent null, because a silently wrong total is worse than
-// a loud failure.
+// aggregate folds a collected list. A SUM over non-numeric outputs is an
+// error rather than a silent null, because a silently wrong total is worse
+// than a loud failure. MIN and MAX follow FEEL's min and max instead: outputs
+// FEEL cannot order make the result null.
 func aggregate(t *model.DecisionTable, values []any) (any, error) {
 	if len(values) == 0 {
 		return feel.Null, nil
@@ -424,12 +424,16 @@ func aggregate(t *model.DecisionTable, values []any) (any, error) {
 		return sum, nil
 	case model.AggMin, model.AggMax:
 		best := values[0]
-		for _, v := range values[1:] {
+		// C< and C> are the minimum and maximum of the collected outputs
+		// (DMN 1.5 §8, hit policy), ordered as FEEL's min and max order them
+		// (§10.3.4.4): an output with no FEEL order (a boolean, a null) or a
+		// pair of different kinds makes the result null, not an error. The
+		// first output is compared with itself so that a lone boolean is
+		// null too, as min([true]) is.
+		for _, v := range values {
 			c, ok := feel.Compare(v, best)
 			if !ok {
-				return nil, diag.Errorf(diag.CodeTypeViolation,
-					"COLLECT %s requires comparable outputs, but the table produced %s and %s",
-					t.Aggregation, feel.TypeName(best), feel.TypeName(v)).At(t.ExprID(), "")
+				return feel.Null, nil
 			}
 			if (t.Aggregation == model.AggMin && c < 0) || (t.Aggregation == model.AggMax && c > 0) {
 				best = v
