@@ -295,40 +295,55 @@ func (binop Binop) divOp(intp *Interpreter) (any, error) {
 		"/")
 }
 
-func (binop Binop) compareGTOp(intp *Interpreter) (any, error) {
-	r, err := binop.compareValues(intp)
+// orderingOp implements FEEL's `<`, `<=`, `>` and `>=`.
+//
+// Upstream routed them through compareInterfaces, which orders null below every
+// other value, so `2 < null` and `null >= null` evaluated to true. DMN 1.5
+// §10.3.2 makes an ordering comparison with a null operand null, not a
+// boolean: there is no answer to whether an absent value is smaller.
+// Equality keeps compareInterfaces' treatment, because `null = null` is true
+// and `2 = null` is false in the spec too.
+func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool) (any, error) {
+	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
 		return false, err
-	} else {
-		return r > 0, nil
 	}
+	rightVal, err := binop.Right.Eval(intp)
+	if err != nil {
+		return false, err
+	}
+	if isNullValue(leftVal) || isNullValue(rightVal) {
+		return null, nil
+	}
+	r, err := compareInterfaces(leftVal, rightVal)
+	if err != nil {
+		return false, err
+	}
+	return holds(r), nil
+}
+
+func isNullValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	_, ok := v.(*NullValue)
+	return ok
+}
+
+func (binop Binop) compareGTOp(intp *Interpreter) (any, error) {
+	return binop.orderingOp(intp, func(r int) bool { return r > 0 })
 }
 
 func (binop Binop) compareGEOp(intp *Interpreter) (any, error) {
-	r, err := binop.compareValues(intp)
-	if err != nil {
-		return false, err
-	} else {
-		return r >= 0, nil
-	}
+	return binop.orderingOp(intp, func(r int) bool { return r >= 0 })
 }
 
 func (binop Binop) compareLTOp(intp *Interpreter) (any, error) {
-	r, err := binop.compareValues(intp)
-	if err != nil {
-		return false, err
-	} else {
-		return r < 0, nil
-	}
+	return binop.orderingOp(intp, func(r int) bool { return r < 0 })
 }
 
 func (binop Binop) compareLEOp(intp *Interpreter) (any, error) {
-	r, err := binop.compareValues(intp)
-	if err != nil {
-		return false, err
-	} else {
-		return r <= 0, nil
-	}
+	return binop.orderingOp(intp, func(r int) bool { return r <= 0 })
 }
 
 func (binop Binop) equalOp(intp *Interpreter) (any, error) {

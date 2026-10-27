@@ -261,6 +261,10 @@ opens as an empty canvas.
   `<defaultOutputEntry>0</defaultOutputEntry>` unless null is what you mean.
 - **`/` is decimal division.** `1 / 3` is `0.333…`, not `0`. Dividing by zero is
   null, not an error.
+- **Ordering a null is null.** `2 < null`, `null >= null` and
+  `x > 5` with `x` missing all yield null, not true or false — and a `> 5`
+  cell does not match a null input. Equality is different: `null = null` is
+  true. Guard with `x != null and x > 5` or an explicit `null` rule.
 - **Input names come from the input-data variable**, not the file. `verdict
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated

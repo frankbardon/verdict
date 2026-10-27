@@ -145,6 +145,57 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("ordering comparison with null is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2: `<`, `<=`, `>` and `>=` with a null operand yield
+		// null. Upstream ordered null below every value, so `2 < null` was
+		// true (issue #15).
+		for _, expr := range []string{
+			"2 < null", "null < 2", "2 <= null", "null <= null",
+			"2 > null", "null > 2", "2 >= null", "null >= null",
+			"min([2]) < max([])", "max([]) > min([2])",
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		// Equality keeps its spec semantics: null is equal only to null.
+		for expr, want := range map[string]any{
+			"null = null": true, "2 = null": false, "null = 2": false,
+			"null != null": false, "2 != null": true,
+			"1 < 2": true, "2 <= 1": false,
+		} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("a comparison unary test does not match a null input", func(t *testing.T) {
+		// The comparison yields null, which is "not satisfied" — it must not
+		// fall through to equality, where null would equal the null input.
+		c := NewCompiler(FEEL)
+		cases := map[string]bool{
+			"< 5": false, "<= 5": false, "> 5": false, ">= 5": false,
+			"? < 5": false, "< 5, null": true, "null": true,
+			"not(< 5)": false, "not(< 5, 7)": false, "not(7)": true,
+		}
+		for src, want := range cases {
+			ut, err := c.CompileUnaryTest(src)
+			if err != nil {
+				t.Errorf("%s does not compile: %v", src, err)
+				continue
+			}
+			got, err := e.EvalUnaryTest(ut, nil, nil)
+			if err != nil {
+				t.Errorf("%s against null: %v", src, err)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s matched null = %v, want %v", src, got, want)
+			}
+		}
+	})
+
 	t.Run("multi-word names without keywords still resolve", func(t *testing.T) {
 		vars := map[string]any{"Credit Rating": "good"}
 		if got := mustEval(t, e, `Credit Rating = "good"`, vars); got != true {

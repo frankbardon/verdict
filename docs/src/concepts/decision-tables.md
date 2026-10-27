@@ -44,6 +44,10 @@ people out; it is DMN 1.5 §8.3.
 `?` names the value being tested. It is only needed when the test is not one of
 the shorthand forms.
 
+A null input matches no comparison: `< 10` against null yields null (DMN 1.5
+§10.3.2), which is "not satisfied" — and `not(< 10)` is null too, so it does
+not match either. Test for a missing value with an explicit `null` entry.
+
 DMN spells an exclusive bound two ways — `(1..10]` and `]1..10]` are the same
 interval — and Verdict accepts both, because modellers and exporters both use
 both. The one place the bracket spelling costs something is a list index inside
