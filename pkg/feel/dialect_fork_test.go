@@ -967,6 +967,91 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("durations normalise and take fractional seconds", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.3.7 and §10.3.2.3.8: no component of an
+		// xs:dayTimeDuration or xs:yearMonthDuration is capped, and a duration
+		// is normalised so the sum of its components is minimised. Upstream
+		// raised over 12 months, 24 hours or 60 minutes or seconds, and parsed
+		// whole seconds only.
+		strs := map[string]string{
+			// Table 72's own example, and the two in §10.3.2.3.7/8.
+			`string(duration("P26M"))`:    "P2Y2M",
+			`string(duration("P0Y13M"))`:  "P1Y1M",
+			`string(duration("P0DT25H"))`: "P1DT1H",
+			`string(duration("PT36H"))`:   "P1DT12H",
+			`string(@"PT36H")`:            "P1DT12H",
+			`string(duration("PT90M"))`:   "PT1H30M",
+			`string(duration("PT3600S"))`: "PT1H",
+			`string(duration("P14M"))`:    "P1Y2M",
+			`string(duration("P12M"))`:    "P1Y",
+			`string(duration("-PT36H"))`:  "-P1DT12H",
+			`string(duration("PT1.5S"))`:  "PT1.5S",
+			`string(duration("PT1.50S"))`: "PT1.5S",
+			`string(duration("PT0.5S"))`:  "PT0.5S",
+			`string(duration("PT.25S"))`:  "PT0.25S",
+			`string(duration("PT1.S"))`:   "PT1S",
+			`string(duration("PT0.0S"))`:  "PT0S",
+			`string(duration("-PT0S"))`:   "PT0S",
+			`string(duration("PT61.5S"))`: "PT1M1.5S",
+			// Nanosecond resolution, exactly; zeros past it are harmless.
+			`string(duration("PT0.000000001S"))`:              "PT0.000000001S",
+			`string(duration("PT0.1234567890000S"))`:          "PT0.123456789S",
+			`string(duration("PT1.5S") + duration("PT0.5S"))`: "PT2S",
+			`string(duration("PT0.1S") + duration("PT0.2S"))`: "PT0.3S",
+			`string(duration("P1Y") - duration("P2M"))`:       "P10M",
+			`string(duration("P2M") - duration("P1Y"))`:       "-P10M",
+			`string(duration("PT12H") + duration("PT12H"))`:   "P1D",
+			`string(duration("P1D") - duration("PT36H"))`:     "-PT12H",
+			`string(duration("P1Y") - duration("P1Y"))`:       "PT0S",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		bools := map[string]bool{
+			`duration("PT36H") = duration("P1DT12H")`:                                                            true,
+			`duration("PT90M") = duration("PT1H30M")`:                                                            true,
+			`duration("P14M") = duration("P1Y2M")`:                                                               true,
+			`duration("P2Y2M") = duration("P26M")`:                                                               true,
+			`duration("PT1.5S") + duration("PT0.5S") = duration("PT2S")`:                                         true,
+			`duration("PT1.5S") > duration("PT1S")`:                                                              true,
+			`duration("PT0.5S") < duration("PT1S")`:                                                              true,
+			`date and time("2026-01-01T00:00:00") + duration("PT1.5S") = date and time("2026-01-01T00:00:01.5")`: true,
+			`date and time("2026-01-01T00:00:00") + duration("PT1.5S") + duration("PT0.5S") = date and time("2026-01-01T00:00:02")`: true,
+			`date and time("2026-01-01T00:00:00") + duration("PT36H") = date and time("2026-01-02T12:00:00")`:                       true,
+			`date and time("2026-01-01T00:00:00") + duration("P26M") = date and time("2028-03-01T00:00:00")`:                        true,
+			`date and time("2026-01-01T00:00:01.5") - date and time("2026-01-01T00:00:00") = duration("PT1.5S")`:                    true,
+			// The zero duration is the identity of both kinds.
+			`duration("P1Y") - duration("P1Y") + duration("P1M") = duration("P1M")`: true,
+		}
+		for expr, want := range bools {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// Components read back normalised; fractional seconds as a number.
+		nums := map[string]float64{
+			`duration("PT36H").days`: 1, `duration("PT36H").hours`: 12,
+			`duration("P26M").years`: 2, `duration("P26M").months`: 2,
+			`duration("PT1.5S").seconds`: 1.5, `duration("PT90M").minutes`: 30,
+		}
+		for expr, want := range nums {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		if got := mustEval(t, e, `duration("PT1.5S")`, nil); got != 1500*time.Millisecond {
+			t.Errorf(`duration("PT1.5S") = %#v, want 1.5s`, got)
+		}
+		// Adding the two kinds is outside + 's domain (§10.3.2.15): null.
+		for _, expr := range []string{`duration("P1Y") + duration("P1D")`, `duration("PT1H") - duration("P1M")`} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+	})
+
 	t.Run("conversion built-ins are null outside their domain", func(t *testing.T) {
 		// DMN 1.5 §10.3.4: "Whenever a parameter is outside its domain, the
 		// result of the built-in is null." Upstream raised "fail to parse
@@ -1034,12 +1119,12 @@ func TestForkedDefects(t *testing.T) {
 
 		// Inside the domain but beyond the fork: still an evaluation error,
 		// never a null that reads as "the input was malformed". An IANA zone
-		// id, a component over upstream's cap (Table 72's own P26M), a
-		// fractional second, and the date(date and time) / time(time | date
+		// id, a days and time duration beyond time.Duration's range or finer
+		// than a nanosecond, and the date(date and time) / time(time | date
 		// and time) overloads, which the fork does not implement.
 		for _, expr := range []string{
 			`date and time("2012-12-25T11:00:00@Europe/Paris")`, `time("11:00:00@Etc/UTC")`,
-			`duration("P26M")`, `duration("PT36H")`, `duration("PT1.5S")`,
+			`duration("P200000D")`, `duration("PT0.0000000001S")`,
 			`date(date and time("2012-12-25T11:00:00"))`, `time(time("10:00:00"))`, `time(date and time("2012-12-25T11:00:00"))`,
 		} {
 			if v, err := e.EvalText(expr, nil); err == nil {

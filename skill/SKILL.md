@@ -293,9 +293,15 @@ opens as an empty canvas.
   `VERDICT_LOAD_013` when the model loads. A string the spec allows but Verdict
   cannot hold still fails the evaluation (`VERDICT_EVAL_005`) rather than
   reading as malformed: an IANA zone (`"10:00:00@Europe/Paris"` — use `Z` or
-  `+01:00`), fractional duration seconds (`PT1.5S`), a component over its
-  carry (`P26M`, `PT36H` — write `P2Y2M`, `P1DT12H`), and `date(<date and
+  `+01:00`), a duration finer than a nanosecond (`PT0.0000000001S`) or longer
+  than about 292 years of days and time (`P200000D`), and `date(<date and
   time>)` / `time(<time or date and time>)`.
+- **Durations are normalised.** `duration("P26M")` is `P2Y2M` and
+  `duration("PT36H")` is `P1DT12H` — `string()` and `.days`/`.hours`/... read
+  the canonical form, and `PT36H = P1DT12H`. Seconds may be fractional
+  (`PT1.5S`, kept to the nanosecond; `.seconds` is `1.5`). Two durations of
+  the same kind add and subtract (`PT1.5S + PT0.5S = PT2S`); a years and months
+  duration plus a days and time one is null.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration

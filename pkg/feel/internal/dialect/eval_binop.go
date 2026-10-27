@@ -318,6 +318,21 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 				return v.Sub(rightTime), nil
 			}
 		}
+	case *FEELDuration:
+		// Upstream had no duration case, so duration ± duration fell through
+		// to null.
+		if rightDur, ok := rightVal.(*FEELDuration); ok && (op == "+" || op == "-") {
+			if op == "-" {
+				rightDur = rightDur.Negative()
+			}
+			sum, ok, err := addDurations(v, rightDur)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return sum, nil
+			}
+		}
 	case *FEELDate:
 		// Upstream had no date case, so date ± duration fell through to null.
 		if rightDur, ok := rightVal.(*FEELDuration); ok {

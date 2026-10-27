@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -256,6 +257,13 @@ type FEELDuration struct {
 	Hours   int
 	Minutes int
 	Seconds int
+	// Nanoseconds is the fraction of a second, 0 to 999999999.
+	//
+	// VERDICT DIVERGENCE: upstream held whole seconds only, so PT1.5S could
+	// not be represented. A days and time duration's seconds are an
+	// xs:decimal; the fork keeps them to the nanosecond, the resolution of
+	// time.Duration and of every date and time it is added to.
+	Nanoseconds int
 }
 
 // NewFEELDuration carries a negative duration's sign in Neg and keeps every
@@ -263,6 +271,10 @@ type FEELDuration struct {
 // the sign in the fields (Hours: -5, Neg: false), so a negative Go duration or
 // a negative date-and-time difference printed as "PT-5H" and survived abs and
 // negation still negative.
+//
+// The result is normalised (DMN 1.5 §10.3.2.3.7): days, hours under 24,
+// minutes and seconds under 60, and the sub-second remainder, which upstream
+// dropped. A zero duration is never negative.
 func NewFEELDuration(dur time.Duration) *FEELDuration {
 	d := &FEELDuration{}
 	if dur < 0 {
@@ -281,7 +293,92 @@ func NewFEELDuration(dur time.Duration) *FEELDuration {
 	d.Hours = nhours - d.Days*24
 	d.Minutes = nmins
 	d.Seconds = nsecs
+	d.Nanoseconds = remain - nsecs*int(time.Second)
 	return d
+}
+
+// newYearsMonthsDuration is the normalised years and months duration of a
+// signed month count (DMN 1.5 §10.3.2.3.8): P26M is P2Y2M.
+func newYearsMonthsDuration(months int64) *FEELDuration {
+	d := &FEELDuration{}
+	if months < 0 {
+		d.Neg = true
+		months = -months
+	}
+	d.Years = int(months / 12)
+	d.Months = int(months % 12)
+	return d
+}
+
+// ErrDurationRange reports a duration string in the DMN lexical form whose
+// value the fork cannot hold: a days and time duration longer than
+// time.Duration's range (about 292 years), or a years and months duration
+// over the int64 range of months.
+var ErrDurationRange = errors.New("duration exceeds the supported range")
+
+// ErrDurationPrecision reports a days and time duration string in the DMN
+// lexical form whose seconds are finer than a nanosecond.
+var ErrDurationPrecision = errors.New("duration seconds finer than a nanosecond are not supported")
+
+// addDurations is duration + duration (DMN 1.5 §10.3.2.15, Table 57): two
+// years and months durations add their months, two days and time durations
+// their lengths. Any other mixture is outside the operator's domain: ok is
+// false. A zero duration joins either kind: the fork holds P0M and PT0S as
+// one value, so it cannot tell which kind a zero difference was, and §9.4
+// (quoting XPath F&O) makes the zero-length duration the one value both kinds
+// share.
+func addDurations(a, b *FEELDuration) (sum *FEELDuration, ok bool, err error) {
+	if a.isZero() {
+		return b.normalised(), true, nil
+	}
+	if b.isZero() {
+		return a.normalised(), true, nil
+	}
+	if a.isYearsMonths() != b.isYearsMonths() {
+		return nil, false, nil
+	}
+	if a.isYearsMonths() {
+		return newYearsMonthsDuration(a.signedMonths() + b.signedMonths()), true, nil
+	}
+	x, y := a.Duration(), b.Duration()
+	s := x + y
+	if (x > 0 && y > 0 && s < 0) || (x < 0 && y < 0 && s >= 0) {
+		return nil, true, ErrDurationRange
+	}
+	return NewFEELDuration(s), true, nil
+}
+
+func (duration FEELDuration) isZero() bool {
+	return duration.Years == 0 && duration.Months == 0 && duration.Days == 0 &&
+		duration.Hours == 0 && duration.Minutes == 0 && duration.Seconds == 0 &&
+		duration.Nanoseconds == 0
+}
+
+func (duration FEELDuration) signedMonths() int64 {
+	m := int64(duration.Years)*12 + int64(duration.Months)
+	if duration.Neg {
+		m = -m
+	}
+	return m
+}
+
+// normalised is the duration in canonical form, whatever fields it was built
+// with.
+func (duration FEELDuration) normalised() *FEELDuration {
+	if duration.isYearsMonths() {
+		return newYearsMonthsDuration(duration.signedMonths())
+	}
+	return NewFEELDuration(duration.Duration())
+}
+
+// secondsString is the seconds component as an exact decimal, without
+// trailing zeros: "1.5", "0.25", "3".
+func (duration FEELDuration) secondsString() string {
+	if duration.Nanoseconds == 0 {
+		return strconv.Itoa(duration.Seconds)
+	}
+	frac := strings.TrimRight(fmt.Sprintf("%09d", duration.Nanoseconds), "0")
+	return fmt.Sprintf("%d.%s", duration.Seconds, frac)
 }
 
 func (duration FEELDuration) GetAttr(name string) (interface{}, bool) {
@@ -297,6 +394,9 @@ func (duration FEELDuration) GetAttr(name string) (interface{}, bool) {
 	case "minutes":
 		return duration.Minutes, true
 	case "seconds":
+		if duration.Nanoseconds != 0 {
+			return NewNumber(duration.secondsString()), true
+		}
 		return duration.Seconds, true
 	}
 	return nil, false
@@ -310,7 +410,8 @@ func (duration FEELDuration) Duration() time.Duration {
 	// duration.Year and duration.Month
 	dv := time.Duration(duration.Days*24+duration.Hours)*time.Hour +
 		time.Duration(duration.Minutes)*time.Minute +
-		time.Duration(duration.Seconds)*time.Second
+		time.Duration(duration.Seconds)*time.Second +
+		time.Duration(duration.Nanoseconds)
 	if duration.Neg {
 		dv = -dv
 	}
@@ -326,7 +427,7 @@ func (duration FEELDuration) Negative() *FEELDuration {
 func (duration FEELDuration) String() string {
 	sYear, sMonth, sDay, sHour, sMinute, sSecond := "", "", "", "", "", ""
 	sNeg := ""
-	if duration.Neg {
+	if duration.Neg && !duration.isZero() {
 		sNeg = "-"
 	}
 	if duration.Years != 0 {
@@ -345,8 +446,8 @@ func (duration FEELDuration) String() string {
 	if duration.Minutes != 0 {
 		sMinute = fmt.Sprintf("%dM", duration.Minutes)
 	}
-	if duration.Seconds != 0 {
-		sSecond = fmt.Sprintf("%dS", duration.Seconds)
+	if duration.Seconds != 0 || duration.Nanoseconds != 0 {
+		sSecond = duration.secondsString() + "S"
 	}
 	if sYear != "" || sMonth != "" {
 		return fmt.Sprintf("%sP%s%s", sNeg, sYear, sMonth)
@@ -415,34 +516,40 @@ var yearmonthDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)Y)?((\d+)M)?$`)
 // T present exactly when an hour, minute or second follows it, and requires at
 // least one component overall. Both rules are checked in ParseDuration, since
 // Go's regexp has no lookahead.
-var timeDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)D)?(T((\d+)H)?((\d+)M)?((\d+)S)?)?$`)
+//
+// The seconds are an unsigned decimal (XSD 1.1 duSecondFrag): 1, 1.5, 1. or
+// .5. Upstream admitted whole seconds only.
+var timeDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)D)?(T((\d+)H)?((\d+)M)?(((\d+)(\.(\d*))?|\.(\d+))S)?)?$`)
 
+// ParseDuration parses a days and time or a years and months duration string
+// into its normalised value.
+//
+// VERDICT DIVERGENCE: upstream capped each component (months at 12, hours at
+// 24, minutes and seconds at 60) and raised over the cap, though
+// xs:yearMonthDuration and xs:dayTimeDuration bound no component: P26M,
+// PT36H and PT90M are valid. DMN 1.5 §10.3.2.3.7 and §10.3.2.3.8 normalise a
+// duration so the sum of its components is minimised, so P26M is P2Y2M,
+// PT36H is P1DT12H and P0DT25H is P1DT1H.
 func ParseDuration(temporalStr string) (*FEELDuration, error) {
 	// parse year month duration
 	if submatches := yearmonthDurationPattern.FindStringSubmatch(temporalStr); submatches != nil {
-		dur := &FEELDuration{}
-		if submatches[1] != "" {
-			dur.Neg = true
-		}
-
+		total := new(big.Int)
 		if submatches[2] != "" {
-			y, err := strconv.ParseInt(submatches[3], 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			dur.Years = int(y)
+			total.SetString(submatches[3], 10)
+			total.Mul(total, big.NewInt(12))
 		}
 		if submatches[4] != "" {
-			m, err := strconv.ParseInt(submatches[5], 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			if m > 12 {
-				return nil, errors.New("months cannot exceed 12")
-			}
-			dur.Months = int(m)
+			m, _ := new(big.Int).SetString(submatches[5], 10)
+			total.Add(total, m)
 		}
-		return dur, nil
+		if !total.IsInt64() {
+			return nil, ErrDurationRange
+		}
+		months := total.Int64()
+		if submatches[1] != "" {
+			months = -months
+		}
+		return newYearsMonthsDuration(months), nil
 	}
 
 	// parse day time duration
@@ -456,67 +563,45 @@ func ParseDuration(temporalStr string) (*FEELDuration, error) {
 			// No component at all (P is the years-and-months branch above).
 			return nil, ErrParseTemporal
 		}
-		dur := &FEELDuration{}
-		if submatches[1] != "" {
-			dur.Neg = true
+		// The total length in nanoseconds, accumulated exactly so that no
+		// component, however large, wraps around.
+		total := new(big.Int)
+		component := func(digits string, unit int64) {
+			if digits == "" {
+				return
+			}
+			v, _ := new(big.Int).SetString(digits, 10)
+			total.Add(total, v.Mul(v, big.NewInt(unit)))
 		}
-		if submatches[2] != "" {
-			v, err := strconv.ParseInt(submatches[3], 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			dur.Days = int(v)
-		}
-		if submatches[5] != "" {
-			v, err := strconv.ParseInt(submatches[6], 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			if v > 24 {
-				return nil, errors.New("hours cannot exceed 24")
-			}
-			dur.Hours = int(v)
-		}
-		if submatches[7] != "" {
-			v, err := strconv.ParseInt(submatches[8], 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			if v > 60 {
-				return nil, errors.New("minutes cannot exceed 60")
-			}
-			dur.Minutes = int(v)
-		}
+		component(submatches[3], int64(24*time.Hour))
+		component(submatches[6], int64(time.Hour))
+		component(submatches[8], int64(time.Minute))
 		if submatches[9] != "" {
-			v, err := strconv.ParseInt(submatches[10], 10, 64)
-			if err != nil {
-				return nil, err
+			// Whole seconds (11) with an optional fraction (13), or a bare
+			// fraction (14).
+			component(submatches[11], int64(time.Second))
+			frac := submatches[13] + submatches[14]
+			if len(frac) > 9 {
+				if strings.TrimRight(frac[9:], "0") != "" {
+					return nil, ErrDurationPrecision
+				}
+				frac = frac[:9]
 			}
-			if v > 60 {
-				return nil, errors.New("seconds cannot exceed 60")
+			if frac != "" {
+				component(frac+strings.Repeat("0", 9-len(frac)), 1)
 			}
-			dur.Seconds = int(v)
 		}
-		return dur, nil
-	}
-
-	// VERDICT DIVERGENCE: xs:dayTimeDuration admits fractional seconds
-	// (PT1.5S), which FEELDuration's whole-second fields cannot hold. Report
-	// that as a limitation, not as a malformed string, so duration() raises
-	// rather than yielding the null reserved for input outside its domain.
-	if fractionalSecondsPattern.MatchString(temporalStr) {
-		return nil, ErrFractionalSeconds
+		if !total.IsInt64() {
+			return nil, ErrDurationRange
+		}
+		ns := time.Duration(total.Int64())
+		if submatches[1] != "" {
+			ns = -ns
+		}
+		return NewFEELDuration(ns), nil
 	}
 	return nil, ErrParseTemporal
 }
-
-// fractionalSecondsPattern is timeDurationPattern with a fractional seconds
-// component.
-var fractionalSecondsPattern = regexp.MustCompile(`^(\-?)P((\d+)D)?T((\d+)H)?((\d+)M)?\d+\.\d+S$`)
-
-// ErrFractionalSeconds reports a days and time duration string in the DMN
-// lexical form whose seconds have a fractional part the fork cannot hold.
-var ErrFractionalSeconds = errors.New("fractional seconds in a duration are not supported")
 
 func ParseTemporalValue(temporalStr string) (interface{}, error) {
 	v, dtErr := ParseDatetime(temporalStr)
@@ -548,8 +633,8 @@ func ParseTemporalValue(temporalStr string) (interface{}, error) {
 // the parser rejects as malformed (ErrParseTemporal), null, or an argument of
 // any other type. Inputs inside the domain that the fork falls short on still
 // raise, so they never read as malformed: a parser error other than
-// ErrParseTemporal (an IANA zone id, a component over upstream's cap such as
-// P26M or PT36H), and an argument for which unimplemented reports a spec
+// ErrParseTemporal (an IANA zone id, a duration beyond the fork's range or
+// precision), and an argument for which unimplemented reports a spec
 // overload the fork lacks (date(date and time), time(time | date and time)).
 func stringConversion[T any](parse func(string) (T, error), unimplemented func(any) bool) *NativeFun {
 	return NewNativeFunc(func(kwargs map[string]any) (any, error) {
