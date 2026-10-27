@@ -1134,7 +1134,7 @@ func TestForkedDefects(t *testing.T) {
 			`string(duration("P2M") - duration("P1Y"))`:       "-P10M",
 			`string(duration("PT12H") + duration("PT12H"))`:   "P1D",
 			`string(duration("P1D") - duration("PT36H"))`:     "-PT12H",
-			`string(duration("P1Y") - duration("P1Y"))`:       "PT0S",
+			`string(duration("P1Y") - duration("P1Y"))`:       "P0M",
 		}
 		for expr, want := range strs {
 			if got := mustEval(t, e, expr, nil); got != want {
@@ -1154,7 +1154,7 @@ func TestForkedDefects(t *testing.T) {
 			`date and time("2026-01-01T00:00:00") + duration("PT36H") = date and time("2026-01-02T12:00:00")`:                       true,
 			`date and time("2026-01-01T00:00:00") + duration("P26M") = date and time("2028-03-01T00:00:00")`:                        true,
 			`date and time("2026-01-01T00:00:01.5") - date and time("2026-01-01T00:00:00") = duration("PT1.5S")`:                    true,
-			// The zero duration is the identity of both kinds.
+			// A zero years and months duration is the identity of its kind.
 			`duration("P1Y") - duration("P1Y") + duration("P1M") = duration("P1M")`: true,
 		}
 		for expr, want := range bools {
@@ -1857,6 +1857,101 @@ func TestForkedDefects(t *testing.T) {
 		}
 		if _, err := e.EvalText(`@"10:00:00@Europe/Paris"`, nil); err == nil || !strings.Contains(err.Error(), "zone id") {
 			t.Errorf(`@"10:00:00@Europe/Paris": err = %v, want a zone id error`, err)
+		}
+	})
+
+	t.Run("an empty duration P is malformed", func(t *testing.T) {
+		// Upstream's years-and-months pattern made both components optional,
+		// so the bare P parsed as a zero duration. xs:yearMonthDuration and
+		// xs:duration require at least one component (DMN 1.5 §10.3.2.3.8).
+		for _, expr := range []string{`duration("P")`, `duration("-P")`} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		for _, expr := range []string{`@"P"`, `@"-P"`, `1 + @"P"`} {
+			if _, err := e.Compile(expr); err == nil {
+				t.Errorf("%s compiled, want a syntax error", expr)
+			}
+		}
+	})
+
+	t.Run("a zero years and months duration keeps its kind", func(t *testing.T) {
+		// Upstream inferred a duration's kind from its fields, so a zero
+		// years and months duration was PT0S. DMN 1.5 §10.3.2.3.7/§10.3.2.3.8
+		// keep the kinds distinct types; a zero is no exception.
+		strs := map[string]string{
+			`string(duration("P1Y") - duration("P1Y"))`:                                 "P0M",
+			`string(duration("P0Y"))`:                                                   "P0M",
+			`string(duration("-P0M"))`:                                                  "P0M",
+			`string(-(duration("P1M") - duration("P1M")))`:                              "P0M",
+			`string(abs(duration("P1Y") - duration("P12M")))`:                           "P0M",
+			`string(years and months duration(date("2026-01-01"), date("2026-01-15")))`: "P0M",
+			`string(duration("P0D"))`:                                                   "PT0S",
+			`string(duration("PT1H") - duration("PT1H"))`:                               "PT0S",
+			`string(date("2026-01-31") + (duration("P1Y") - duration("P1Y")))`:          "2026-01-31",
+			`string(date and time("2026-01-31T10:00:00") - duration("P0M"))`:            "2026-01-31T10:00:00",
+			`string(duration("P1Y") - duration("P1Y") + duration("P2M"))`:               "P2M",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		bools := map[string]bool{
+			`duration("P1Y") - duration("P1Y") = duration("P0M")`: true,
+			`duration("P0M") < duration("P1M")`:                   true,
+		}
+		for expr, want := range bools {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// A zero of one kind does not join the other (Table 57): mixing the
+		// kinds is null, zero or not, and so is comparing them.
+		for _, expr := range []string{
+			`duration("P1Y") - duration("P1Y") + duration("PT1H")`,
+			`duration("PT0S") + duration("P1M")`,
+			`duration("P0M") = duration("PT0S")`,
+			`duration("P0M") < duration("PT1S")`,
+			`time("10:00:00") + duration("P0M")`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		// Converted to Go, a years and months zero stays its lexical form
+		// rather than becoming a zero time.Duration.
+		if got := mustEval(t, e, `duration("P1Y") - duration("P1Y")`, nil); got != "P0M" {
+			t.Errorf(`duration("P1Y") - duration("P1Y") = %#v, want "P0M"`, got)
+		}
+	})
+
+	t.Run("syntax errors report a 1-based line and column", func(t *testing.T) {
+		// Upstream printed the scanner's 0-based row and column, so an error
+		// at the very start read "at 0 0", like an unset position, and every
+		// other position was off by one. The at-literal error is still
+		// VERDICT_LOAD_013 (a *CompileError); only the position changed.
+		cases := map[string]string{
+			`@"P1Y2D"`:                       "line 1, column 1",
+			`1 + @"P1Y2D"`:                   "line 1, column 5",
+			"1 +\n  @\"P1Y2D\"":              "line 2, column 3",
+			"// note\nx +\n\tλ + @\"P1Y2D\"": "line 3, column 6",
+			"1 +\n  foo )":                   "line 2, column 7",
+		}
+		for expr, want := range cases {
+			_, err := e.Compile(expr)
+			if err == nil {
+				t.Errorf("%q compiled, want a syntax error", expr)
+				continue
+			}
+			var ce *CompileError
+			if !errors.As(err, &ce) {
+				t.Errorf("%q: error %T is not a *CompileError", expr, err)
+			}
+			if !strings.Contains(err.Error(), "at "+want) {
+				t.Errorf("%q: error %q does not report %q", expr, err, want)
+			}
 		}
 	})
 

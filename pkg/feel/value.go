@@ -208,7 +208,7 @@ func durationToGo(d *pfeel.FEELDuration) any {
 	if d == nil {
 		return nil
 	}
-	if d.Years != 0 || d.Months != 0 {
+	if d.IsYearsMonths() {
 		return d.String()
 	}
 	return d.Duration()

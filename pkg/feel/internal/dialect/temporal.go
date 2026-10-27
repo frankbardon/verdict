@@ -463,6 +463,15 @@ type FEELDuration struct {
 	// xs:decimal; the fork keeps them to the nanosecond, the resolution of
 	// time.Duration and of every date and time it is added to.
 	Nanoseconds int
+
+	// yearsMonths records the duration's kind: true for a years and months
+	// duration, false for a days and time one.
+	//
+	// VERDICT DIVERGENCE: upstream inferred the kind from the fields, so a
+	// zero years and months duration (P1Y - P1Y) was indistinguishable from
+	// PT0S and printed as such. DMN 1.5 §10.3.2.3.7 and §10.3.2.3.8 make the
+	// two kinds distinct types, zero included; NewYearsMonthsDuration sets it.
+	yearsMonths bool
 }
 
 // NewFEELDuration carries a negative duration's sign in Neg and keeps every
@@ -496,10 +505,11 @@ func NewFEELDuration(dur time.Duration) *FEELDuration {
 	return d
 }
 
-// newYearsMonthsDuration is the normalised years and months duration of a
-// signed month count (DMN 1.5 §10.3.2.3.8): P26M is P2Y2M.
-func newYearsMonthsDuration(months int64) *FEELDuration {
-	d := &FEELDuration{}
+// NewYearsMonthsDuration is the normalised years and months duration of a
+// signed month count (DMN 1.5 §10.3.2.3.8): P26M is P2Y2M, and zero months is
+// P0M, a years and months duration, not PT0S.
+func NewYearsMonthsDuration(months int64) *FEELDuration {
+	d := &FEELDuration{yearsMonths: true}
 	if months < 0 {
 		d.Neg = true
 		months = -months
@@ -522,22 +532,14 @@ var ErrDurationPrecision = errors.New("duration seconds finer than a nanosecond 
 // addDurations is duration + duration (DMN 1.5 §10.3.2.15, Table 57): two
 // years and months durations add their months, two days and time durations
 // their lengths. Any other mixture is outside the operator's domain: ok is
-// false. A zero duration joins either kind: the fork holds P0M and PT0S as
-// one value, so it cannot tell which kind a zero difference was, and §9.4
-// (quoting XPath F&O) makes the zero-length duration the one value both kinds
-// share.
+// false. That includes a zero of the other kind: P0M + PT1H is null, as
+// P1M + PT1H is, since a duration keeps its kind when it is zero.
 func addDurations(a, b *FEELDuration) (sum *FEELDuration, ok bool, err error) {
-	if a.isZero() {
-		return b.normalised(), true, nil
-	}
-	if b.isZero() {
-		return a.normalised(), true, nil
-	}
 	if a.isYearsMonths() != b.isYearsMonths() {
 		return nil, false, nil
 	}
 	if a.isYearsMonths() {
-		return newYearsMonthsDuration(a.signedMonths() + b.signedMonths()), true, nil
+		return NewYearsMonthsDuration(a.signedMonths() + b.signedMonths()), true, nil
 	}
 	x, y := a.Duration(), b.Duration()
 	s := x + y
@@ -559,15 +561,6 @@ func (duration FEELDuration) signedMonths() int64 {
 		m = -m
 	}
 	return m
-}
-
-// normalised is the duration in canonical form, whatever fields it was built
-// with.
-func (duration FEELDuration) normalised() *FEELDuration {
-	if duration.isYearsMonths() {
-		return newYearsMonthsDuration(duration.signedMonths())
-	}
-	return NewFEELDuration(duration.Duration())
 }
 
 // secondsString is the seconds component as an exact decimal, without
@@ -648,7 +641,12 @@ func (duration FEELDuration) String() string {
 	if duration.Seconds != 0 || duration.Nanoseconds != 0 {
 		sSecond = duration.secondsString() + "S"
 	}
-	if sYear != "" || sMonth != "" {
+	if duration.isYearsMonths() {
+		// A zero years and months duration is P0M, the canonical
+		// xs:yearMonthDuration zero, never PT0S.
+		if sYear == "" && sMonth == "" {
+			sMonth = "0M"
+		}
 		return fmt.Sprintf("%sP%s%s", sNeg, sYear, sMonth)
 	}
 	// A day-only duration is P1D, not P1DT: T appears only before a time
@@ -663,10 +661,17 @@ func (duration FEELDuration) String() string {
 }
 
 // isYearsMonths reports whether the duration is a years-and-months duration
-// rather than a days-and-time one. A zero duration counts as days-and-time.
+// rather than a days-and-time one. The kind is the explicit yearsMonths flag;
+// a value built with Years or Months set but not the flag (a struct literal)
+// still reads as years and months.
 func (duration FEELDuration) isYearsMonths() bool {
-	return duration.Years != 0 || duration.Months != 0
+	return duration.yearsMonths || duration.Years != 0 || duration.Months != 0
 }
+
+// IsYearsMonths reports whether the duration is a years and months duration
+// (DMN 1.5 §10.3.2.3.8) rather than a days and time one (§10.3.2.3.7). A zero
+// keeps the kind it was built with.
+func (duration FEELDuration) IsYearsMonths() bool { return duration.isYearsMonths() }
 
 // compareDurations orders two durations of the same kind: years-and-months by
 // total months, days-and-time by total length, so P1D = PT24H. The two kinds
@@ -762,6 +767,12 @@ var timeDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)D)?(T((\d+)H)?((\d+)M
 func ParseDuration(temporalStr string) (*FEELDuration, error) {
 	// parse year month duration
 	if submatches := yearmonthDurationPattern.FindStringSubmatch(temporalStr); submatches != nil {
+		if submatches[2] == "" && submatches[4] == "" {
+			// VERDICT DIVERGENCE: the bare P (and -P) has no component, which
+			// xs:yearMonthDuration and xs:duration both require; upstream read
+			// it as a zero duration.
+			return nil, ErrParseTemporal
+		}
 		total := new(big.Int)
 		if submatches[2] != "" {
 			total.SetString(submatches[3], 10)
@@ -778,7 +789,7 @@ func ParseDuration(temporalStr string) (*FEELDuration, error) {
 		if submatches[1] != "" {
 			months = -months
 		}
-		return newYearsMonthsDuration(months), nil
+		return NewYearsMonthsDuration(months), nil
 	}
 
 	// parse day time duration

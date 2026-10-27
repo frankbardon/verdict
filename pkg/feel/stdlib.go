@@ -311,7 +311,10 @@ func buildSupplement() {
 			if months < 0 {
 				months = 0
 			}
-			return &pfeel.FEELDuration{Neg: neg, Years: months / 12, Months: months % 12}, nil
+			if neg {
+				months = -months
+			}
+			return pfeel.NewYearsMonthsDuration(int64(months)), nil
 		},
 	})
 	bind("context", Function{

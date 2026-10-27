@@ -2,8 +2,10 @@ package dialect
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -93,9 +95,20 @@ var tokenMatchers = []tokenMatcher{
 	match(TokenName, `[a-zA-Z_\$\p{Han}\p{Greek}\p{Bopomofo}\p{Hangul}][a-zA-Z_\$0-9\p{Han}\p{Greek}}\p{Bopomofo}\p{Hangul}]*`),
 }
 
+// ScanPosition is a 0-based row and column in the scanned text; Column counts
+// characters (runes), not bytes.
 type ScanPosition struct {
 	Row    int
 	Column int
+}
+
+// String is the position as a modeller reads it: 1-based, "line 2, column 3".
+//
+// VERDICT DIVERGENCE: upstream printed the raw 0-based pair ("at 0 0"), which
+// read as an unset position for an error at the start of an expression and
+// was off by one everywhere else.
+func (pos ScanPosition) String() string {
+	return fmt.Sprintf("line %d, column %d", pos.Row+1, pos.Column+1)
 }
 
 type ScannerToken struct {
@@ -185,10 +198,12 @@ func (scanner *Scanner) goAhead(matched string) {
 	lastIndexOfLn := strings.LastIndex(matched, "\n")
 	if lastIndexOfLn >= 0 {
 		// found \n
-		scanner.Pos.Column = len(matched) - lastIndexOfLn - 1
+		scanner.Pos.Column = utf8.RuneCountInString(matched[lastIndexOfLn+1:])
 		scanner.Pos.Row += strings.Count(matched, "\n")
 	} else {
-		scanner.Pos.Column += len(matched)
+		// VERDICT DIVERGENCE: columns count characters, not bytes, so a
+		// position after a non-ASCII name matches what an editor shows.
+		scanner.Pos.Column += utf8.RuneCountInString(matched)
 	}
 	scanner.rest = scanner.rest[len(matched):]
 	scanner.Eaten += len(matched)

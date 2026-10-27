@@ -317,11 +317,13 @@ opens as an empty canvas.
   lists, contexts, ranges) give null — `min([1, null])` is null, not `1`.
 - **A malformed conversion is null; a malformed `@"..."` does not load.**
   `date("nope")`, `time("25:00")`, `date and time("x")`, `number("abc")`,
-  `duration("P1Y2D")` (mixes the two duration kinds), `date(null)` and
+  `duration("P1Y2D")` (mixes the two duration kinds), `duration("P")` (no
+  component), `date(null)` and
   `string(null)` are null, not an error — so a bad string input surfaces as a
   null output, and `number("1,000")` is null (the grouping form is not
-  supported). The literal `@"P1Y2D"` is a syntax error instead:
-  `VERDICT_LOAD_013` when the model loads. A string the spec allows but Verdict
+  supported). The literal `@"P1Y2D"` (or `@"P"`) is a syntax error instead:
+  `VERDICT_LOAD_013` when the model loads, with the literal's 1-based
+  `line L, column C` in the message. A string the spec allows but Verdict
   cannot hold still fails the evaluation (`VERDICT_EVAL_005`) rather than
   reading as malformed: a zone id the time zone database does not know
   (`"2026-01-01T10:00:00@Mars/Olympus"`), a duration finer than a nanosecond (`PT0.0000000001S`) or longer
@@ -332,7 +334,9 @@ opens as an empty canvas.
   the canonical form, and `PT36H = P1DT12H`. Seconds may be fractional
   (`PT1.5S`, kept to the nanosecond; `.seconds` is `1.5`). Two durations of
   the same kind add and subtract (`PT1.5S + PT0.5S = PT2S`); a years and months
-  duration plus a days and time one is null.
+  duration plus a days and time one is null. A zero keeps its kind:
+  `duration("P1Y") - duration("P1Y")` is `P0M`, not `PT0S`, so adding `PT1H`
+  to it, or comparing it with `PT0S`, is null too.
 - **Temporal arithmetic follows DMN Table 57.** `date - date` is a days and time
   duration (`date("2026-01-02") - date("2026-01-01")` is `P1D`; a date counts as
   UTC midnight against a date and time), as is `time - time`. A duration added
