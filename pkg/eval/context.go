@@ -26,7 +26,8 @@ type Context struct {
 
 	trace trace.Writer
 
-	// shared is the per-evaluation state: diagnostics, memo cache, depth.
+	// shared is the per-evaluation state: diagnostics, memo cache, depth and
+	// the iteration budget.
 	shared *evalState
 }
 
@@ -41,6 +42,15 @@ type evalState struct {
 	// DRG's acyclicity bounds requirement edges but not invocation: a literal
 	// expression can call a service that calls back into this one.
 	depth int
+
+	// budget is the request's iteration budget, drawn on by every FEEL
+	// expression and unary test the request evaluates — every decision in the
+	// slice, every business knowledge model and boxed-function invocation,
+	// every decision service called from FEEL. It is a shared pointer to an
+	// atomic counter, so sibling decisions evaluating in parallel charge it
+	// without a lock. Nil gives each evaluation a whole budget of its own,
+	// which only the analyser's detached context relies on.
+	budget *feel.Budget
 }
 
 // enterService increments the service-invocation depth and reports the new
@@ -98,8 +108,13 @@ func (ec *Context) Vars() map[string]any { return ec.vars }
 func (ec *Context) Trace() trace.Writer { return ec.trace }
 
 // FEEL returns the expression evaluator, so a custom NodeEvaluator can compile
-// and evaluate expressions with the same dialect and function libraries.
+// and evaluate expressions with the same dialect and function libraries. Pass
+// Budget to its EvalBudget so those expressions draw on the request's
+// iteration budget too.
 func (ec *Context) FEEL() *feel.Evaluator { return ec.prog.cfg.FEEL }
+
+// Budget returns the request's shared iteration budget.
+func (ec *Context) Budget() *feel.Budget { return ec.shared.budget }
 
 // Derive returns a Context with additional bindings layered over this one.
 // Passing a nil or empty map returns the receiver unchanged.
@@ -135,7 +150,7 @@ func (ec *Context) eval(x *feel.Expr) (any, error) {
 	if err := ec.ctx.Err(); err != nil {
 		return nil, err
 	}
-	v, err := ec.prog.cfg.FEEL.Eval(x, ec.vars)
+	v, err := ec.prog.cfg.FEEL.EvalBudget(x, ec.vars, ec.shared.budget)
 	return v, feelFailure(err)
 }
 

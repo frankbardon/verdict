@@ -259,7 +259,7 @@ func (p *Program) validateAgentValue(ec *Context, a *model.AgentDecision, value 
 	if x == nil {
 		return nil
 	}
-	v, err := p.cfg.FEEL.Eval(x, mergeVars(ec.vars, map[string]any{"value": feel.FromGo(value)}))
+	v, err := p.cfg.FEEL.EvalBudget(x, mergeVars(ec.vars, map[string]any{"value": feel.FromGo(value)}), ec.shared.budget)
 	if err != nil {
 		return diag.Errorf(diag.CodeAgentValidation,
 			"agent output validator failed to evaluate: %v", err).At(a.ExprID(), "")

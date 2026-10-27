@@ -599,8 +599,8 @@ func TestForkedDefects(t *testing.T) {
 				t.Errorf("%s under a budget of 6: err = %v, want ErrIterationBudgetExceeded", expr, err)
 			}
 		}
-		// The budget is per evaluation: a second evaluation of the same
-		// compiled expression starts from zero again.
+		// Without a shared Budget the budget is per evaluation: a second
+		// evaluation of the same compiled expression starts from zero again.
 		x, err := capped.Compile("for i in 1..6 return i")
 		if err != nil {
 			t.Fatal(err)
@@ -653,6 +653,90 @@ func TestForkedDefects(t *testing.T) {
 		close(errs)
 		for err := range errs {
 			t.Errorf("a within-budget evaluation failed alongside others: %v", err)
+		}
+	})
+
+	t.Run("evaluations sharing a budget draw on one counter", func(t *testing.T) {
+		// The fork's first budget lived on the interpreter alone, so every
+		// evaluation — every business knowledge model call, every unary-test
+		// alternative — started with the whole budget, and a loop of calls
+		// multiplied it. An IterationBudget is shared: every evaluation
+		// passed it charges one atomic counter, on any goroutine.
+		capped, err := NewEvaluator(FEEL, WithMaxIterations(10))
+		if err != nil {
+			t.Fatal(err)
+		}
+		x, err := capped.Compile("for i in 1..4 return i")
+		if err != nil {
+			t.Fatal(err)
+		}
+		budget := capped.NewBudget()
+		if budget.Limit() != 10 {
+			t.Errorf("budget limit = %d, want 10", budget.Limit())
+		}
+		// 4 + 4 fits; the third evaluation would make 12.
+		for n := 0; n < 2; n++ {
+			if _, err := capped.EvalBudget(x, nil, budget); err != nil {
+				t.Fatalf("evaluation %d within the shared budget: %v", n+1, err)
+			}
+		}
+		if _, err := capped.EvalBudget(x, nil, budget); !errors.Is(err, ErrIterationBudgetExceeded) {
+			t.Errorf("third evaluation of 4 under a shared budget of 10: err = %v, want ErrIterationBudgetExceeded", err)
+		}
+		// A refused charge spends nothing: 2 still fits.
+		if budget.Used() != 8 {
+			t.Errorf("used = %d after a refused charge, want 8", budget.Used())
+		}
+		if _, err := capped.EvalText("for i in 1..2 return i", nil); err != nil {
+			t.Errorf("an unshared evaluation alongside: %v", err)
+		}
+		if _, err := capped.EvalBudget(mustCompile(t, capped, "for i in 1..2 return i"), nil, budget); err != nil {
+			t.Errorf("2 more under a shared budget with 2 left: %v", err)
+		}
+
+		// Unary-test alternatives charge the same budget.
+		ut, err := capped.CompileUnaryTest("count(for i in 1..3 return i) > 5, count(for j in 1..3 return j) > 5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		shared := capped.NewBudget()
+		if ok, err := capped.EvalUnaryTestBudget(ut, 1, nil, shared); err != nil || ok {
+			t.Fatalf("unary test = %v, %v; want false, nil", ok, err)
+		}
+		if shared.Used() != 6 {
+			t.Errorf("used after two alternatives of 3 = %d, want 6", shared.Used())
+		}
+
+		// Concurrent charges are exact: 16 goroutines × 10 evaluations of 4
+		// under a budget of 640 all fit, and one more element does not.
+		wide, err := NewEvaluator(FEEL, WithMaxIterations(640))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wb := wide.NewBudget()
+		var wg sync.WaitGroup
+		errs := make(chan error, 160)
+		for w := 0; w < 16; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for n := 0; n < 10; n++ {
+					if _, err := wide.EvalBudget(x, nil, wb); err != nil {
+						errs <- err
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("a within-budget concurrent evaluation failed: %v", err)
+		}
+		if wb.Used() != 640 {
+			t.Errorf("used after 160 concurrent evaluations of 4 = %d, want 640", wb.Used())
+		}
+		if _, err := wide.EvalBudget(mustCompile(t, wide, "for i in 1..1 return i"), nil, wb); !errors.Is(err, ErrIterationBudgetExceeded) {
+			t.Errorf("one element past an exhausted shared budget: err = %v, want ErrIterationBudgetExceeded", err)
 		}
 	})
 
@@ -1055,8 +1139,8 @@ func TestForkedDefects(t *testing.T) {
 			`string(date("2026-01-01") - duration("P1D"))`:                    "2025-12-31",
 			`string(date("2026-01-01") + duration("PT23H"))`:                  "2026-01-01",
 			`string(date("2026-01-15") + duration("P1Y2M"))`:                  "2027-03-15",
-			`string(date and time("2026-01-01T00:00:00") + @"P1DT1H")`:        "2026-01-02T01:00:00@UTC",
-			`string(date and time("2026-01-01T00:00:00") - duration("-P2D"))`: "2026-01-03T00:00:00@UTC",
+			`string(date and time("2026-01-01T00:00:00") + @"P1DT1H")`:        "2026-01-02T01:00:00",
+			`string(date and time("2026-01-01T00:00:00") - duration("-P2D"))`: "2026-01-03T00:00:00",
 		}
 		for expr, want := range strs {
 			if got := mustEval(t, e, expr, nil); got != want {
@@ -1134,7 +1218,7 @@ func TestForkedDefects(t *testing.T) {
 			`string(duration("P2M") - duration("P1Y"))`:       "-P10M",
 			`string(duration("PT12H") + duration("PT12H"))`:   "P1D",
 			`string(duration("P1D") - duration("PT36H"))`:     "-PT12H",
-			`string(duration("P1Y") - duration("P1Y"))`:       "PT0S",
+			`string(duration("P1Y") - duration("P1Y"))`:       "P0M",
 		}
 		for expr, want := range strs {
 			if got := mustEval(t, e, expr, nil); got != want {
@@ -1154,7 +1238,7 @@ func TestForkedDefects(t *testing.T) {
 			`date and time("2026-01-01T00:00:00") + duration("PT36H") = date and time("2026-01-02T12:00:00")`:                       true,
 			`date and time("2026-01-01T00:00:00") + duration("P26M") = date and time("2028-03-01T00:00:00")`:                        true,
 			`date and time("2026-01-01T00:00:01.5") - date and time("2026-01-01T00:00:00") = duration("PT1.5S")`:                    true,
-			// The zero duration is the identity of both kinds.
+			// A zero years and months duration is the identity of its kind.
 			`duration("P1Y") - duration("P1Y") + duration("P1M") = duration("P1M")`: true,
 		}
 		for expr, want := range bools {
@@ -1204,18 +1288,18 @@ func TestForkedDefects(t *testing.T) {
 			`string(time("10:00:00") - time("10:00:00"))`:        "PT0S",
 			`string(time("10:00:00+02:00") - time("08:00:00Z"))`: "PT0S",
 			// date and time ± years and months duration, and commuted.
-			`string(date and time("2026-01-15T10:00:00") + duration("P1Y2M"))`: "2027-03-15T10:00:00@UTC",
-			`string(date and time("2026-01-15T10:00:00") - duration("P1M"))`:   "2025-12-15T10:00:00@UTC",
-			`string(duration("P1Y") + date and time("2026-01-01T10:00:00"))`:   "2027-01-01T10:00:00@UTC",
+			`string(date and time("2026-01-15T10:00:00") + duration("P1Y2M"))`: "2027-03-15T10:00:00",
+			`string(date and time("2026-01-15T10:00:00") - duration("P1M"))`:   "2025-12-15T10:00:00",
+			`string(duration("P1Y") + date and time("2026-01-01T10:00:00"))`:   "2027-01-01T10:00:00",
 			// date and time ± days and time duration, and commuted.
-			`string(duration("P1DT1H") + date and time("2026-01-01T00:00:00"))`: "2026-01-02T01:00:00@UTC",
+			`string(duration("P1DT1H") + date and time("2026-01-01T00:00:00"))`: "2026-01-02T01:00:00",
 			// time ± days and time duration wraps within the day, and commutes.
 			`string(time("10:00:00+02:00") + duration("PT1H"))`: "11:00:00+02:00",
-			`string(time("23:00:00Z") + duration("PT2H"))`:      "01:00:00+00:00",
-			`string(time("01:00:00Z") - duration("PT2H"))`:      "23:00:00+00:00",
-			`string(time("10:00:00Z") + duration("P3DT1H"))`:    "11:00:00+00:00",
-			`string(time("10:00:00Z") - duration("-PT1.5S"))`:   "10:00:01+00:00",
-			`string(duration("PT90M") + time("10:00:00Z"))`:     "11:30:00+00:00",
+			`string(time("23:00:00Z") + duration("PT2H"))`:      "01:00:00Z",
+			`string(time("01:00:00Z") - duration("PT2H"))`:      "23:00:00Z",
+			`string(time("10:00:00Z") + duration("P3DT1H"))`:    "11:00:00Z",
+			`string(time("10:00:00Z") - duration("-PT1.5S"))`:   "10:00:01Z",
+			`string(duration("PT90M") + time("10:00:00Z"))`:     "11:30:00Z",
 			// date ± years and months duration, and commuted.
 			`string(date("2026-01-15") + duration("P1M"))`: "2026-02-15",
 			`string(date("2026-01-15") - duration("P1Y"))`: "2025-01-15",
@@ -1297,7 +1381,7 @@ func TestForkedDefects(t *testing.T) {
 			`string(date("2026-08-31") + duration("P1M"))`:   "2026-09-30",
 			`string(date("2026-01-31") - duration("P2M"))`:   "2025-11-30",
 			// A date and time keeps its time of day and its zone or offset.
-			`string(date and time("2026-01-31T10:30:15") + duration("P1M"))`: "2026-02-28T10:30:15@UTC",
+			`string(date and time("2026-01-31T10:30:15") + duration("P1M"))`: "2026-02-28T10:30:15",
 		}
 		for expr, want := range strs {
 			if got := mustEval(t, e, expr, nil); got != want {
@@ -1316,6 +1400,133 @@ func TestForkedDefects(t *testing.T) {
 		for expr, want := range bools {
 			if got := mustEval(t, e, expr, nil); got != want {
 				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("conversion built-ins are null for an argument of the wrong kind", func(t *testing.T) {
+		// DMN 1.5 §10.3.4: a well-formed call whose argument lies outside the
+		// function's domain is null. number(5) and the mixed-pair years and
+		// months duration failed on upstream v1.0.6 / the earlier supplement
+		// (returning 5 and P5M); the context cases raised.
+		for _, expr := range []string{
+			`number(5)`, `number(from: 5)`, `number(5, ".", ",")`, `number(true, null, null)`,
+			`years and months duration(date("2026-01-01"), date and time("2026-06-01T00:00:00"))`,
+			`years and months duration(date and time("2026-01-01T00:00:00"), date("2026-06-01"))`,
+			`years and months duration(time("10:00:00"), time("11:00:00"))`,
+			`date(true)`, `date(5)`, `date(time("10:00:00"))`, `date(2026, "2", 3)`,
+			`time(true)`, `time(date("2026-01-01"))`, `time(10, 30, true)`,
+			`date and time(5)`, `date and time(date("2026-01-01"), 5)`, `date and time("2026-01-01", time("10:00:00"))`, `date and time(date("2026-01-01"), date("2026-01-01"))`,
+			`duration(5)`, `duration(true)`, `duration(date("2026-01-01"))`,
+			`context(5)`, `context("x")`, `context(null)`, `context([5])`, `context([{key: 5, value: 1}])`, `context([{key: "a"}])`,
+		} {
+			got, err := e.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(got) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(got))
+			}
+		}
+
+		// Inside the domain is unchanged; string(from) takes any non-null value.
+		strs := map[string]string{
+			`string(5)`: "5", `string(date("2026-01-01"))`: "2026-01-01",
+			`string(years and months duration(date and time("2026-01-01T00:00:00"), date and time("2026-06-01T00:00:00")))`: "P5M",
+			`string(years and months duration(date("2026-01-01"), date("2026-06-01")))`:                                     "P5M",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		if got := mustEval(t, e, `number("5")`, nil); got != 5.0 {
+			t.Errorf(`number("5") = %#v, want 5`, got)
+		}
+		for _, expr := range []string{`context({key: "a", value: 1})`, `context([{key: "a", value: 1}])`} {
+			got, ok := mustEval(t, e, expr, nil).(map[string]any)
+			if !ok || len(got) != 1 || got["a"] != 1.0 {
+				t.Errorf("%s = %#v, want {a: 1}", expr, got)
+			}
+		}
+	})
+
+	t.Run("conversion built-ins carry every Table 72 overload", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.1 Table 72. Upstream had only the string form of
+		// date, time and date and time, and number(from) alone; each case
+		// below raised (or, for number, too many arguments) on v1.0.6.
+		strs := map[string]string{
+			`string(date(2026, 2, 28))`:                                                               "2026-02-28",
+			`string(date(year: 2028, month: 2, day: 29))`:                                             "2028-02-29",
+			`string(date(date and time("2026-02-28T10:00:00")))`:                                      "2026-02-28",
+			`string(date(from: date and time("2026-02-28T23:30:00-05:00")))`:                          "2026-02-28",
+			`string(time(10, 30, 0))`:                                                                 "10:30:00",
+			`string(time(10, 30, 0, duration("PT2H")))`:                                               "10:30:00+02:00",
+			`string(time(10, 30, 0, duration("-PT5H30M")))`:                                           "10:30:00-05:30",
+			`string(time(10, 30, 0, duration("PT0S")))`:                                               "10:30:00Z",
+			`string(time(10, 30, 0, null))`:                                                           "10:30:00",
+			`string(time(hour: 1, minute: 2, second: 3, offset: duration("PT1H")))`:                   "01:02:03+01:00",
+			`string(time(date and time("2026-02-28T10:00:00")))`:                                      "10:00:00",
+			`string(time(date and time("2026-02-28T10:00:00+02:00")))`:                                "10:00:00+02:00",
+			`string(time(date and time("2026-07-01T10:00:00@Europe/Paris")))`:                         "10:00:00+02:00",
+			`string(time(time("10:00:00Z")))`:                                                         "10:00:00Z",
+			`string(date and time(date("2026-02-28"), time("10:00:00Z")))`:                            "2026-02-28T10:00:00Z",
+			`string(date and time(date: date("2026-02-28"), time: time("10:00:00")))`:                 "2026-02-28T10:00:00",
+			`string(date and time(date and time("2026-02-28T23:00:00"), time("10:00:00@Etc/GMT+5")))`: "2026-02-28T10:00:00@Etc/GMT+5",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		bools := map[string]bool{
+			`time(10, 0, 0) = time("10:00:00")`:                         true,
+			`time(10, 0, 0, duration("PT2H")) = time("10:00:00+02:00")`: true,
+			`time(10, 0, 30.5) > time(10, 0, 30)`:                       true,
+			`date(2026, 2, 28) = @"2026-02-28"`:                         true,
+		}
+		for expr, want := range bools {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// time(h, m, s) is zoneless, so it does not equal a zoned time.
+		if got := mustEval(t, e, `time(10, 0, 0) = time("10:00:00Z")`, nil); got != nil {
+			t.Errorf(`time(10, 0, 0) = time("10:00:00Z") = %#v, want null`, got)
+		}
+		nums := map[string]float64{
+			`number("1.000,5", ".", ",")`: 1000.5,
+			`number("1 000,0", " ", ",")`: 1000,
+			`number("1,000.5", ",", ".")`: 1000.5,
+			`number("12", null, null)`:    12,
+			`number("1,5", null, ",")`:    1.5,
+			`number(from: "1,000.5", grouping separator: ",", decimal separator: ".")`: 1000.5,
+		}
+		for expr, want := range nums {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// Invalid components, separators and argument kinds are null.
+		for _, expr := range []string{
+			`date(2026, 2, 29)`, `date(2026, 13, 1)`, `date(2026, 0, 1)`, `date(2026.5, 1, 1)`, `date(null, 1, 1)`, `date("2026", 1, 1)`,
+			`date(time("10:00:00"))`,
+			`time(24, 0, 0)`, `time(10, 60, 0)`, `time(10, 0, 60)`, `time(10, 0, -1)`, `time(10.5, 0, 0)`, `time(null, 0, 0)`,
+			`time(10, 0, 0, duration("P1Y"))`, `time(10, 0, 0, duration("PT15H"))`, `time(10, 0, 0, "PT1H")`, `time(date("2026-01-01"))`,
+			`date and time(date("2026-02-28"), "10:00:00")`, `date and time(null, time("10:00:00"))`, `date and time(time("10:00:00"), time("10:00:00"))`,
+			`number("1.5", ".", ".")`, `number("1.5", "x", ".")`, `number("1.5", null, ",")`, `number("1.000", ".", null)`, `number("1,5", ",", ";")`, `number(15, ",", ".")`,
+		} {
+			got, err := e.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(got) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(got))
+			}
+		}
+		// A call that fits no signature still fails, as for any built-in, and
+		// so does a second finer than the fork can hold.
+		for _, expr := range []string{`date()`, `date(2026, 2)`, `time(10, 0)`, `date(year: 2026, month: 2)`, `date(foo: 1)`, `time(10, 0, 0.0000000001)`} {
+			if v, err := e.EvalText(expr, nil); err == nil {
+				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
 			}
 		}
 	})
@@ -1361,7 +1572,7 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 		nums := map[string]float64{
-			`number("12")`: 12, `number("-1.5")`: -1.5, `number(".5")`: 0.5, `number("1e3")`: 1000, `number("-2E-1")`: -0.2, `number(7)`: 7,
+			`number("12")`: 12, `number("-1.5")`: -1.5, `number(".5")`: 0.5, `number("1e3")`: 1000, `number("-2E-1")`: -0.2,
 		}
 		for expr, want := range nums {
 			if got := mustEval(t, e, expr, nil); got != want {
@@ -1387,12 +1598,10 @@ func TestForkedDefects(t *testing.T) {
 
 		// Inside the domain but beyond the fork: still an evaluation error,
 		// never a null that reads as "the input was malformed". An IANA zone
-		// id, a days and time duration beyond time.Duration's range or finer
-		// than a nanosecond, and the date(date and time) / time(time | date
-		// and time) overloads, which the fork does not implement.
+		// id, and a days and time duration beyond time.Duration's range or
+		// finer than a nanosecond.
 		for _, expr := range []string{
 			`duration("P200000D")`, `duration("PT0.0000000001S")`,
-			`date(date and time("2012-12-25T11:00:00"))`, `time(time("10:00:00"))`, `time(date and time("2012-12-25T11:00:00"))`,
 		} {
 			if v, err := e.EvalText(expr, nil); err == nil {
 				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
@@ -1429,6 +1638,603 @@ func TestForkedDefects(t *testing.T) {
 			t.Errorf(`Credit Rating = "good" evaluated to %#v, want true`, got)
 		}
 	})
+
+	t.Run("not, and and or are three-valued", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 51. Only a boolean counts as one; null and
+		// every other kind are "otherwise". Upstream v1.0.6 coerced operands
+		// through boolValue, so null, 0 and "" read as false and 1 as true.
+		operands := map[string]any{
+			"true": true, "false": false, "null": nil, "1": nil, `"x"`: nil,
+		}
+		and := func(a, b any) any {
+			switch {
+			case a == false || b == false:
+				return false
+			case a == true && b == true:
+				return true
+			}
+			return nil
+		}
+		or := func(a, b any) any {
+			switch {
+			case a == true || b == true:
+				return true
+			case a == false && b == false:
+				return false
+			}
+			return nil
+		}
+		for l, lv := range operands {
+			for r, rv := range operands {
+				for op, want := range map[string]any{"and": and(lv, rv), "or": or(lv, rv)} {
+					expr := l + " " + op + " " + r
+					if got := mustEval(t, e, expr, nil); got != want {
+						t.Errorf("%s = %#v, want %#v", expr, got, want)
+					}
+				}
+			}
+		}
+		nots := map[string]any{
+			"not(true)":            false,
+			"not(false)":           true,
+			"not(null)":            nil,
+			"not(0)":               nil,
+			`not("")`:              nil,
+			"not([])":              nil,
+			`not(5 in ["a".."z"])`: nil,
+			"not(from: true)":      false,
+			"not(true and null)":   nil,
+			"not(false and null)":  true,
+		}
+		for expr, want := range nots {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("booleans have no order", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 54 defines no ordering over booleans.
+		// Upstream v1.0.6 ordered false below true.
+		for _, op := range []string{"<", "<=", ">", ">="} {
+			for _, pair := range [][2]string{{"true", "false"}, {"false", "true"}, {"true", "true"}, {"false", "false"}} {
+				expr := pair[0] + " " + op + " " + pair[1]
+				if got := mustEval(t, e, expr, nil); got != nil {
+					t.Errorf("%s = %#v, want null", expr, got)
+				}
+			}
+		}
+		// Equality is defined over booleans, and unaffected.
+		for expr, want := range map[string]any{"true = true": true, "true = false": false, "true != false": true} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("ranges compare by endpoints and closedness and have no order", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 53: ranges are equal when their endpoints
+		// and closedness are; Table 54 orders no range. Upstream v1.0.6 raised
+		// "bad type in comparation" (-3106) for every one of these.
+		cases := map[string]any{
+			"[1..2] = [1..2]":         true,
+			"[1..2] = [1..3]":         false,
+			"[1..2] = (1..2]":         false,
+			"[1..2] = [1..2)":         false,
+			"[1..2] = ]1..2]":         false,
+			"[1..2] != [1..2]":        false,
+			"[1..2] != (1..2)":        true,
+			`["a".."b"] = ["a".."b"]`: true,
+			`[1..2] = ["a".."b"]`:     nil,
+			"[1..2] = 1":              nil,
+			"[[1..2]] = [[1..2]]":     true,
+			"[1..2] in [[1..2], 3]":   true,
+			"[1..2] < [3..4]":         nil,
+			"[1..2] <= [1..2]":        nil,
+			"[3..4] > [1..2]":         nil,
+			"[1..2] >= [1..2]":        nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("list membership is a three-valued disjunction of equalities", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 49: e in [e1, e2, …] is e = e1 or e = e2
+		// or …, folded by Table 51. Upstream v1.0.6 answered false wherever no
+		// element was equal, so `"a" in [1, 2]` was false and its negation true.
+		cases := map[string]any{
+			`"a" in [1, 2]`:       nil,
+			`1 in [1, "a"]`:       true,
+			`"a" in [1, "a"]`:     true,
+			"3 in [1, 2]":         false,
+			"3 in []":             false,
+			"null in [1, null]":   true,
+			"null in [1, 2]":      false,
+			"[1] in [[1], [2]]":   true,
+			`[1] in [["a"], [2]]`: nil,
+			`not("a" in [1, 2])`:  nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("min and max reject items outside their domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.4 defines min and max over comparable items, and
+		// §10.3.4 makes a built-in given a parameter outside its domain null.
+		// Upstream v1.0.6 skipped items it could not order (`min([1, "a"])`
+		// was 1), ordered null above every value and false below true, and returned the
+		// first of a list of lists or contexts.
+		cases := map[string]any{
+			"min([[1], [2]])":       nil,
+			"max([[1], [2]])":       nil,
+			"min([{a: 1}, {a: 2}])": nil,
+			"max([{a: 1}])":         nil,
+			`min([1, "a"])`:         nil,
+			`max(["a", 1])`:         nil,
+			"min([true, false])":    nil,
+			"max([true, false])":    nil,
+			"max([true])":           nil,
+			"min([1, null])":        nil,
+			"max([1, null])":        nil,
+			"min([[1..2], [3..4]])": nil,
+			"min([])":               nil,
+			"max([])":               nil,
+			`max("a", "c", "b")`:    "c",
+			`min(["b", "a"])`:       "a",
+			"max([duration(\"P1D\"), duration(\"PT1H\")]) = duration(\"P1D\")":         true,
+			"min([date(\"2026-01-02\"), date(\"2026-01-01\")]) = date(\"2026-01-01\")": true,
+			`max([duration("P1D"), duration("P1M")])`:                                  nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		for expr, want := range map[string]float64{"min([3, 1, 2])": 1, "max(3, 1, 2)": 3, "min([5])": 5} {
+			if got, ok := mustEval(t, e, expr, nil).(float64); !ok || got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("a unary entry of another kind than its input is null, so its not(...) does not match either", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15 and §10.3.2.2 make `=` and `in` between values of
+		// different kinds null, and Table 54 orders no booleans; Table 51 makes
+		// not(null) null. The unary-test layer used a two-valued equality and
+		// read an incomparable range as false, so not("gold") matched 5 and
+		// not([false..true]) matched true. Cells now go through the fork's
+		// exported Equal and In.
+		c := NewCompiler(FEEL)
+		cases := []struct {
+			src   string
+			input any
+			want  bool
+		}{
+			{`"gold"`, 5, false}, {`not("gold")`, 5, false},
+			{`["a".."z"]`, 5, false}, {`not(["a".."z"])`, 5, false},
+			{"[false..true]", true, false}, {"not([false..true])", true, false},
+			{`["a", "b"]`, 5, false}, {`not(["a", "b"])`, 5, false},
+			{"not(true)", 5, false}, {`not(1, "a")`, 2, false},
+			// Same kind: still two-valued.
+			{`not("gold")`, "silver", true}, {`not(["a", "b"])`, "c", true},
+			{"not([1..10])", 11, true}, {`not(1, "a")`, 1, false},
+			{"not(true)", false, true},
+			// A list input against a list cell: `? = cell or ? in cell`.
+			{"[1, 2]", []any{1, 2}, true}, {"[[1, 2], [3]]", []any{3}, true},
+		}
+		for _, tc := range cases {
+			ut, err := c.CompileUnaryTest(tc.src)
+			if err != nil {
+				t.Errorf("%s does not compile: %v", tc.src, err)
+				continue
+			}
+			got, err := e.EvalUnaryTest(ut, FromGo(tc.input), nil)
+			if err != nil {
+				t.Errorf("%s against %v: %v", tc.src, tc.input, err)
+				continue
+			}
+			if got != tc.want {
+				t.Errorf("%s matched %v = %v, want %v", tc.src, tc.input, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("booleans are unordered for range membership and range built-ins", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 54 orders no booleans, so membership in a
+		// boolean range and the §10.3.4.7 range functions over booleans are
+		// outside their domain. Upstream v1.0.6 ordered false below true.
+		for _, expr := range []string{
+			"true in [false..true]",
+			"false in [false..true]",
+			"not(true in [false..true])",
+			"before(false, true)",
+			"after(true, false)",
+			"includes([false..true], true)",
+			"coincides(true, true)",
+			"coincides([false..true], [false..true])",
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+	})
+
+	t.Run("zoned and zoneless times and date and times are distinct values", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.3.4 and §10.3.2.3.6: only a value with a time offset
+		// has a UTC form. Table 53 (`=`) is defined on UTC forms, so a zoned
+		// against a zoneless value is null; Table 54 (`<`, `>`) has the
+		// zoneless one adopt the other's offset, and makes `<=` `< or =`;
+		// Table 57 leaves a mixed subtraction undefined. Each case failed on
+		// upstream v1.0.6, which read a zoneless value as UTC.
+		cases := map[string]any{
+			// = and != (rule 2)
+			`time("10:00:00") = time("10:00:00Z")`:                                               nil,
+			`time("10:00:00") != time("10:00:00Z")`:                                              nil,
+			`@"10:00:00" = @"10:00:00Z"`:                                                         nil,
+			`time("10:00:00") = time("10:00:00")`:                                                true,
+			`time("10:00:00+02:00") = time("08:00:00Z")`:                                         true,
+			`time("10:00:00+02:00") != time("08:00:00Z")`:                                        false,
+			`date and time("2024-01-01T10:00:00") = date and time("2024-01-01T10:00:00Z")`:       nil,
+			`date and time("2024-01-01T10:00:00") != date and time("2024-01-01T10:00:00Z")`:      nil,
+			`date and time("2024-01-01T10:00:00+02:00") = date and time("2024-01-01T08:00:00Z")`: true,
+			`date and time("2024-01-01T10:00:00") = date and time("2024-01-01T10:00:00")`:        true,
+			`[time("10:00:00")] = [time("10:00:00Z")]`:                                           nil,
+			`time("10:00:00") in [time("10:00:00Z")]`:                                            nil,
+			// < and > adopt the zoned operand's offset (rule 3)
+			`time("10:00:00") < time("11:00:00Z")`:                                              true,
+			`time("10:00:00") < time("10:00:00Z")`:                                              false,
+			`time("10:00:00") > time("10:00:00Z")`:                                              false,
+			`time("10:00:00") < time("11:00:00+02:00")`:                                         true,
+			`time("11:00:00+02:00") > time("10:00:00")`:                                         true,
+			`date and time("2024-01-01T10:00:00") < date and time("2024-01-01T09:00:00-02:00")`: false,
+			`date and time("2024-01-01T10:00:00") > date and time("2024-01-01T09:00:00-02:00")`: true,
+			// <= and >= are `< or =`, so true or null when mixed (rule 4)
+			`time("10:00:00") <= time("10:00:00Z")`:                                         nil,
+			`time("10:00:00") >= time("10:00:00Z")`:                                         nil,
+			`time("10:00:00") <= time("11:00:00Z")`:                                         true,
+			`time("12:00:00") <= time("11:00:00Z")`:                                         nil,
+			`time("10:00:00") >= time("09:00:00Z")`:                                         true,
+			`date and time("2024-01-01T10:00:00") <= date and time("2024-01-01T10:00:00Z")`: nil,
+			`time("10:00:00") <= time("10:00:00")`:                                          true,
+			`time("10:00:00+02:00") <= time("08:00:00Z")`:                                   true,
+			// Range membership is `>=`/`<=` (Table 49) and inherits them
+			`time("10:00:00") in [time("09:00:00Z")..time("11:00:00Z")]`: true,
+			`time("10:00:00") in [time("10:00:00Z")..time("11:00:00Z")]`: nil,
+			`time("10:00:00") in (time("10:00:00Z")..time("11:00:00Z")]`: false,
+			`time("08:00:00") in [time("09:00:00Z")..time("11:00:00Z")]`: nil,
+			`time("10:00:00Z") in [time("09:00:00")..time("11:00:00")]`:  true,
+			// - between two date and times or two times (rule 5)
+			`date and time("2024-01-01T10:00:00") - date and time("2024-01-01T08:00:00Z")`:               nil,
+			`date and time("2024-01-01T10:00:00Z") - date and time("2024-01-01T08:00:00")`:               nil,
+			`time("10:00:00") - time("08:00:00Z")`:                                                       nil,
+			`time("10:00:00Z") - time("08:00:00")`:                                                       nil,
+			`string(date and time("2024-01-01T10:00:00+02:00") - date and time("2024-01-01T07:00:00Z"))`: "PT1H",
+			`string(date and time("2024-01-01T10:00:00") - date and time("2024-01-01T07:00:00"))`:        "PT3H",
+			`string(time("10:00:00+02:00") - time("07:00:00Z"))`:                                         "PT1H",
+			`string(time("10:00:00") - time("07:00:00"))`:                                                "PT3H",
+			// + and - duration keep zone-ness and offset (rule 6)
+			`string(date and time("2024-01-01T10:00:00") + duration("PT1H"))`:                                 "2024-01-01T11:00:00",
+			`date and time("2024-01-01T10:00:00") + duration("PT1H") = date and time("2024-01-01T11:00:00")`:  true,
+			`date and time("2024-01-01T10:00:00") + duration("PT1H") = date and time("2024-01-01T11:00:00Z")`: nil,
+			`date and time("2024-01-01T10:00:00") + duration("P1M") = date and time("2024-02-01T10:00:00Z")`:  nil,
+			`(date and time("2024-01-01T10:00:00+02:00") + duration("P1M")).time offset = duration("PT2H")`:   true,
+			`string(time("23:00:00") + duration("PT2H"))`:                                                     "01:00:00",
+			`time("23:00:00") + duration("PT2H") = time("01:00:00Z")`:                                         nil,
+			`(time("23:00:00+02:00") - duration("PT2H")).time offset = duration("PT2H")`:                      true,
+			// time offset, timezone and string() (rule 7)
+			`time("10:00:00").time offset`:                                                                         nil,
+			`time("10:00:00").timezone`:                                                                            nil,
+			`date and time("2024-01-01T10:00:00").time offset`:                                                     nil,
+			`date and time("2024-01-01T10:00:00").timezone`:                                                        nil,
+			`time("10:00:00Z").time offset = duration("PT0S")`:                                                     true,
+			`date and time("2024-01-01T10:00:00-05:00").time offset = duration("-PT5H")`:                           true,
+			`string(time("10:00:00"))`:                                                                             "10:00:00",
+			`string(date and time("2024-01-01T10:00:00"))`:                                                         "2024-01-01T10:00:00",
+			`time(string(time("10:00:00"))) = time("10:00:00")`:                                                    true,
+			`date and time(string(date and time("2024-01-01T10:00:00"))) = date and time("2024-01-01T10:00:00")`:   true,
+			`date and time(string(date and time("2024-01-01T10:00:00Z"))) = date and time("2024-01-01T10:00:00Z")`: true,
+			// A date takes the zone-ness of the date and time it meets
+			`date("2024-01-01") = date and time("2024-01-01T00:00:00")`:          true,
+			`date("2024-01-01") = date and time("2024-01-01T00:00:00Z")`:         true,
+			`date("2024-01-01") = date and time("2024-01-01T00:00:00+02:00")`:    false,
+			`string(date and time("2024-01-02T06:00:00Z") - date("2024-01-01"))`: "P1DT6H",
+			`string(date("2024-01-02") - date and time("2024-01-01T18:00:00Z"))`: "PT6H",
+			// min and max order as `<` does
+			`max(time("10:00:00"), time("11:00:00Z")) = time("11:00:00Z")`: true,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("zoned and zoneless values in the Go-side comparisons and unary tests", func(t *testing.T) {
+		// feel.Equal and the unary-test layer derive from the fork's `=`, and
+		// feel.Compare from its `<`, so decision tables, the ANY hit policy
+		// and COLLECT MIN/MAX follow the same zone rules.
+		local, _ := ParseTemporal("10:00:00", "time")
+		utc, _ := ParseTemporal("10:00:00Z", "time")
+		later, _ := ParseTemporal("11:00:00Z", "time")
+		if Equal(local, utc) {
+			t.Errorf("Equal(10:00:00, 10:00:00Z) = true, want false (null)")
+		}
+		if r, ok := Compare(local, later); !ok || r >= 0 {
+			t.Errorf("Compare(10:00:00, 11:00:00Z) = %d, %v; want -1, true", r, ok)
+		}
+		c := NewCompiler(FEEL)
+		for src, want := range map[string]bool{
+			`time("10:00:00Z")`:                      false,
+			`time("10:00:00")`:                       true,
+			`< time("11:00:00Z")`:                    true,
+			`<= time("10:00:00Z")`:                   false,
+			`[time("10:00:00Z")..time("11:00:00Z")]`: false,
+			`(time("09:00:00Z")..time("11:00:00Z"))`: true,
+		} {
+			ut, err := c.CompileUnaryTest(src)
+			if err != nil {
+				t.Fatalf("%s does not compile: %v", src, err)
+			}
+			got, err := e.EvalUnaryTest(ut, local, nil)
+			if err != nil {
+				t.Errorf("%s against 10:00:00: %v", src, err)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s matched 10:00:00 = %v, want %v", src, got, want)
+			}
+		}
+	})
+
+	t.Run("IANA zone ids resolve and every zoned value prints in its lexical form", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.3.6: a date and time with an IANA zone id has the
+		// offset that zone's rules give at that date, and compares with an
+		// offset value by instant. Table 72: string() is the lexical form, so
+		// an offset prints as `Z` or `+05:00` and only a zone id as `@id`.
+		// Upstream could not read `@Europe/Paris`, read `@CET` as UTC, printed
+		// `+05:00` as `@+0500` and `Z` as `@UTC`, and named a zone for a value
+		// written with an offset.
+		cases := map[string]any{
+			`date and time("2026-01-01T10:00:00@Europe/Paris") = date and time("2026-01-01T09:00:00Z")`:      true,
+			`@"2026-01-01T10:00:00@Europe/Paris" = @"2026-01-01T09:00:00Z"`:                                  true,
+			`date and time("2026-07-01T10:00:00@Europe/Paris") = date and time("2026-07-01T10:00:00+02:00")`: true,
+			`date and time("2026-01-01T10:00:00@Europe/Paris") < date and time("2026-01-01T09:30:00Z")`:      true,
+			`date and time("2026-01-01T10:00:00@Europe/Paris") = date and time("2026-01-01T10:00:00")`:       nil,
+			`date and time("2026-01-01T10:00:00@CET") = date and time("2026-01-01T09:00:00Z")`:               true,
+			`date and time("2026-01-01T10:00:00@Europe/Paris").timezone`:                                     "Europe/Paris",
+			`string(date and time("2026-01-01T10:00:00@Europe/Paris").time offset)`:                          "PT1H",
+			`date and time("2026-01-01T10:00:00+01:00").timezone`:                                            nil,
+			`date and time("2026-01-01T10:00:00Z").timezone`:                                                 nil,
+			`time("10:00:00+01:00").timezone`:                                                                nil,
+			`string(date and time("2026-02-28T23:59:59+05:00"))`:                                             "2026-02-28T23:59:59+05:00",
+			`string(date and time("2026-02-28T23:59:59-03:30"))`:                                             "2026-02-28T23:59:59-03:30",
+			`string(date and time("2026-02-28T23:59:59Z"))`:                                                  "2026-02-28T23:59:59Z",
+			`string(date and time("2026-02-28T23:59:59+00:00"))`:                                             "2026-02-28T23:59:59Z",
+			`string(date and time("2026-01-01T10:00:00@Europe/Paris"))`:                                      "2026-01-01T10:00:00@Europe/Paris",
+			`string(date and time("2026-03-15T10:00:00@Europe/Paris") + duration("P1M"))`:                    "2026-04-15T10:00:00@Europe/Paris",
+			`string(time("10:00:00+02:00"))`:                                                                 "10:00:00+02:00",
+			`string(time("10:00:00Z"))`:                                                                      "10:00:00Z",
+			`string(time("10:00:00@Etc/UTC"))`:                                                               "10:00:00@Etc/UTC",
+			// A time takes a zone id only when its offset never varies.
+			`time("10:00:00@Europe/Paris")`:                     nil,
+			`time("10:00:00@Etc/GMT-2") = time("08:00:00Z")`:    true,
+			`time("10:00:00@Etc/UTC").timezone`:                 "Etc/UTC",
+			`string(time("10:00:00@Etc/GMT-2").time offset)`:    "PT2H",
+			`time("10:00:00@Etc/UTC") = time("10:00:00")`:       nil,
+			`time(string(time("10:00:00@Etc/GMT-2"))).timezone`: "Etc/GMT-2",
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		// x = date and time(string(x)), and string() is stable, for zoned,
+		// zoneless and IANA values alike.
+		for _, lit := range []string{
+			"2026-02-28T23:59:59+05:00", "2026-02-28T23:59:59Z", "2026-02-28T23:59:59",
+			"2026-01-01T10:00:00@Europe/Paris", "2026-07-01T10:00:00@America/New_York",
+		} {
+			for expr, want := range map[string]any{
+				fmt.Sprintf(`date and time(string(date and time(%q))) = date and time(%q)`, lit, lit): true,
+				fmt.Sprintf(`string(date and time(string(date and time(%q))))`, lit):                  lit,
+			} {
+				if got := mustEval(t, e, expr, nil); got != want {
+					t.Errorf("%s = %#v, want %#v", expr, got, want)
+				}
+			}
+		}
+		for _, lit := range []string{"10:00:00+05:00", "10:00:00Z", "10:00:00", "10:00:00@Etc/UTC"} {
+			if got := mustEval(t, e, fmt.Sprintf(`string(time(string(time(%q))))`, lit), nil); got != lit {
+				t.Errorf("time %s round-tripped to %#v", lit, got)
+			}
+		}
+		// A zone id the database does not know still raises, and an
+		// at-literal time with a varying zone id is a load error naming why.
+		for _, src := range []string{
+			`date and time("2026-01-01T10:00:00@Mars/Olympus")`,
+			`date and time("2026-01-01T10:00:00@Local")`,
+		} {
+			if _, err := e.EvalText(src, nil); err == nil || !strings.Contains(err.Error(), "time zone id") {
+				t.Errorf("%s: err = %v, want an unsupported time zone id", src, err)
+			}
+		}
+		if _, err := e.EvalText(`@"10:00:00@Europe/Paris"`, nil); err == nil || !strings.Contains(err.Error(), "zone id") {
+			t.Errorf(`@"10:00:00@Europe/Paris": err = %v, want a zone id error`, err)
+		}
+	})
+
+	t.Run("an empty duration P is malformed", func(t *testing.T) {
+		// Upstream's years-and-months pattern made both components optional,
+		// so the bare P parsed as a zero duration. xs:yearMonthDuration and
+		// xs:duration require at least one component (DMN 1.5 §10.3.2.3.8).
+		for _, expr := range []string{`duration("P")`, `duration("-P")`} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		for _, expr := range []string{`@"P"`, `@"-P"`, `1 + @"P"`} {
+			if _, err := e.Compile(expr); err == nil {
+				t.Errorf("%s compiled, want a syntax error", expr)
+			}
+		}
+	})
+
+	t.Run("a zero years and months duration keeps its kind", func(t *testing.T) {
+		// Upstream inferred a duration's kind from its fields, so a zero
+		// years and months duration was PT0S. DMN 1.5 §10.3.2.3.7/§10.3.2.3.8
+		// keep the kinds distinct types; a zero is no exception.
+		strs := map[string]string{
+			`string(duration("P1Y") - duration("P1Y"))`:                                 "P0M",
+			`string(duration("P0Y"))`:                                                   "P0M",
+			`string(duration("-P0M"))`:                                                  "P0M",
+			`string(-(duration("P1M") - duration("P1M")))`:                              "P0M",
+			`string(abs(duration("P1Y") - duration("P12M")))`:                           "P0M",
+			`string(years and months duration(date("2026-01-01"), date("2026-01-15")))`: "P0M",
+			`string(duration("P0D"))`:                                                   "PT0S",
+			`string(duration("PT1H") - duration("PT1H"))`:                               "PT0S",
+			`string(date("2026-01-31") + (duration("P1Y") - duration("P1Y")))`:          "2026-01-31",
+			`string(date and time("2026-01-31T10:00:00") - duration("P0M"))`:            "2026-01-31T10:00:00",
+			`string(duration("P1Y") - duration("P1Y") + duration("P2M"))`:               "P2M",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		bools := map[string]bool{
+			`duration("P1Y") - duration("P1Y") = duration("P0M")`: true,
+			`duration("P0M") < duration("P1M")`:                   true,
+		}
+		for expr, want := range bools {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// A zero of one kind does not join the other (Table 57): mixing the
+		// kinds is null, zero or not, and so is comparing them.
+		for _, expr := range []string{
+			`duration("P1Y") - duration("P1Y") + duration("PT1H")`,
+			`duration("PT0S") + duration("P1M")`,
+			`duration("P0M") = duration("PT0S")`,
+			`duration("P0M") < duration("PT1S")`,
+			`time("10:00:00") + duration("P0M")`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		// Converted to Go, a years and months zero stays its lexical form
+		// rather than becoming a zero time.Duration.
+		if got := mustEval(t, e, `duration("P1Y") - duration("P1Y")`, nil); got != "P0M" {
+			t.Errorf(`duration("P1Y") - duration("P1Y") = %#v, want "P0M"`, got)
+		}
+	})
+
+	t.Run("durations multiply and divide by numbers", func(t *testing.T) {
+		// Upstream's * and / took numbers only, so every duration scaling was
+		// null. DMN 1.5 Table 59 defines duration * number, number * duration
+		// and duration / number; the result keeps the duration's kind, and a
+		// fraction of the kind's unit (a month, a nanosecond) truncates toward
+		// zero. Each case failed on upstream v1.0.6.
+		strs := map[string]string{
+			`string(duration("PT1H") * 2)`:        "PT2H",
+			`string(2 * duration("PT1H"))`:        "PT2H",
+			`string(duration("P1Y") / 2)`:         "P6M",
+			`string(duration("P1M") / 3)`:         "P0M",
+			`string(duration("P1Y") * 1.5)`:       "P1Y6M",
+			`string(duration("-P1M") / 3)`:        "P0M",
+			`string(duration("-P1Y") * 1.5)`:      "-P1Y6M",
+			`string(duration("P5M") * -0.5)`:      "-P2M",
+			`string(duration("PT1S") * 0.1)`:      "PT0.1S",
+			`string(duration("PT1S") / 3)`:        "PT0.333333333S",
+			`string(duration("-PT1S") / 3)`:       "-PT0.333333333S",
+			`string(duration("P1D") * 0.5)`:       "PT12H",
+			`string(duration("PT0.3S") * 3)`:      "PT0.9S",
+			`string(duration("PT1H") * 0)`:        "PT0S",
+			`string(duration("P1Y") * 0)`:         "P0M",
+			`string(0.1 * duration("PT10S") * 3)`: "PT3S",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		// Division by zero, a non-number operand and number / duration are
+		// null, not errors.
+		for _, expr := range []string{
+			`duration("PT1H") / 0`,
+			`duration("P1Y") / 0`,
+			`2 / duration("PT1H")`,
+			`duration("PT1H") * "2"`,
+			`duration("PT1H") * null`,
+			`null * duration("PT1H")`,
+			`duration("PT1H") * duration("PT1H")`,
+			`duration("PT1H") / true`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+	})
+
+	t.Run("syntax errors report a 1-based line and column", func(t *testing.T) {
+		// Upstream printed the scanner's 0-based row and column, so an error
+		// at the very start read "at 0 0", like an unset position, and every
+		// other position was off by one. The at-literal error is still
+		// VERDICT_LOAD_013 (a *CompileError); only the position changed.
+		cases := map[string]string{
+			`@"P1Y2D"`:                       "line 1, column 1",
+			`1 + @"P1Y2D"`:                   "line 1, column 5",
+			"1 +\n  @\"P1Y2D\"":              "line 2, column 3",
+			"// note\nx +\n\tλ + @\"P1Y2D\"": "line 3, column 6",
+			"1 +\n  foo )":                   "line 2, column 7",
+		}
+		for expr, want := range cases {
+			_, err := e.Compile(expr)
+			if err == nil {
+				t.Errorf("%q compiled, want a syntax error", expr)
+				continue
+			}
+			var ce *CompileError
+			if !errors.As(err, &ce) {
+				t.Errorf("%q: error %T is not a *CompileError", expr, err)
+			}
+			if !strings.Contains(err.Error(), "at "+want) {
+				t.Errorf("%q: error %q does not report %q", expr, err, want)
+			}
+		}
+	})
+
+	t.Run("today() is the UTC date whatever the process's zone", func(t *testing.T) {
+		// Upstream built today() in time.Local and kept that location, so a
+		// host east or west of UTC disagreed with every parsed date for part
+		// of each day. Between them, +14 and -12 differ from UTC's date at
+		// every moment, so this fails on the upstream code whenever it runs.
+		saved := time.Local
+		t.Cleanup(func() { time.Local = saved })
+		for _, zone := range []string{"Pacific/Kiritimati", "Etc/GMT+12"} {
+			loc, err := time.LoadLocation(zone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Local = loc
+			before := time.Now().UTC().Format("2006-01-02")
+			got := mustEval(t, e, `string(today())`, nil)
+			after := time.Now().UTC().Format("2006-01-02")
+			if got != before && got != after {
+				t.Errorf("with time.Local = %s, today() = %v, want the UTC date %s", zone, got, before)
+			}
+			if got := mustEval(t, e, fmt.Sprintf(`today() = date(%q) or today() = date(%q)`, before, after), nil); got != true {
+				t.Errorf("with time.Local = %s, today() is not the UTC date: %v", zone, got)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {
@@ -1437,4 +2243,13 @@ func approx(a, b float64) bool {
 		d = -d
 	}
 	return d < 1e-9
+}
+
+func mustCompile(t *testing.T, e *Evaluator, text string) *Expr {
+	t.Helper()
+	x, err := e.Compile(text)
+	if err != nil {
+		t.Fatalf("compile %q: %v", text, err)
+	}
+	return x
 }

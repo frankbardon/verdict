@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"sync/atomic"
 )
 
 // values
@@ -361,11 +362,11 @@ func (ir IterationRange) Eval(intp *Interpreter) (any, error) {
 		span = uint64(from) - uint64(to)
 	}
 	results := make([]any, 0)
-	if intp.MaxIterations > 0 {
+	if limit := intp.iterationLimit(); limit > 0 {
 		// span+1 wraps to zero only for the full 2^64-element span, which
 		// no int64 budget admits.
 		if span == ^uint64(0) {
-			return nil, &IterationBudgetExceededError{Limit: intp.MaxIterations}
+			return nil, &IterationBudgetExceededError{Limit: limit}
 		}
 		if err := intp.chargeIterations(span + 1); err != nil {
 			return nil, err
@@ -382,10 +383,22 @@ func (ir IterationRange) Eval(intp *Interpreter) (any, error) {
 	return results, nil
 }
 
+// iterationLimit reports the budget this interpreter charges against: the
+// shared Budget's limit when one is set, MaxIterations otherwise.
+func (intp *Interpreter) iterationLimit() int64 {
+	if intp.Budget != nil {
+		return intp.Budget.Limit
+	}
+	return intp.MaxIterations
+}
+
 // chargeIterations spends n elements of the evaluation's iteration budget,
-// failing when the total would exceed Interpreter.MaxIterations. A zero
-// budget charges nothing.
+// failing when the total would exceed Interpreter.MaxIterations — or the
+// shared Budget's limit, when one is set. A zero budget charges nothing.
 func (intp *Interpreter) chargeIterations(n uint64) error {
+	if intp.Budget != nil {
+		return intp.Budget.charge(n)
+	}
 	limit := intp.MaxIterations
 	if limit <= 0 {
 		return nil
@@ -407,14 +420,58 @@ func (intp *Interpreter) chargeDomain(listExpr Node, list []any) error {
 	return intp.chargeIterations(uint64(len(list)))
 }
 
+// IterationBudget is an iteration budget shared by several evaluations,
+// possibly on different goroutines: every element any of them charges is
+// drawn from one counter. Verdict creates one per request, so a business
+// knowledge model invoked a thousand times from a `for`, or two sibling
+// decisions evaluated in parallel, draw on the same budget rather than each
+// starting afresh.
+//
+// VERDICT DIVERGENCE: see NOTICE.md.
+type IterationBudget struct {
+	// Limit is the total number of elements the budget admits. Zero or
+	// negative means no budget.
+	Limit int64
+	used  atomic.Uint64
+}
+
+// NewIterationBudget returns a shared budget of limit elements.
+func NewIterationBudget(limit int64) *IterationBudget {
+	return &IterationBudget{Limit: limit}
+}
+
+// Used reports the elements charged so far.
+func (b *IterationBudget) Used() uint64 { return b.used.Load() }
+
+// charge spends n elements, failing — and spending nothing — when the total
+// would exceed the limit. A compare-and-swap loop keeps concurrent charges
+// exact without a lock: the counter never passes the limit, so one charge
+// that fails cannot make a smaller concurrent one fail spuriously.
+func (b *IterationBudget) charge(n uint64) error {
+	if b.Limit <= 0 {
+		return nil
+	}
+	limit := uint64(b.Limit)
+	for {
+		used := b.used.Load()
+		if n > limit-used {
+			return &IterationBudgetExceededError{Limit: b.Limit}
+		}
+		if b.used.CompareAndSwap(used, used+n) {
+			return nil
+		}
+	}
+}
+
 // IterationBudgetExceededError reports an evaluation whose iteration contexts
-// would together produce more elements than Interpreter.MaxIterations allows.
+// would together produce more elements than Interpreter.MaxIterations allows,
+// or than remain in its shared IterationBudget.
 type IterationBudgetExceededError struct {
 	Limit int64
 }
 
 func (e *IterationBudgetExceededError) Error() string {
-	return fmt.Sprintf("iteration exceeds the limit of %d elements per evaluation", e.Limit)
+	return fmt.Sprintf("iteration exceeds the limit of %d elements", e.Limit)
 }
 
 // iterationEndpoint reports v as an int64 when it is an integral FEEL number
@@ -584,6 +641,9 @@ func (fc FunCall) Eval(intp *Interpreter) (any, error) {
 }
 
 func (fc FunCall) EvalNativeFun(intp *Interpreter, funDef *NativeFun) (any, error) {
+	if len(funDef.overloads) > 0 {
+		return fc.evalOverloaded(intp, funDef)
+	}
 	argVals := make(map[string]any)
 	if fc.keywordArgs {
 		kwArgMap, err := fc.evalArgsToMap(intp)
@@ -634,6 +694,33 @@ func (fc FunCall) EvalNativeFun(intp *Interpreter, funDef *NativeFun) (any, erro
 		}
 	}
 	return funDef.Call(intp, argVals)
+}
+
+// evalOverloaded calls a built-in declared with NativeFun.Overloads.
+func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, error) {
+	var args map[string]any
+	var err error
+	if fc.keywordArgs {
+		named, err := fc.evalArgsToMap(intp)
+		if err != nil {
+			return nil, err
+		}
+		args, err = funDef.bindOverload(nil, named)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		positional := make([]any, len(fc.Args))
+		for i, argNode := range fc.Args {
+			if positional[i], err = argNode.arg.Eval(intp); err != nil {
+				return nil, err
+			}
+		}
+		if args, err = funDef.bindOverload(positional, nil); err != nil {
+			return nil, err
+		}
+	}
+	return funDef.Call(intp, args)
 }
 
 func (fc FunCall) evalArgsToMap(intp *Interpreter) (map[string]any, error) {

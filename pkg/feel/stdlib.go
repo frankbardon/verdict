@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	pfeel "github.com/frankbardon/verdict/pkg/feel/internal/dialect"
 )
@@ -178,18 +179,22 @@ func buildSupplement() {
 		Params: []string{"dividend", "divisor"},
 		Help:   "the remainder, taking the sign of the divisor",
 		Fn: func(a map[string]any) (any, error) {
-			d, err := asFloat(a["dividend"], "dividend")
-			if err != nil {
-				return nil, err
-			}
-			v, err := asFloat(a["divisor"], "divisor")
-			if err != nil {
-				return nil, err
-			}
-			if v == 0 {
+			// DMN 1.5 §10.3.4.5: modulo(dividend, divisor) is
+			// dividend - divisor*floor(dividend/divisor), null when the divisor
+			// is 0. It runs on the exact decimals, not float64, so
+			// modulo(10.1, 4.5) is 1.1 rather than 1.0999999999999996.
+			d, ok := decimalArg(a["dividend"])
+			if !ok {
 				return Null, nil
 			}
-			return d - v*math.Floor(d/v), nil
+			v, ok := decimalArg(a["divisor"])
+			if !ok || v.Sign() == 0 {
+				return Null, nil
+			}
+			q := new(big.Rat).Quo(d, v)
+			fl := new(big.Int).Div(q.Num(), q.Denom()) // Euclidean: floor, since Denom > 0
+			r := new(big.Rat).Sub(d, new(big.Rat).Mul(v, new(big.Rat).SetInt(fl)))
+			return pfeel.NewNumber(r.FloatString(decimalDigits)), nil
 		},
 	})
 	bind("sqrt", Function{Params: []string{"number"}, Help: "square root, null for negatives",
@@ -288,15 +293,12 @@ func buildSupplement() {
 
 	bind("years and months duration", Function{
 		Params: []string{"from", "to"},
-		Help:   "the whole years and months between two dates, null unless both are dates or date and times",
+		Help:   "the whole years and months between two dates, null unless both are dates or both are date and times",
 		Fn: func(a map[string]any) (any, error) {
-			// DMN 1.5 §10.3.4.1 Table 72: from and to are dates or date and
-			// times; §10.3.4 makes anything else, null included, null.
-			from, ok := timeOf(a["from"])
-			if !ok {
-				return Null, nil
-			}
-			to, ok := timeOf(a["to"])
+			// DMN 1.5 §10.3.4.1 Table 72: from and to are both dates or both
+			// date and times; §10.3.4 makes anything else — a time, a mixed
+			// pair, null — null.
+			from, to, ok := sameKindInstants(a["from"], a["to"])
 			if !ok {
 				return Null, nil
 			}
@@ -311,16 +313,28 @@ func buildSupplement() {
 			if months < 0 {
 				months = 0
 			}
-			return &pfeel.FEELDuration{Neg: neg, Years: months / 12, Months: months % 12}, nil
+			if neg {
+				months = -months
+			}
+			return pfeel.NewYearsMonthsDuration(int64(months)), nil
 		},
 	})
 	bind("context", Function{
 		Params: []string{"entries"},
-		Help:   "builds a context from a list of {key, value} entries",
+		Help:   "builds a context from a list of {key, value} entries, null unless every entry has a string key and a value",
 		Fn: func(a map[string]any) (any, error) {
-			l, err := asList(a["entries"], "entries")
-			if err != nil {
-				return nil, err
+			// DMN 1.5 §10.3.4.7: entries is a list of contexts each holding a
+			// key and a value; §10.3.4 makes anything else null rather than an
+			// error. A lone context is the singleton list §10.3.2.9.4 converts
+			// it to.
+			var l []any
+			switch x := a["entries"].(type) {
+			case []any:
+				l = x
+			case map[string]any:
+				l = []any{x}
+			default:
+				return Null, nil
 			}
 			out := map[string]any{}
 			for _, e := range l {
@@ -332,7 +346,11 @@ func buildSupplement() {
 				if !ok {
 					return Null, nil
 				}
-				out[k] = m["value"]
+				v, ok := m["value"]
+				if !ok {
+					return Null, nil
+				}
+				out[k] = v
 			}
 			return out, nil
 		},
@@ -340,6 +358,23 @@ func buildSupplement() {
 }
 
 // ---- helpers --------------------------------------------------------------
+
+// sameKindInstants is a pair of arguments as instants when both are dates or
+// both are date and times, the domain Table 72 gives years and months
+// duration. A time, a mixed pair or a null is outside it.
+func sameKindInstants(a, b any) (time.Time, time.Time, bool) {
+	switch x := a.(type) {
+	case *pfeel.FEELDate:
+		if y, ok := b.(*pfeel.FEELDate); ok {
+			return x.Date(), y.Date(), true
+		}
+	case *pfeel.FEELDatetime:
+		if y, ok := b.(*pfeel.FEELDatetime); ok {
+			return x.Time(), y.Time(), true
+		}
+	}
+	return time.Time{}, time.Time{}, false
+}
 
 func asString(v any, name string) (string, error) {
 	s, ok := v.(string)
@@ -369,6 +404,29 @@ func asFloat(v any, name string) (float64, error) {
 	return n.Float64(), nil
 }
 
+// numberArg is a numeric built-in's argument, or false when it is null or not a
+// number. DMN 1.5 §10.3.4: an argument outside a function's domain makes the
+// result null, not an error, and §10.3.4.5 says so of null explicitly.
+func numberArg(v any) (*pfeel.Number, bool) {
+	n, ok := v.(*pfeel.Number)
+	return n, ok && n != nil
+}
+
+// decimalDigits is how many fractional digits a decimal argument is read and
+// written at; it matches the precision a *pfeel.Number prints at.
+const decimalDigits = 18
+
+// decimalArg is a numeric argument as an exact rational, read through the
+// number's decimal text so a literal such as 10.1 is exactly 101/10 rather
+// than its nearest binary approximation.
+func decimalArg(v any) (*big.Rat, bool) {
+	n, ok := numberArg(v)
+	if !ok {
+		return nil, false
+	}
+	return new(big.Rat).SetString(n.String())
+}
+
 func asList(v any, name string) ([]any, error) {
 	l, ok := v.([]any)
 	if !ok {
@@ -379,11 +437,11 @@ func asList(v any, name string) ([]any, error) {
 
 func unaryFloat(f func(float64) any) func(map[string]any) (any, error) {
 	return func(a map[string]any) (any, error) {
-		v, err := asFloat(a["number"], "number")
-		if err != nil {
-			return nil, err
+		n, ok := numberArg(a["number"])
+		if !ok {
+			return Null, nil
 		}
-		return f(v), nil
+		return f(n.Float64()), nil
 	}
 }
 
@@ -393,15 +451,21 @@ func unaryFloat(f func(float64) any) func(map[string]any) (any, error) {
 // rather than through float64.
 func scaledRound(mode func(*big.Float) *big.Float) func(map[string]any) (any, error) {
 	return func(a map[string]any) (any, error) {
-		n, ok := a["n"].(*pfeel.Number)
+		// DMN 1.5 §10.3.4.5: a null or non-number n or scale makes the result
+		// null, and scale is confined to [-6111..6176].
+		n, ok := numberArg(a["n"])
 		if !ok {
-			return nil, fmt.Errorf("argument n must be a number, got %s", TypeName(a["n"]))
+			return Null, nil
 		}
 		scale := 0
 		if s, present := a["scale"]; present {
-			f, err := asFloat(s, "scale")
-			if err != nil {
-				return nil, err
+			sn, ok := numberArg(s)
+			if !ok {
+				return Null, nil
+			}
+			f := sn.Float64()
+			if f < minScale || f > maxScale {
+				return Null, nil
 			}
 			scale = int(f)
 		}
@@ -416,6 +480,13 @@ func scaledRound(mode func(*big.Float) *big.Float) func(map[string]any) (any, er
 		return pfeel.NewNumber(v.Text('f', maxInt(scale, 0)+2)), nil
 	}
 }
+
+// minScale and maxScale bound the scale argument of the rounding functions
+// (DMN 1.5 §10.3.4.5, decimal(n, scale)).
+const (
+	minScale = -6111
+	maxScale = 6176
+)
 
 func maxInt(a, b int) int {
 	if a > b {

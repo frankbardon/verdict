@@ -101,14 +101,19 @@ func compareInterfaces(leftVal, rightVal any) (int, error) {
 			return v.Compare(*rightNumber), nil
 		}
 	case bool:
-		if rightBool, ok := rightVal.(bool); ok {
-			if v == rightBool {
-				return 0, nil
-			} else if v == false {
-				return -1, nil
-			} else {
-				return 1, nil
-			}
+		// VERDICT DIVERGENCE: upstream ordered false below true, which min,
+		// max, range membership and the range built-ins inherited. DMN 1.5
+		// Table 54 defines no order over booleans; equality goes through
+		// feelEqual instead.
+		if _, ok := rightVal.(bool); ok {
+			return 0, NewEvalError(codeUnordered, "unordered type", "booleans have no order")
+		}
+	case *RangeValue:
+		// VERDICT DIVERGENCE: upstream raised -3106 for two ranges, so
+		// `[1..2] = [1..2]` failed. Table 54 defines no order over ranges;
+		// equality goes through feelEqual (Table 53).
+		if _, ok := rightVal.(*RangeValue); ok {
+			return 0, NewEvalError(codeUnordered, "unordered type", "ranges have no order")
 		}
 	case []any:
 		if _, ok := rightVal.([]any); ok {
@@ -136,6 +141,7 @@ func compareInterfaces(leftVal, rightVal any) (int, error) {
 	// without it.
 	if leftTime, ok := instantOf(leftVal); ok {
 		if rightTime, ok := instantOf(rightVal); ok {
+			leftTime, rightTime = adoptOffset(leftVal, rightVal, leftTime, rightTime)
 			switch {
 			case leftTime.Equal(rightTime):
 				return 0, nil
@@ -214,9 +220,74 @@ func instantOf(v any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// codeUnordered is the EvalError code compareInterfaces reports for two lists
-// or two contexts: values of one kind that FEEL defines equality over but no
-// order (DMN 1.5 Table 54 lists no `<` for either).
+// zoneness reports whether v is a time or a date and time (ok) and, if so,
+// whether it has a time offset or zone. A date has no zone-ness of its own: it
+// adopts the other operand's (see mixedZones).
+func zoneness(v any) (zoned, ok bool) {
+	switch t := v.(type) {
+	case *FEELTime:
+		return t.hasOffset, true
+	case FEELTime:
+		return t.hasOffset, true
+	case *FEELDatetime:
+		return t.hasOffset, true
+	case FEELDatetime:
+		return t.hasOffset, true
+	}
+	return false, false
+}
+
+// mixedZones reports whether a and b are times or date and times of which
+// exactly one has a time offset: a zoned value against a zoneless (local) one.
+//
+// VERDICT DIVERGENCE: upstream read a zoneless value as UTC, so the case could
+// not arise. DMN 1.5 §10.3.2.3.4 and §10.3.2.3.6 give only a zoned value a UTC
+// form, and the operators treat the mixture specially:
+//
+//   - `=` (Table 53) compares valuedt/valuet, which a local value lacks, so a
+//     mixed `=` is null and so is `!=`;
+//   - `<` and `>` (Table 54): "If one input has a null timezone offset, that
+//     input uses the timezone offset of the other input" (adoptOffset);
+//   - `<=` and `>=` are `e1 < e2 or e1 = e2` (Table 54), so a mixed one is
+//     true when the strict comparison is and null otherwise;
+//   - date and time - date and time (Table 57) "is undefined for the case
+//     where only one of the values has a timezone", so it is null; Verdict
+//     reads time - time the same way, which Table 57 does not state (NOTICE).
+//
+// A date meeting a date and time stands for its UTC midnight (§10.3.2.3.5)
+// but takes the date and time's zone-ness, so it is never mixed; that too is
+// an interpretation recorded in NOTICE.md.
+func mixedZones(a, b any) bool {
+	za, aok := zoneness(a)
+	zb, bok := zoneness(b)
+	return aok && bok && za != zb
+}
+
+// adoptOffset re-reads the wall clock of the zoneless one of two mixed
+// operands at the zoned one's offset (DMN 1.5 Table 54), and returns both
+// instants. For operands that are not mixed it returns them unchanged.
+func adoptOffset(a, b any, at, bt time.Time) (time.Time, time.Time) {
+	if !mixedZones(a, b) {
+		return at, bt
+	}
+	if za, _ := zoneness(a); za {
+		return at, atOffsetOf(bt, at)
+	}
+	return atOffsetOf(at, bt), bt
+}
+
+// atOffsetOf is local's wall clock at zoned's time offset.
+func atOffsetOf(local, zoned time.Time) time.Time {
+	_, offset := zoned.Zone()
+	return time.Date(local.Year(), local.Month(), local.Day(),
+		local.Hour(), local.Minute(), local.Second(), local.Nanosecond(),
+		time.FixedZone("", offset))
+}
+
+// codeUnordered is the EvalError code compareInterfaces reports for two lists,
+// two contexts, two booleans or two ranges: values of one kind that FEEL
+// defines equality over but no order (DMN 1.5 Table 54 lists no `<` for any of
+// them).
 //
 // VERDICT DIVERGENCE: upstream ordered lists lexicographically and contexts by
 // size, and its list comparison answered 1 for two equal lists of the same
@@ -240,7 +311,13 @@ func isUnordered(err error) bool {
 //     e1.k = e2.k for every k. Both are the three-valued conjunction of the
 //     element comparisons, so one false pair makes the result false and,
 //     failing that, one null pair (`[1, "a"] = [1, 2]`) makes it null;
+//   - two booleans are equal when they are the same boolean;
+//   - two ranges are equal when both closednesses are the same and both pairs
+//     of endpoints are `=`, again three-valued over the endpoint pairs;
 //   - operands of different kinds are null (§10.3.2.2: `"1" = 1` is null);
+//   - a zoned and a zoneless time or date and time are null (Table 53; see
+//     mixedZones), while two zoned values are equal when they denote the
+//     same instant, whatever their offsets;
 //   - anything else is compareInterfaces' verdict.
 //
 // VERDICT DIVERGENCE: upstream compared lists through an ordering that never
@@ -307,6 +384,39 @@ func feelEqual(a, b any) (any, error) {
 			return null, nil
 		}
 		return true, nil
+	case bool:
+		if bv, ok := b.(bool); ok {
+			return av == bv, nil
+		}
+	case *RangeValue:
+		bv, ok := b.(*RangeValue)
+		if !ok {
+			break
+		}
+		if av.StartOpen != bv.StartOpen || av.EndOpen != bv.EndOpen {
+			return false, nil
+		}
+		unknown := false
+		for _, pair := range [][2]any{{av.Start, bv.Start}, {av.End, bv.End}} {
+			r, err := feelEqual(pair[0], pair[1])
+			if err != nil {
+				return nil, err
+			}
+			switch r {
+			case false:
+				return false, nil
+			case true:
+			default:
+				unknown = true
+			}
+		}
+		if unknown {
+			return null, nil
+		}
+		return true, nil
+	}
+	if mixedZones(a, b) {
+		return null, nil
 	}
 	r, err := compareInterfaces(a, b)
 	if err != nil {
@@ -316,6 +426,23 @@ func feelEqual(a, b any) (any, error) {
 		return nil, err
 	}
 	return r == 0, nil
+}
+
+// Equal implements FEEL's `=` for callers outside this package, and yields
+// true, false or null. A pair the fork cannot compare at all (two functions)
+// is false, as it is for valuesEqual and list membership.
+//
+// VERDICT DIVERGENCE: upstream had no exported equality. pkg/feel used its own
+// two-valued structural comparison for the ANY hit policy, unary-test equality
+// and `duplicate values`, which disagreed with `=` on temporals and durations
+// and could not say "unknown"; it now derives from this, so FEEL has one
+// equality (DMN 1.5 §10.3.2.15, Tables 52 and 53).
+func Equal(a, b any) any {
+	r, err := feelEqual(a, b)
+	if err != nil {
+		return false
+	}
+	return r
 }
 
 // valuesEqual reports whether a = b is true. The list built-ins that search or
@@ -371,7 +498,10 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 			}
 			return v.Add(r), nil
 		case *FEELDatetime:
-			if op == "-" {
+			// VERDICT DIVERGENCE: a zoned minus a zoneless value is null
+			// (Table 57: "undefined for the case where only one of the values
+			// has a timezone"). A date takes the other operand's zone-ness.
+			if op == "-" && !mixedZones(v, r) {
 				return subInstants(v.t, r.t)
 			}
 		case *FEELDate:
@@ -441,7 +571,9 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 				return v.AddDuration(r), nil
 			}
 		case *FEELTime:
-			if op == "-" {
+			// VERDICT DIVERGENCE: null when one time is zoned and the other
+			// not, as for date and times; see mixedZones.
+			if op == "-" && !mixedZones(v, r) {
 				return subInstants(v.t, r.t)
 			}
 		}
@@ -467,10 +599,57 @@ func (binop Binop) subOp(intp *Interpreter) (any, error) {
 }
 
 func (binop Binop) mulOp(intp *Interpreter) (any, error) {
-	return binop.numberOp(
+	return binop.scaleOp(
 		intp,
 		func(a, b *Number) any { return a.Mul(b) },
-		"*")
+		false)
+}
+
+// scaleOp is `*` (divide false) or `/` (divide true): number by number through
+// en, and a duration scaled by a number through scaleDuration. Multiplication
+// commutes, so number * duration scales too; number / duration is undefined.
+//
+// VERDICT DIVERGENCE: upstream routed both through numberOp, so a duration
+// operand was null (DMN 1.5 §10.3.2.15, Table 59 defines duration * number,
+// number * duration and duration / number). Every other pairing, null
+// included, is still null.
+func (binop Binop) scaleOp(intp *Interpreter, en evalNumbers, divide bool) (any, error) {
+	leftVal, err := binop.Left.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	rightVal, err := binop.Right.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	var dur *FEELDuration
+	var factor *Number
+	switch l := leftVal.(type) {
+	case *Number:
+		switch r := rightVal.(type) {
+		case *Number:
+			return en(l, r), nil
+		case *FEELDuration:
+			if !divide {
+				dur, factor = r, l
+			}
+		}
+	case *FEELDuration:
+		if r, ok := rightVal.(*Number); ok {
+			dur, factor = l, r
+		}
+	}
+	if dur == nil {
+		return null, nil
+	}
+	res, ok, err := scaleDuration(dur, factor, divide)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return null, nil
+	}
+	return res, nil
 }
 
 // divOp implements FEEL's `/`.
@@ -480,7 +659,7 @@ func (binop Binop) mulOp(intp *Interpreter) (any, error) {
 // decimals: division is exact division at the evaluator's working precision,
 // and division by zero is null rather than a panic (DMN 1.5 table 51).
 func (binop Binop) divOp(intp *Interpreter) (any, error) {
-	return binop.numberOp(
+	return binop.scaleOp(
 		intp,
 		func(a, b *Number) any {
 			if b.IsZero() {
@@ -488,7 +667,7 @@ func (binop Binop) divOp(intp *Interpreter) (any, error) {
 			}
 			return a.Div(b)
 		},
-		"/")
+		true)
 }
 
 // powOp implements FEEL's `**`, which upstream did not parse at all.
@@ -544,7 +723,12 @@ func (n Negation) Eval(intp *Interpreter) (any, error) {
 // boolean: there is no answer to whether an absent value is smaller.
 // Equality keeps compareInterfaces' treatment, because `null = null` is true
 // and `2 = null` is false in the spec too.
-func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool) (any, error) {
+//
+// orEqual marks `<=` and `>=`, which Table 54 defines as `e1 < e2 or e1 = e2`.
+// For a zoned and a zoneless operand `=` is null (see mixedZones), so the
+// three-valued `or` is true when the strict comparison holds and null
+// otherwise: `time("10:00:00") <= time("10:00:00Z")` is null.
+func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool, orEqual bool) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
 		return false, err
@@ -556,12 +740,23 @@ func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool) (any, e
 	if isNullValue(leftVal) || isNullValue(rightVal) {
 		return null, nil
 	}
+	// VERDICT DIVERGENCE: two booleans, two ranges, two lists and two contexts
+	// are unordered (compareInterfaces reports codeUnordered), so `true < false`
+	// and `[1..2] < [3..4]` are null. DMN 1.5 §10.3.2.15 Table 54 defines `<`,
+	// `<=`, `>` and `>=` for none of those kinds, and inputs outside an
+	// operator's domain are null. Equality is feelEqual's and is unaffected.
 	r, err := compareInterfaces(leftVal, rightVal)
 	if err != nil {
 		if isIncomparable(err) || isUnordered(err) {
 			return null, nil
 		}
 		return false, err
+	}
+	if orEqual && mixedZones(leftVal, rightVal) {
+		if r != 0 && holds(r) {
+			return true, nil
+		}
+		return null, nil
 	}
 	return holds(r), nil
 }
@@ -575,19 +770,19 @@ func isNullValue(v any) bool {
 }
 
 func (binop Binop) compareGTOp(intp *Interpreter) (any, error) {
-	return binop.orderingOp(intp, func(r int) bool { return r > 0 })
+	return binop.orderingOp(intp, func(r int) bool { return r > 0 }, false)
 }
 
 func (binop Binop) compareGEOp(intp *Interpreter) (any, error) {
-	return binop.orderingOp(intp, func(r int) bool { return r >= 0 })
+	return binop.orderingOp(intp, func(r int) bool { return r >= 0 }, true)
 }
 
 func (binop Binop) compareLTOp(intp *Interpreter) (any, error) {
-	return binop.orderingOp(intp, func(r int) bool { return r < 0 })
+	return binop.orderingOp(intp, func(r int) bool { return r < 0 }, false)
 }
 
 func (binop Binop) compareLEOp(intp *Interpreter) (any, error) {
-	return binop.orderingOp(intp, func(r int) bool { return r <= 0 })
+	return binop.orderingOp(intp, func(r int) bool { return r <= 0 }, true)
 }
 
 // equalOp implements FEEL's `=` through feelEqual: operands of different kinds
@@ -643,22 +838,36 @@ func (binop Binop) modOp(intp *Interpreter) (any, error) {
 		"%")
 }
 
-// circuit break operators
+// andOp and orOp implement FEEL's three-valued conjunction and disjunction
+// (DMN 1.5 §10.3.2.15, Table 51). Only a boolean counts as one: null and every
+// non-boolean operand are "otherwise", so `true and null` is null, `false and
+// null` false, `true or 1` true and `false or "x"` null. The left operand still
+// short-circuits when it alone decides the result (`false and …`, `true or …`).
+//
+// VERDICT DIVERGENCE: upstream coerced each operand through boolValue, which
+// reads null, 0, "" and empty collections as false and anything else as true,
+// so `true and null` was false and `false or 1` true.
 func (binop Binop) andOp(intp *Interpreter) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-	leftBool := boolValue(leftVal)
-	if !leftBool {
+	if b, ok := leftVal.(bool); ok && !b {
 		return false, nil
 	}
 	rightVal, err := binop.Right.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-	rightBool := boolValue(rightVal)
-	return rightBool, nil
+	rightBool, rightOK := rightVal.(bool)
+	switch {
+	case rightOK && !rightBool:
+		return false, nil
+	case rightOK && leftVal == true:
+		return true, nil
+	default:
+		return null, nil
+	}
 }
 
 func (binop Binop) orOp(intp *Interpreter) (any, error) {
@@ -666,16 +875,22 @@ func (binop Binop) orOp(intp *Interpreter) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	leftBool := boolValue(leftVal)
-	if leftBool {
+	if b, ok := leftVal.(bool); ok && b {
 		return true, nil
 	}
 	rightVal, err := binop.Right.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-	rightBool := boolValue(rightVal)
-	return rightBool, nil
+	rightBool, rightOK := rightVal.(bool)
+	switch {
+	case rightOK && rightBool:
+		return true, nil
+	case rightOK && leftVal == false:
+		return false, nil
+	default:
+		return null, nil
+	}
 }
 
 func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {
@@ -717,6 +932,33 @@ func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {
 	}
 }
 
+// inZonedRange is `e in range` when e is a zoned time or date and time and an
+// endpoint a zoneless one, or the reverse. Table 49 makes `e in [a..b]` the
+// conjunction `e >= a and e <= b` (`>`/`<` for an open end), so a closed end
+// is the three-valued `>=`/`<=` of orderingOp and an open one the plain `>`/`<`
+// with the other operand's offset adopted; the two fold with `and` (Table 51).
+func inZonedRange(e any, rv *RangeValue) any {
+	bound := func(end any, open bool, sign int) any {
+		r, err := compareInterfaces(e, end)
+		if err != nil {
+			return null
+		}
+		strict := r*sign > 0
+		if open || strict || !mixedZones(e, end) {
+			return strict || (!open && r == 0)
+		}
+		return null
+	}
+	lo, hi := bound(rv.Start, rv.StartOpen, 1), bound(rv.End, rv.EndOpen, -1)
+	if lo == false || hi == false {
+		return false
+	}
+	if lo == true && hi == true {
+		return true
+	}
+	return null
+}
+
 func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
@@ -726,6 +968,18 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return In(leftVal, rightVal)
+}
+
+// In implements FEEL's `e in container` for a range or a list container, and
+// yields true, false or null. inOp evaluates its operands and delegates here.
+//
+// VERDICT DIVERGENCE: upstream had no exported membership test. Verdict's
+// unary-test layer (pkg/feel/unarytest.go) interprets a range or list cell as
+// `? in cell` (DMN 1.5 §10.3.2.9, Table 49), and calling this rather than
+// re-deriving membership keeps one implementation, so a decision-table cell
+// and the `in` operator cannot disagree about a mixed-kind or unordered input.
+func In(leftVal, rightVal any) (any, error) {
 	switch rv := rightVal.(type) {
 	case *RangeValue:
 		// Range membership is the conjunction of the endpoint comparisons, and
@@ -739,18 +993,42 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 		}
 		// A point of another kind than the endpoints (`5 in ["a".."z"]`)
 		// makes those comparisons null too, where upstream panicked.
+		// So does a point of an unordered kind (`true in [false..true]`):
+		// DMN 1.5 Table 54 orders no booleans.
 		if _, err := rv.Position(leftVal); err != nil {
-			if isIncomparable(err) {
+			if isIncomparable(err) || isUnordered(err) {
 				return null, nil
 			}
 			return nil, err
 		}
+		if mixedZones(leftVal, rv.Start) || mixedZones(leftVal, rv.End) {
+			return inZonedRange(leftVal, rv), nil
+		}
 		return rv.Contains(leftVal), nil
 	case []any:
+		// VERDICT DIVERGENCE: `e in [e1, e2, …]` is `e = e1 or e = e2 or …`
+		// (DMN 1.5 §10.3.2.15, Table 49), folded three-valued (Table 51): an
+		// element that is `=` makes it true, failing that an element whose
+		// `=` is null makes it null (`"a" in [1, 2]`), otherwise false.
+		// Upstream answered a boolean from valuesEqual, so `"a" in [1, 2]`
+		// was false and `not("a" in [1, 2])` true. A pair the fork cannot
+		// compare at all (two functions) still counts as not equal.
+		unknown := false
 		for _, kv := range rv {
-			if valuesEqual(leftVal, kv) {
-				return true, nil
+			r, err := feelEqual(leftVal, kv)
+			if err != nil {
+				continue
 			}
+			switch r {
+			case true:
+				return true, nil
+			case false:
+			default:
+				unknown = true
+			}
+		}
+		if unknown {
+			return null, nil
 		}
 		return false, nil
 	default:

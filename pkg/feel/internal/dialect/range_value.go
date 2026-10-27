@@ -39,9 +39,11 @@ func nullOnNullOperand(nf *NativeFun) *NativeFun {
 			}
 		}
 		v, err := inner(args)
-		if err != nil && isIncomparable(err) {
+		if err != nil && (isIncomparable(err) || isUnordered(err)) {
 			// A point or endpoint of another kind than its counterpart
-			// (`before(1, "a")`) is outside the built-in's domain.
+			// (`before(1, "a")`), or of a kind with no order
+			// (`before(false, true)`, DMN 1.5 Table 54), is outside the
+			// built-in's domain.
 			return null, nil
 		}
 		return v, err

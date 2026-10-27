@@ -125,13 +125,14 @@ func NumberOffset(v any, delta int64) any {
 }
 
 // TemporalOffset shifts a date or date-and-time by d, returning v unchanged
-// when it is neither.
+// when it is neither. A date and time keeps its offset, or its lack of one, so
+// a probe beside a zoneless boundary is zoneless too.
 func TemporalOffset(v any, d time.Duration) any {
 	switch t := v.(type) {
 	case *pfeel.FEELDate:
 		return FromGo(t.Date().Add(d))
 	case *pfeel.FEELDatetime:
-		return FromGo(t.Time().Add(d))
+		return t.Add(pfeel.NewFEELDuration(d))
 	}
 	return v
 }

@@ -285,7 +285,7 @@ func TestRecursiveServiceTerminates(t *testing.T) {
 // multi-context products counted in full — fail with VERDICT_EVAL_005 once they
 // exceed the budget, an expression within it evaluates, the configured budget
 // rather than the default is the one enforced, and sibling decisions evaluating
-// in parallel each get the whole budget.
+// in parallel draw on one budget for the request.
 func TestIterationBudgetBoundsAnEvaluation(t *testing.T) {
 	model := func(texts ...string) string {
 		var ds []string
@@ -357,22 +357,40 @@ func TestIterationBudgetBoundsAnEvaluation(t *testing.T) {
 		}
 	})
 
-	t.Run("parallel siblings each get the whole budget", func(t *testing.T) {
-		// Eight independent decisions, each spending 3 + 3*3 = 12 of a budget
-		// of 12, in one parallel layer. A counter shared between them would
-		// fail all but the first.
+	t.Run("parallel siblings share the request's budget", func(t *testing.T) {
+		// Eight independent decisions in one parallel layer, each spending
+		// 3 + 3*3 = 12. One of them fits a budget of 12; the request does
+		// not, because every decision draws on one budget.
 		texts := make([]string, 8)
 		for k := range texts {
 			texts[k] = "count(for i in 1..N, j in 1..N return j)"
 		}
 		e := verdict.MustNewEngine(verdict.WithMaxIterations(12), verdict.WithParallelDecisions(true))
+		if got, err := run(t, e, model(texts[0]), 3); err != nil || got["D0"] != 9.0 {
+			t.Fatalf("one decision within budget = %#v, %v; want 9", got, err)
+		}
+		if _, err := run(t, e, model(texts...), 3); !isBudgetFailure(err) {
+			t.Errorf("eight siblings of 12 under a request budget of 12: err = %v, want a VERDICT_EVAL_005 budget failure", err)
+		}
+		// 8 × 12 = 96 fits a budget of 96, run in parallel: the shared
+		// counter is exact under concurrent charges.
+		e = verdict.MustNewEngine(verdict.WithMaxIterations(96), verdict.WithParallelDecisions(true))
 		got, err := run(t, e, model(texts...), 3)
 		if err != nil {
-			t.Fatalf("parallel siblings within budget: %v", err)
+			t.Fatalf("parallel siblings within the request budget: %v", err)
 		}
 		for k := range texts {
 			if v := got[fmt.Sprintf("D%d", k)]; v != 9.0 {
 				t.Errorf("D%d = %#v, want 9", k, v)
+			}
+		}
+	})
+
+	t.Run("each request starts with the whole budget", func(t *testing.T) {
+		e := verdict.MustNewEngine(verdict.WithMaxIterations(12))
+		for n := 0; n < 3; n++ {
+			if got, err := run(t, e, flat, 12); err != nil || got["D0"] != 12.0 {
+				t.Errorf("request %d: 1..12 under a budget of 12 = %#v, %v; want 12", n+1, got, err)
 			}
 		}
 	})
@@ -382,4 +400,70 @@ func TestIterationBudgetBoundsAnEvaluation(t *testing.T) {
 			t.Error("NewEngine accepted a negative iteration budget")
 		}
 	})
+}
+
+// TestIterationBudgetIsPerRequest checks that function invocations do not
+// multiply the budget: a business knowledge model, a boxed function and a
+// decision service called from a `for` all draw on the request's one budget,
+// so a loop whose every call fits the budget still fails once the calls
+// together exceed it.
+func TestIterationBudgetIsPerRequest(t *testing.T) {
+	// Heavy costs 10 per call; Svc's output decision costs 10 per call.
+	const doc = `{"vdj":"1.0","id":"per_request","conformance_level":"feel",
+	  "input_data":[{"id":"n","name":"N","variable":{"name":"N","type_ref":"number"}}],
+	  "business_knowledge_models":[{"id":"heavy","name":"Heavy",
+	    "encapsulated_logic":{"kind":"functionDefinition",
+	      "parameters":[{"name":"x","type_ref":"number"}],
+	      "body":{"kind":"literalExpression","text":"x + count(for i in 1..10 return i)"}}}],
+	  "decisions":[
+	    {"id":"via_bkm","name":"Via BKM","required_inputs":["n"],"required_knowledge":["heavy"],
+	     "variable":{"name":"Via BKM","type_ref":"number"},
+	     "logic":{"kind":"literalExpression","text":"count(for k in 1..N return Heavy(k))"}},
+	    {"id":"via_boxed","name":"Via Boxed","required_inputs":["n"],
+	     "variable":{"name":"Via Boxed","type_ref":"number"},
+	     "logic":{"kind":"context","entries":[
+	       {"variable":{"name":"f"},"value":{"kind":"functionDefinition",
+	         "parameters":[{"name":"x","type_ref":"number"}],
+	         "body":{"kind":"literalExpression","text":"x + count(for i in 1..10 return i)"}}},
+	       {"value":{"kind":"literalExpression","text":"count(for k in 1..N return f(k))"}}]}},
+	    {"id":"work","name":"Work","required_inputs":["n"],
+	     "variable":{"name":"Work","type_ref":"number"},
+	     "logic":{"kind":"literalExpression","text":"N + count(for i in 1..10 return i)"}},
+	    {"id":"via_service","name":"Via Service","required_inputs":["n"],
+	     "variable":{"name":"Via Service","type_ref":"number"},
+	     "logic":{"kind":"literalExpression","text":"count(for k in 1..N return Svc(k))"}}],
+	  "decision_services":[{"id":"svc","name":"Svc","output_decisions":["work"],"input_data":["n"]}]}`
+
+	// Each call fits a budget of 100. At N = 5 a decision costs 5 + 5*10 = 55
+	// and fits; at N = 10 it costs 10 + 10*10 = 110 and does not, although no
+	// single call comes near the budget.
+	for id, decision := range map[string]string{"via_bkm": "Via BKM", "via_boxed": "Via Boxed", "via_service": "Via Service"} {
+		t.Run(decision, func(t *testing.T) {
+			e := verdict.MustNewEngine(verdict.WithMaxIterations(100))
+			m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+			if err != nil {
+				t.Fatalf("LoadModel: %v", err)
+			}
+			eval := func(n int) (any, error) {
+				res, err := e.EvaluateDecision(context.Background(), m.ID, id, verdict.Inputs{"N": n})
+				if err != nil {
+					return nil, err
+				}
+				for _, d := range res.Diagnostics {
+					if d.Code == diag.CodeExpressionError {
+						return nil, d
+					}
+				}
+				return res.Outputs[decision], nil
+			}
+			if got, err := eval(5); err != nil || got != 5.0 {
+				t.Errorf("N = 5 under a request budget of 100 = %#v, %v; want 5", got, err)
+			}
+			_, err = eval(10)
+			var d diag.Diagnostic
+			if !errors.As(err, &d) || d.Code != diag.CodeExpressionError || !strings.Contains(d.Message, "exceeds the limit") {
+				t.Errorf("N = 10 under a request budget of 100: err = %v, want a VERDICT_EVAL_005 budget failure", err)
+			}
+		})
+	}
 }

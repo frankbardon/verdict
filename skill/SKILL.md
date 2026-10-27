@@ -159,9 +159,12 @@ Applicant.credit_score >= 740                     // comparison
 if x then "a" else "b"                            // conditional
 value in ["low", "medium", "high"]                // membership
 decimal(amount * 1.2, 2)                          // round to 2 places
+modulo(-10.1, 4.5) = 3.4   sqrt(-1) = null           // numeric fns: exact decimals; null on null, non-number or out-of-domain args
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
 date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
 number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
+date(2026, 2, 28)   time(10, 30, 0)   time(10, 30, 0, duration("PT2H"))   // components; bad ones null
+date(dt)   time(dt)   date and time(d, t)   number("1.000,5", ".", ",")   // Table 72 overloads
 [1..10]  [1..10)  [1..10[  (1..10]  ]1..10]           // both bracket spellings
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
 ```
@@ -278,37 +281,85 @@ opens as an empty canvas.
   `includes([1..10], null)`, `coincides(null, null)`) is null. Equality is
   different: `null = null` is true. Guard with `x != null and x > 5` or an
   explicit `null` rule.
+- **`and`, `or` and `not` are three-valued; booleans have no order.** Only
+  `true` and `false` count: null and any other kind (`0`, `""`, `[]`) are
+  unknown, never falsy. `false and null` is false, `true and null` null,
+  `true or null` true, `false or null` null; `not(null)`, `not(0)` and
+  `not(5 in ["a".."z"])` are null. That is why `x != null and x > 5` is a safe
+  guard — a missing `x` makes it false, not null. `true < false` and the other
+  orderings of two booleans are null; `=` and `!=` still work on them. The same
+  goes wherever an order is needed: `true in [false..true]`,
+  `before(false, true)` and `max([true, false])` are null.
 - **Comparing different kinds is null, not an error.** `1 = "a"`, `1 != "a"`,
   `1 < "a"`, `duration("P1Y") < duration("P1D")`, `5 in ["a".."z"]` and range
   built-ins over mixed kinds (`before(1, "a")`, `coincides(1, "a")`) all yield
-  null. In a table, a `< 5` cell against a string input simply does not match,
-  and neither does `not(< 5)`; an equality cell such as `"gold"` against a
-  number does not match, so `not("gold")` does.
+  null. In a table every cell form follows suit: a `< 5`, `"gold"`,
+  `["a".."z"]` or `[false..true]` cell against an input of another (or, for
+  booleans, unordered) kind is null — it does not match, and neither does its
+  `not(...)`: `not("gold")` does not match `5`, `not(["a", "b"])` does not
+  match `5` but does match `"c"`. Separate kinds into their own rules, or end
+  with a `-` rule.
 - **Lists and contexts compare element by element; they have no order.**
   `[1, 2] = [1, 2]` and `{a: 1, b: 2} = {b: 2, a: 1}` are true, `[1, 2] =
   [2, 1]` and `{a: 1} = {b: 1}` false; a mixed-kind element pair makes it null
   (`[1, "a"] = [1, 2]`) unless another pair is false. `[1, 2] < [1, 3]` is
   null. `list contains`, `index of`, `union`, `distinct values`,
   `duplicate values` and `in` find list and context elements by value, and a
-  `[1, 2]` cell matches a list input equal to it as well as `1` or `2`.
+  `[1, 2]` cell matches a list input equal to it as well as `1` or `2`. Table
+  equality (cells, ANY agreement, PRIORITY/OUTPUT ORDER ranking) is this same
+  `=`: `1` equals `1.00`, `time("10:00:00+01:00")` equals `time("09:00:00Z")`.
+- **Ranges compare by endpoints and closedness; they have no order.**
+  `[1..2] = [1..2]` is true, `[1..2] = (1..2]` and `[1..2] = [1..3]` false;
+  `[1..2] < [3..4]` is null.
+- **`x in [list]` is `x = e1 or x = e2 or …`, three-valued.** `3 in [1, 2]` is
+  false and `1 in [1, "a"]` true, but `"a" in [1, 2]` is null (each `=` is
+  null), so `not("a" in [1, 2])` is null too. `null in [1, null]` is true.
+- **`min` and `max` need comparable items of one kind.** Numbers, strings,
+  temporals or durations of one kind: `max(3, 1, 2)` is `3`. An empty list, a
+  null item, a mixed list (`min([1, "a"])`) or items with no order (booleans,
+  lists, contexts, ranges) give null — `min([1, null])` is null, not `1`.
 - **A malformed conversion is null; a malformed `@"..."` does not load.**
   `date("nope")`, `time("25:00")`, `date and time("x")`, `number("abc")`,
-  `duration("P1Y2D")` (mixes the two duration kinds), `date(null)` and
+  `duration("P1Y2D")` (mixes the two duration kinds), `duration("P")` (no
+  component), `date(null)` and
   `string(null)` are null, not an error — so a bad string input surfaces as a
-  null output, and `number("1,000")` is null (the grouping form is not
-  supported). The literal `@"P1Y2D"` is a syntax error instead:
-  `VERDICT_LOAD_013` when the model loads. A string the spec allows but Verdict
+  null output, and `number("1,000")` is null (use the grouping form,
+  `number("1,000", ",", ".")`). An argument of the wrong kind is null too:
+  `number(5)` (`from` must be a string), `date(true)`, `date and time(5)`,
+  `duration(5)`, `context(5)` or an entry lacking `key`/`value`, and
+  `years and months duration(date, date and time)` — both must be dates or both
+  date and times. `string(x)` takes any non-null value. The literal `@"P1Y2D"` (or `@"P"`) is a syntax error instead:
+  `VERDICT_LOAD_013` when the model loads, with the literal's 1-based
+  `line L, column C` in the message. A string the spec allows but Verdict
   cannot hold still fails the evaluation (`VERDICT_EVAL_005`) rather than
-  reading as malformed: an IANA zone (`"10:00:00@Europe/Paris"` — use `Z` or
-  `+01:00`), a duration finer than a nanosecond (`PT0.0000000001S`) or longer
-  than about 292 years of days and time (`P200000D`), and `date(<date and
-  time>)` / `time(<time or date and time>)`.
+  reading as malformed: a zone id the time zone database does not know
+  (`"2026-01-01T10:00:00@Mars/Olympus"`), a duration finer than a nanosecond (`PT0.0000000001S`) or longer
+  than about 292 years of days and time (`P200000D`), and a `time()` second
+  finer than a nanosecond.
+- **Every Table 72 conversion overload works, positionally or by name.**
+  `date(2026, 2, 28)` = `date(year: 2026, month: 2, day: 28)`;
+  `date(<date and time>)` is its calendar date. `time(10, 30, 0)` is
+  **zoneless**; `time(10, 30, 0, duration("PT2H"))` is `10:30:00+02:00`
+  (`PT0S` gives `Z`, `offset: null` stays zoneless). `second` may be
+  fractional. `time(<date and time>)` keeps its offset or zonelessness (a DST
+  zone id becomes the offset at that instant). `date and time(date, time)`
+  takes the time's zone-ness. Invalid components — month 13, 29 February in
+  a common year, hour 24, second 60, a non-integer year, an offset beyond
+  ±14h — are null. `number(from, grouping separator, decimal separator)`:
+  grouping `" "`, `","`, `"."` or null; decimal `"."`, `","` or null (= `"."`);
+  they must differ, else null.
 - **Durations are normalised.** `duration("P26M")` is `P2Y2M` and
   `duration("PT36H")` is `P1DT12H` — `string()` and `.days`/`.hours`/... read
   the canonical form, and `PT36H = P1DT12H`. Seconds may be fractional
   (`PT1.5S`, kept to the nanosecond; `.seconds` is `1.5`). Two durations of
   the same kind add and subtract (`PT1.5S + PT0.5S = PT2S`); a years and months
-  duration plus a days and time one is null.
+  duration plus a days and time one is null. A zero keeps its kind:
+  `duration("P1Y") - duration("P1Y")` is `P0M`, not `PT0S`, so adding `PT1H`
+  to it, or comparing it with `PT0S`, is null too. A duration scales by a
+  number (`PT1H * 2` and `2 * PT1H` are `PT2H`, `P1Y / 2` is `P6M`, exact
+  decimal: `PT1S * 0.1` is `PT0.1S`); a fraction of a month or nanosecond
+  truncates toward zero (`P1M / 3` is `P0M`, `P1Y * 1.5` is `P1Y6M`).
+  Division by zero, `number / duration` and a non-number operand are null.
 - **Temporal arithmetic follows DMN Table 57.** `date - date` is a days and time
   duration (`date("2026-01-02") - date("2026-01-01")` is `P1D`; a date counts as
   UTC midnight against a date and time), as is `time - time`. A duration added
@@ -319,6 +370,31 @@ opens as an empty canvas.
   (`date("2026-01-31") + @"P1M"` is `2026-02-28`; time and offset are kept).
   Whole years and months between dates is `years and months duration(a, b)`,
   not `b - a` — and it counts by day of month, so Jan 31 to Feb 28 is `P0M`.
+- **Zoneless and zoned temporals are different values.** `time("10:00:00")`
+  (no offset: a local time) is not `time("10:00:00Z")`. Two zoned values
+  compare by instant (`10:00:00+02:00 = 08:00:00Z` is true); two zoneless ones
+  by wall clock. Mixed: `=` and `!=` are **null**; `<`/`>` read the zoneless
+  one at the other's offset (`10:00:00 < 11:00:00Z` true, `10:00:00 <
+  10:00:00Z` false); `<=`/`>=` are true when `<`/`>` is and otherwise **null**
+  (`10:00:00 <= 10:00:00Z` is null), and so is a closed range endpoint;
+  `date and time - date and time` and `time - time` are null. A date takes the
+  zone-ness of the date and time it meets. `+`/`- duration` keeps the operand's
+  zone-ness. `.time offset` (a duration) and `.timezone` are null for a zoneless
+  value, and `string()` omits the offset (`"10:00:00"`). In a decision table a
+  zoneless input never equals a zoned cell — write inputs and cells the same way.
+- **IANA zone ids work on date and times.** `date and time("2026-01-01T10:00:00@Europe/Paris")`
+  (and `@"...@Europe/Paris"`) takes the zone's offset at that date, so it equals
+  `2026-01-01T09:00:00Z`; ids and offsets compare by instant. `.timezone` is the
+  id, and null for a value written with an offset (`.time offset` still gives
+  the offset). A **time** takes only a zone id with one fixed offset (`@UTC`,
+  `@Etc/GMT-2`): `time("10:00:00@Europe/Paris")` is null (DST makes its offset
+  depend on a date it does not have) — write `10:00:00+01:00`.
+- **`string()` of a temporal is its lexical form**, and parses back to the same
+  value: `"2026-02-28T23:59:59+05:00"`, `"...Z"` for a zero offset,
+  `"...@Europe/Paris"` only for a zone id, `"2026-02-28T23:59:59"` with none;
+  likewise for `time`.
+- **`today()` is the UTC date**, not the host's: with `feel.timezone` set (the
+  engine clock's zone, UTC by default) it is the date in that zone.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration
@@ -335,9 +411,11 @@ opens as an empty canvas.
   `for x in 5 return x * 2` is `[10]`, `for x in null return x` is `[null]`.
   Write `1..3`, not `[1..3]` — the bracketed form is a range value, so
   `for x in [1..3] return x` is `[[1..3]]`, one element, not three.
-  One expression's iteration contexts may produce at most 1,000,000 elements
+  One request's iteration contexts may produce at most 1,000,000 elements
   in total — ranges and lists alike, nested contexts multiplying
-  (`for i in 1..n, j in 1..n` costs n²) — configurable as
+  (`for i in 1..n, j in 1..n` costs n²), and every decision, BKM/function
+  call and unary test of the request drawing on the same budget (so
+  `for i in 1..n return bkm(i)` pays for all n calls) — configurable as
   `feel.max_iterations`; exceeding it fails the evaluation with
   `VERDICT_EVAL_005`, an over-long range before building anything.
 - **Input names come from the input-data variable**, not the file. `verdict

@@ -27,9 +27,9 @@ func NewUnexpectedToken(token ScannerToken, callers []string, expects []string) 
 // still captured; Callers exposes it for debugging this package.
 func (self UnexpectedToken) Error() string {
 	return fmt.Sprintf(
-		"unexpected %s %s, at %d %d, expect %s",
+		"unexpected %s %s, at %s, expect %s",
 		self.token.Kind, self.token.Value,
-		self.token.Pos.Row, self.token.Pos.Column,
+		self.token.Pos,
 		strings.Join(self.expects, ", "),
 	)
 }
@@ -814,11 +814,12 @@ func (p *Parser) parseTemporalNode() (Node, error) {
 	// rules: "The string in rule 65 must follow the date string, time string,
 	// date and time string or duration string syntax". Unlike the conversion
 	// built-ins (null outside their domain, §10.3.4), a malformed literal is
-	// rejected at load, as VERDICT_LOAD_013.
+	// rejected at load, as VERDICT_LOAD_013. The position is the literal's own
+	// token, 1-based (see ScanPosition.String).
 	node := &TemporalNode{Value: v}
 	if _, perr := ParseTemporalValue(node.Content()); perr != nil {
-		return nil, fmt.Errorf("invalid temporal literal %s, at %d %d: %w",
-			v, tok.Pos.Row, tok.Pos.Column, perr)
+		return nil, fmt.Errorf("invalid temporal literal %s, at %s: %w",
+			v, tok.Pos, perr)
 	}
 	err := p.scanner.Next()
 	if err != nil {

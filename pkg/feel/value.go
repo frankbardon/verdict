@@ -208,49 +208,32 @@ func durationToGo(d *pfeel.FEELDuration) any {
 	if d == nil {
 		return nil
 	}
-	if d.Years != 0 || d.Months != 0 {
+	if d.IsYearsMonths() {
 		return d.String()
 	}
 	return d.Duration()
 }
 
-// Equal compares two FEEL values structurally. It is used by the ANY hit policy
-// to decide whether multiple matching rules agree, and by trace deduplication.
+// Equal reports whether a = b is true in FEEL (DMN 1.5 §10.3.2.15, Tables 52
+// and 53). It is the fork's `=` with a null verdict folded to false, so it
+// cannot disagree with an `=` in an expression: 1 and 1.00 are equal, as are
+// two temporals denoting the same instant and PT60M and PT1H, while values of
+// different kinds are not. Two nulls are equal. The ANY hit policy, PRIORITY
+// and OUTPUT ORDER ranking, `duplicate values` and the analyser use it.
 func Equal(a, b any) bool {
-	if IsNull(a) || IsNull(b) {
-		return IsNull(a) && IsNull(b)
+	eq, _ := equal3(a, b)
+	return eq
+}
+
+// equal3 is FEEL's three-valued `=`: known is false when the comparison is
+// null — operands of different kinds, or a list or context pair that is.
+func equal3(a, b any) (eq, known bool) {
+	switch r := pfeel.Equal(a, b).(type) {
+	case bool:
+		return r, true
+	default:
+		return false, false
 	}
-	an, aok := a.(*pfeel.Number)
-	bn, bok := b.(*pfeel.Number)
-	if aok && bok {
-		return an.Cmp(bn) == 0
-	}
-	switch av := a.(type) {
-	case map[string]any:
-		bv, ok := b.(map[string]any)
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for k, v := range av {
-			ov, ok := bv[k]
-			if !ok || !Equal(v, ov) {
-				return false
-			}
-		}
-		return true
-	case []any:
-		bv, ok := b.([]any)
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for i := range av {
-			if !Equal(av[i], bv[i]) {
-				return false
-			}
-		}
-		return true
-	}
-	return reflect.DeepEqual(a, b)
 }
 
 // Compare orders two FEEL values, reporting ok=false when they are not
@@ -278,6 +261,12 @@ func Compare(a, b any) (int, bool) {
 		default:
 			return 1, true
 		}
+	}
+	if IsTemporal(a) && IsTemporal(b) {
+		// The fork's ordering, so that a zoneless time or date and time
+		// against a zoned one adopts the zoned one's offset as `<` does
+		// (DMN 1.5 Table 54). Two FEEL temporals always order there.
+		return pfeel.CompareValues(a, b), true
 	}
 	at, aok := timeOf(a)
 	bt, bok := timeOf(b)

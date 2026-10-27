@@ -124,6 +124,49 @@ func extractList(args map[string]any, argName string) ([]any, error) {
 	}
 }
 
+// separatedNumber rewrites s, written with the given separators, as a plain
+// numeric literal: number(from, grouping separator, decimal separator), DMN
+// 1.5 §10.3.4.1 Table 72. grouping is " ", "," or "." and decimal "." or ",",
+// and they must differ; either may be null — no grouping separator, and the
+// default decimal point "." — and anything else is outside the domain.
+//
+// VERDICT DIVERGENCE: upstream had only number(from). Table 72 does not say
+// what a null separator means; the fork reads it as the one-argument form
+// does, so number("1.000", ".", null) is null (grouping and decimal clash).
+func separatedNumber(s string, grouping, decimal any) (string, bool) {
+	g, d := "", "."
+	switch v := grouping.(type) {
+	case *NullValue, nil:
+	case string:
+		if v != " " && v != "," && v != "." {
+			return "", false
+		}
+		g = v
+	default:
+		return "", false
+	}
+	switch v := decimal.(type) {
+	case *NullValue, nil:
+	case string:
+		if v != "." && v != "," {
+			return "", false
+		}
+		d = v
+	default:
+		return "", false
+	}
+	if g == d {
+		return "", false
+	}
+	if g != "" {
+		s = strings.ReplaceAll(s, g, "")
+	}
+	if d != "." && strings.Contains(s, ".") {
+		return "", false
+	}
+	return strings.ReplaceAll(s, d, "."), true
+}
+
 // numericLiteral is DMN 1.5 grammar rule 35, the domain of number(from).
 // Table 72's footnote cites "grammar rule 37", which is digits; and rule 35's
 // parentheses do not close, so the exponent is read as applying to either
@@ -147,21 +190,38 @@ func installBuiltinFunctions(prelude *Prelude) {
 	// numeric literal and for an argument it cannot read, instead of 0 (the
 	// big.Float that SetString left untouched) or an error. DMN 1.5 §10.3.4.1
 	// Table 72: from must conform to the numeric-literal grammar, and §10.3.4
-	// makes a parameter outside its domain null.
+	// makes a parameter outside its domain null. A from that is not a string
+	// — number(5), number(true) — is null too, in both overloads; upstream
+	// passed a number through.
 	prelude.Bind("number", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		if s, ok := kwargs["from"].(string); ok && !numericLiteral.MatchString(s) {
+		s, ok := kwargs["from"].(string)
+		if !ok {
 			return null, nil
 		}
-		n, err := ParseNumberWithErr(kwargs["from"])
+		if _, ok := kwargs["decimal separator"]; ok {
+			if s, ok = separatedNumber(s, kwargs["grouping separator"], kwargs["decimal separator"]); !ok {
+				return null, nil
+			}
+		}
+		if !numericLiteral.MatchString(s) {
+			return null, nil
+		}
+		n, err := ParseNumberWithErr(s)
 		if err != nil {
 			return null, nil
 		}
 		return n, nil
-	}).Required("from"))
+	}).Overloads([]string{"from"}, []string{"from", "grouping separator", "decimal separator"}))
 
 	// boolean functions
-	prelude.Bind("not", wrapTyped(func(v any) (bool, error) {
-		return !boolValue(v), nil
+	// VERDICT DIVERGENCE: upstream negated boolValue(v), so `not(null)` and
+	// `not(0)` were true. DMN 1.5 §10.3.2.15 Table 51 negates a boolean and
+	// makes everything else null.
+	prelude.Bind("not", NewNativeFunc(func(args map[string]any) (any, error) {
+		if b, ok := args["from"].(bool); ok {
+			return !b, nil
+		}
+		return null, nil
 	}).Required("from"))
 
 	prelude.Bind("is defined", NewMacro(func(intp *Interpreter, args map[string]Node, varArgs []Node) (any, error) {
@@ -259,16 +319,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 		if err != nil {
 			return nil, err
 		}
-		var minValue any = nil
-		for _, entry := range list {
-			if minValue == nil {
-				minValue = entry
-			} else if cmp, err := compareInterfaces(minValue, entry); err == nil && cmp == 1 {
-				// minValue > entry
-				minValue = entry
-			}
-		}
-		return minValue, nil
+		return extremum(list, 1), nil
 	}).Vararg("list"))
 
 	prelude.Bind("max", NewNativeFunc(func(args map[string]any) (any, error) {
@@ -276,16 +327,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 		if err != nil {
 			return nil, err
 		}
-		var maxValue any = nil
-		for _, entry := range list {
-			if maxValue == nil {
-				maxValue = entry
-			} else if cmp, err := compareInterfaces(maxValue, entry); err == nil && cmp == -1 {
-				// maxValue < entry
-				maxValue = entry
-			}
-		}
-		return maxValue, nil
+		return extremum(list, -1), nil
 	}).Vararg("list"))
 
 	prelude.Bind("sum", NewNativeFunc(func(args map[string]any) (any, error) {
@@ -669,4 +711,49 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return joined, nil
 	}).Required("list").Optional("delimiter", "prefix", "suffix"))
 
+}
+
+// extremum is min (replaceWhen 1) or max (replaceWhen -1) over list: the item
+// that the current candidate compares as replaceWhen against replaces it.
+//
+// VERDICT DIVERGENCE: upstream skipped any item compareInterfaces could not
+// order against the current candidate, ordered false below true and a null
+// item above everything, so `min([1, "a"])` and `min([1, null])` were 1,
+// `max([1, null])` null and `max([true, false])` true; a list of lists or
+// contexts returned its first item. DMN 1.5 §10.3.4.4 defines min and max over a list of
+// comparable items, and §10.3.4 makes a built-in given a parameter outside its
+// domain null: so an empty list, an item of an unordered kind (null, boolean,
+// list, context, range, function — Table 54), or two items of different
+// kinds, yields null.
+func extremum(list []any, replaceWhen int) any {
+	if len(list) == 0 {
+		return null
+	}
+	for _, item := range list {
+		if !orderedKind(item) {
+			return null
+		}
+	}
+	best := list[0]
+	for _, item := range list[1:] {
+		cmp, err := compareInterfaces(best, item)
+		if err != nil {
+			return null
+		}
+		if cmp == replaceWhen {
+			best = item
+		}
+	}
+	return best
+}
+
+// orderedKind reports whether v is of a kind DMN 1.5 Table 54 orders: a
+// number, a string, a temporal or a duration.
+func orderedKind(v any) bool {
+	switch v.(type) {
+	case *Number, string, *FEELDuration:
+		return true
+	}
+	_, ok := instantOf(v)
+	return ok
 }

@@ -198,7 +198,7 @@ func (p *Program) ruleMatches(ec *Context, tests []*feel.UnaryTest, inputs []any
 		if j >= len(inputs) {
 			continue
 		}
-		ok, err := ec.prog.cfg.FEEL.EvalUnaryTest(test, inputs[j], ec.vars)
+		ok, err := ec.prog.cfg.FEEL.EvalUnaryTestBudget(test, inputs[j], ec.vars, ec.shared.budget)
 		if err != nil {
 			return false, feelFailure(err)
 		}

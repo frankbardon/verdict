@@ -55,5 +55,5 @@ func NewErrBadOp(leftType, op, rightType string) *EvalError {
 }
 
 func NewErrBadInput(row int, column int, inputText string) *EvalError {
-	return NewEvalError(-6001, "bad input", fmt.Sprintf(`at position row:%d, column:%d, input:%s`, row, column, inputText))
+	return NewEvalError(-6001, "bad input", fmt.Sprintf(`at %s, input:%s`, ScanPosition{Row: row, Column: column}, inputText))
 }

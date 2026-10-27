@@ -32,6 +32,10 @@ type NativeFun struct {
 	optionalArgNames []string
 	varArgName       string
 	help             string
+
+	// overloads, when set, replaces requiredArgNames/optionalArgNames: each
+	// entry is one signature's parameter names in order. See Overloads.
+	overloads [][]string
 }
 
 func NewNativeFunc(fn NativeFunDef) *NativeFun {
@@ -51,6 +55,79 @@ func (nativeFun *NativeFun) Optional(argNames ...string) *NativeFun {
 func (nativeFun *NativeFun) Vararg(argName string) *NativeFun {
 	nativeFun.varArgName = argName
 	return nativeFun
+}
+
+// Overloads declares the function's signatures, each a list of parameter
+// names in order. A positional call binds the signature with as many
+// parameters as it has arguments; a named call binds the signature whose
+// names are exactly the ones given. The function body tells the overloads
+// apart by which names are present.
+//
+// VERDICT DIVERGENCE: upstream bound every argument by one parameter list, so
+// a built-in could not have overloads whose parameters differ by name and
+// position — DMN 1.5 §10.3.4.1 Table 72's date(from) and date(year, month,
+// day), say — and named arguments could not reach them.
+func (nativeFun *NativeFun) Overloads(signatures ...[]string) *NativeFun {
+	nativeFun.overloads = append(nativeFun.overloads, signatures...)
+	return nativeFun
+}
+
+// bindOverload maps a call's arguments onto the overload they fit: positional
+// values by arity, named ones by the exact set of names.
+func (nativeFun *NativeFun) bindOverload(positional []any, named map[string]any) (map[string]any, error) {
+	if named != nil {
+	signatures:
+		for _, sig := range nativeFun.overloads {
+			if len(sig) != len(named) {
+				continue
+			}
+			for _, name := range sig {
+				if _, ok := named[name]; !ok {
+					continue signatures
+				}
+			}
+			return named, nil
+		}
+		// No signature fits: name the first missing parameter of the one
+		// sharing the most names with the call.
+		best, bestShared := nativeFun.overloads[0], -1
+		for _, sig := range nativeFun.overloads {
+			shared := 0
+			for _, name := range sig {
+				if _, ok := named[name]; ok {
+					shared++
+				}
+			}
+			if shared > bestShared {
+				best, bestShared = sig, shared
+			}
+		}
+		for _, name := range best {
+			if _, ok := named[name]; !ok {
+				return nil, NewErrKeywordArgument(name)
+			}
+		}
+		return nil, NewErrTooManyArguments()
+	}
+	// No signature has this arity: the call is short of the next longer one,
+	// or longer than all of them.
+	var next []string
+	for _, sig := range nativeFun.overloads {
+		if len(sig) == len(positional) {
+			args := make(map[string]any, len(sig))
+			for i, name := range sig {
+				args[name] = positional[i]
+			}
+			return args, nil
+		}
+		if len(sig) > len(positional) && (next == nil || len(sig) < len(next)) {
+			next = sig
+		}
+	}
+	if next != nil {
+		return nil, NewErrTooFewArguments(next[len(positional):])
+	}
+	return nil, NewErrTooManyArguments()
 }
 
 func (nativeFun *NativeFun) Help(help string) *NativeFun {

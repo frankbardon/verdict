@@ -47,18 +47,42 @@ type Evaluator struct {
 	maxIterations int64
 }
 
-// DefaultMaxIterations is the iteration budget of one expression evaluation
-// when no other is configured: the total number of elements every iteration
-// context of every `for`, `some` and `every` in the expression may produce —
+// DefaultMaxIterations is the iteration budget when no other is configured —
+// of one expression evaluation under Eval, of every evaluation sharing a
+// Budget (the engine's one per request): the total number of elements every
+// iteration context of every `for`, `some` and `every` may produce —
 // integer ranges (`a..b`) and list domains alike, with nested and
 // multi-context products (`for i in 1..n, j in 1..n`) counted in full.
 //
 // A million is far beyond what a decision model iterates on purpose — a
 // day-by-day loop over a century is under 40,000 — while bounding the work and
 // the lists a single expression can build to roughly a hundred megabytes.
-// Without a budget one expression in a model loaded through `verdict serve`
-// could ask for a billion elements and exhaust the server's memory.
+// Without a budget one request to a model loaded through `verdict serve` could
+// ask for a billion elements and exhaust the server's memory.
 const DefaultMaxIterations = 1_000_000
+
+// Budget is an iteration budget shared by several evaluations. Pass one to
+// EvalBudget / EvalUnaryTestBudget and every element any of those
+// evaluations' `for`, `some` and `every` contexts produce is drawn from it —
+// including evaluations nested inside a function call (a business knowledge
+// model invoked from FEEL) and evaluations on other goroutines. The engine
+// creates one per request, which is what stops `for i in 1..1000 return
+// bkm(i)` from multiplying the budget by the number of calls. It is safe for
+// concurrent use and takes no lock.
+type Budget struct {
+	b *pfeel.IterationBudget
+}
+
+// NewBudget returns a fresh shared budget of the evaluator's MaxIterations.
+func (e *Evaluator) NewBudget() *Budget {
+	return &Budget{b: pfeel.NewIterationBudget(e.maxIterations)}
+}
+
+// Limit reports the elements the budget admits in total.
+func (b *Budget) Limit() int64 { return b.b.Limit }
+
+// Used reports the elements charged against the budget so far.
+func (b *Budget) Used() int64 { return int64(b.b.Used()) }
 
 // Option configures an Evaluator.
 type Option func(*evaluatorOptions)
@@ -84,12 +108,13 @@ func WithClock(clock func() time.Time) Option {
 	return func(o *evaluatorOptions) { o.clock = clock }
 }
 
-// WithMaxIterations sets the iteration budget of one expression evaluation:
-// the total number of elements its `for`, `some` and `every` iteration
-// contexts may produce together (see DefaultMaxIterations). An evaluation that
-// would exceed it fails; an integer range that would is refused before any of
-// its elements is built. Each evaluation starts with the whole budget, so
-// concurrent evaluations never draw on each other's. Zero or a negative value
+// WithMaxIterations sets the iteration budget: the total number of elements
+// the `for`, `some` and `every` iteration contexts may produce together (see
+// DefaultMaxIterations). An evaluation that would exceed it fails; an integer
+// range that would is refused before any of its elements is built. Eval and
+// EvalUnaryTest give each evaluation the whole budget; EvalBudget and
+// EvalUnaryTestBudget draw on a shared Budget (NewBudget), which is how the
+// engine bounds a whole request. Zero or a negative value
 // means DefaultMaxIterations: there is deliberately no "unlimited" setting,
 // since unbounded iteration is a memory-exhaustion vector; pass a larger
 // budget instead.
@@ -129,6 +154,9 @@ func NewEvaluator(d Dialect, opts ...Option) (*Evaluator, error) {
 }
 
 // clockFunctions builds the temporal built-ins that read the injected clock.
+// today() is the calendar date in the clock's location, which is the engine's
+// configured zone (feel.timezone, UTC by default); without a clock the fork's
+// today() is the UTC date.
 func clockFunctions(clock func() time.Time) map[string]any {
 	return map[string]any{
 		"now": nativeFunc(Function{
@@ -188,7 +216,8 @@ func nativeFunc(f Function) *pfeel.NativeFun {
 // validate expressions at model-load time.
 func (e *Evaluator) Compiler() *Compiler { return e.compiler }
 
-// MaxIterations reports the iteration budget of one expression evaluation.
+// MaxIterations reports the iteration budget: of one evaluation under Eval, of
+// every evaluation sharing a Budget from NewBudget.
 func (e *Evaluator) MaxIterations() int64 { return e.maxIterations }
 
 // Dialect reports the evaluator's dialect.
@@ -204,7 +233,7 @@ func (e *Evaluator) CompileUnaryTest(text string) (*UnaryTest, error) {
 
 // ErrIterationBudgetExceeded is matched by errors.Is when an evaluation's
 // iteration contexts would together produce more elements than the configured
-// budget (WithMaxIterations).
+// budget (WithMaxIterations) — or than remain in the shared Budget it draws on.
 var ErrIterationBudgetExceeded = errors.New("feel: iteration exceeds the configured budget")
 
 // EvalError wraps a runtime failure with the expression that produced it.
@@ -226,10 +255,16 @@ func (e *EvalError) Is(target error) bool {
 // Eval evaluates a compiled expression against vars. A nil expression yields
 // null, which is what an omitted decision-table output entry means.
 func (e *Evaluator) Eval(x *Expr, vars map[string]any) (any, error) {
+	return e.EvalBudget(x, vars, nil)
+}
+
+// EvalBudget is Eval drawing on a shared iteration budget. A nil budget gives
+// the evaluation a whole budget of its own, as Eval does.
+func (e *Evaluator) EvalBudget(x *Expr, vars map[string]any, budget *Budget) (any, error) {
 	if x == nil {
 		return Null, nil
 	}
-	intp := e.interpreter(vars)
+	intp := e.interpreter(vars, budget)
 	v, err := x.node.Eval(intp)
 	if err != nil {
 		return nil, &EvalError{Text: x.text, Err: err}
@@ -250,10 +285,14 @@ func (e *Evaluator) EvalText(text string, vars map[string]any) (any, error) {
 // interpreter builds a fresh scope stack: globals underneath, caller variables
 // on top. Names in vars therefore shadow function libraries, matching FEEL's
 // rule that a variable in scope wins over an outer binding.
-func (e *Evaluator) interpreter(vars map[string]any) *pfeel.Interpreter {
+func (e *Evaluator) interpreter(vars map[string]any, budget *Budget) *pfeel.Interpreter {
 	intp := pfeel.NewIntepreter()
-	// A fresh interpreter per evaluation is also a fresh iteration budget.
-	intp.MaxIterations = e.maxIterations
+	if budget != nil {
+		intp.Budget = budget.b
+	} else {
+		// A fresh interpreter per evaluation is also a fresh iteration budget.
+		intp.MaxIterations = e.maxIterations
+	}
 	intp.Push(pfeel.Scope(e.globals))
 	if len(vars) > 0 {
 		intp.Push(pfeel.Scope(vars))

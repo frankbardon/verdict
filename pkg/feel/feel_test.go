@@ -4,6 +4,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	pfeel "github.com/frankbardon/verdict/pkg/feel/internal/dialect"
 )
 
 func mustEval(t *testing.T, e *Evaluator, text string, vars map[string]any) any {
@@ -144,6 +146,68 @@ func TestStandardSupplement(t *testing.T) {
 	}
 }
 
+// TestNumericBuiltinsAreNullOutsideTheirDomain pins DMN 1.5 §10.3.4.5 and the
+// §10.3.4 domain rule: a null or non-number argument, or a value the function
+// is undefined for, makes a numeric built-in null rather than an error.
+func TestNumericBuiltinsAreNullOutsideTheirDomain(t *testing.T) {
+	e := newFEEL(t)
+	for _, expr := range []string{
+		`decimal(null, 2)`, `decimal(1.5, null)`, `decimal("1.5", 0)`,
+		`floor(null)`, `floor("x")`, `floor(1.5, null)`, `floor(1.5, "1")`,
+		`ceiling(null)`, `ceiling(true)`, `ceiling(1.5, null)`,
+		`round up(null, 0)`, `round up(5, null)`, `round up("5", 0)`,
+		`round down(null, 0)`, `round down(5, null)`,
+		`round half up(null, 0)`, `round half up(5, null)`,
+		`round half down(null, 0)`, `round half down(5, null)`,
+		`decimal(1.5, 6177)`, `decimal(1.5, -6112)`, `floor(1.5, 1000000000)`,
+		`abs(null)`, `abs("x")`,
+		`modulo(null, 5)`, `modulo(5, null)`, `modulo("12", 5)`, `modulo(12, "5")`,
+		`modulo(12, 0)`, `modulo(0, 0)`, `modulo(10.1, 0)`,
+		`sqrt(null)`, `sqrt("a")`, `sqrt(-1)`,
+		`log(null)`, `log("a")`, `log(0)`, `log(-1)`,
+		`exp(null)`, `exp("x")`,
+		`odd(null)`, `odd("x")`, `even(null)`, `even("x")`,
+	} {
+		v, err := e.EvalText(expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want null", expr, err)
+			continue
+		}
+		if got := ToGo(v); got != nil {
+			t.Errorf("%s = %#v, want null", expr, got)
+		}
+	}
+}
+
+// TestModuloIsDecimal pins every modulo example of DMN 1.5 §10.3.4.5: the
+// remainder takes the divisor's sign and is computed on the exact decimals.
+func TestModuloIsDecimal(t *testing.T) {
+	e := newFEEL(t)
+	for expr, want := range map[string]string{
+		`modulo(12, 5)`:       "2",
+		`modulo(-12, 5)`:      "3",
+		`modulo(12, -5)`:      "-3",
+		`modulo(-12, -5)`:     "-2",
+		`modulo(10.1, 4.5)`:   "1.1",
+		`modulo(-10.1, 4.5)`:  "3.4",
+		`modulo(10.1, -4.5)`:  "-3.4",
+		`modulo(-10.1, -4.5)`: "-1.1",
+		`modulo(10, 2.5)`:     "0",
+	} {
+		v, err := e.EvalText(expr, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", expr, err)
+		}
+		n, ok := v.(*pfeel.Number)
+		if !ok {
+			t.Fatalf("%s = %#v, want a number", expr, v)
+		}
+		if got := n.String(); got != want {
+			t.Errorf("%s = %s, want %s", expr, got, want)
+		}
+	}
+}
+
 func TestYearsAndMonthsDuration(t *testing.T) {
 	e := newFEEL(t)
 	got := mustEval(t, e, `years and months duration(date("2020-01-15"), date("2023-03-14"))`, nil)
@@ -156,10 +220,48 @@ func TestYearsAndMonthsDuration(t *testing.T) {
 		`years and months duration(1, date("2023-03-14"))`,
 		`years and months duration(date("2020-01-15"), null)`,
 		`years and months duration("2020-01-15", "2023-03-14")`,
+		// Both must be dates or both date and times: a mixed pair or a time
+		// is outside Table 72's domain.
+		`years and months duration(date("2026-01-01"), date and time("2026-06-01T00:00:00"))`,
+		`years and months duration(time("10:00:00"), time("11:00:00"))`,
 	} {
 		if got := mustEval(t, e, expr, nil); got != nil {
 			t.Errorf("%s = %#v, want null", expr, got)
 		}
+	}
+}
+
+func TestContextBuiltinDomain(t *testing.T) {
+	// DMN 1.5 §10.3.4.7: entries outside the domain are null, not an
+	// evaluation error; a lone context is converted to a singleton list.
+	e := newFEEL(t)
+	for _, expr := range []string{`context(5)`, `context(null)`, `context([5])`, `context([{key: "a"}])`} {
+		if got := mustEval(t, e, expr, nil); got != nil {
+			t.Errorf("%s = %#v, want null", expr, got)
+		}
+	}
+	got, ok := mustEval(t, e, `context({key: "a", value: 1})`, nil).(map[string]any)
+	if !ok || got["a"] != 1.0 {
+		t.Errorf(`context({key: "a", value: 1}) = %#v, want {a: 1}`, got)
+	}
+}
+
+func TestConversionOverloadsTakeModelValues(t *testing.T) {
+	// DMN 1.5 §10.3.4.1 Table 72: the component overloads of date and time,
+	// fed from model inputs as a decision would feed them.
+	e := newFEEL(t)
+	vars := map[string]any{"y": FromGo(2026), "m": FromGo(2), "d": FromGo(28), "amount": FromGo("1.250,75")}
+	if got := mustEval(t, e, `date(y, m, d) = date("2026-02-28")`, vars); got != true {
+		t.Errorf("date(y, m, d) = %#v, want 2026-02-28", got)
+	}
+	if got := mustEval(t, e, `string(date(year: y, month: m + 1, day: d) - date(y, m, d))`, vars); got != "P28D" {
+		t.Errorf("date difference = %#v, want P28D", got)
+	}
+	if got := mustEval(t, e, `date(y, 13, d)`, vars); got != nil {
+		t.Errorf("date(y, 13, d) = %#v, want null", got)
+	}
+	if got := mustEval(t, e, `number(amount, ".", ",")`, vars); got != 1250.75 {
+		t.Errorf(`number(amount, ".", ",") = %#v, want 1250.75`, got)
 	}
 }
 
@@ -229,6 +331,38 @@ func TestCompareAndEqual(t *testing.T) {
 	if !Equal(FromGo(1), FromGo(1.0)) {
 		t.Error("1 and 1.0 should be equal FEEL numbers")
 	}
+	// Equal is the fork's `=` with null read as false. The structural
+	// comparison it replaced compared temporals field by field, so two
+	// renderings of one instant were unequal although `=` said true.
+	e := newFEEL(t)
+	for _, p := range []struct {
+		a, b string
+		want bool
+	}{
+		{`time("10:00:00+01:00")`, `time("09:00:00Z")`, true},
+		{`date and time("2020-01-01T10:00:00+01:00")`, `date and time("2020-01-01T09:00:00Z")`, true},
+		{`duration("PT60M")`, `duration("PT1H")`, true},
+		{`{a: 1.0, b: [1, 2]}`, `{a: 1, b: [1.00, 2]}`, true},
+		{`[1, "a"]`, `[1, 2]`, false}, // `=` is null
+		{`1`, `"1"`, false},           // `=` is null
+		{`null`, `null`, true},
+		{`1`, `null`, false},
+	} {
+		a, err := e.EvalText(p.a, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := e.EvalText(p.b, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := Equal(a, b); got != p.want {
+			t.Errorf("Equal(%s, %s) = %v, want %v", p.a, p.b, got, p.want)
+		}
+	}
+	if got := mustEval(t, e, `duplicate values([time("10:00:00+01:00"), time("09:00:00Z")])`, nil); len(got.([]any)) != 1 {
+		t.Errorf("duplicate values over one instant twice = %v, want one item", got)
+	}
 	if c, ok := Compare(FromGo(1), FromGo(2)); !ok || c != -1 {
 		t.Errorf("Compare(1,2) = %d,%v", c, ok)
 	}
@@ -251,8 +385,8 @@ func TestUnaryTestSemantics(t *testing.T) {
 	if ok, err := e.EvalUnaryTest(x, FromGo(true), nil); err != nil || !ok {
 		t.Errorf("unary test `true` against true = %v (err %v), want true", ok, err)
 	}
-	// A range whose bounds cannot be compared with the tested value is a
-	// non-match rather than an error, so a mixed-type table still evaluates.
+	// A range whose bounds cannot be compared with the tested value is null —
+	// neither a match nor an error — so a mixed-type table still evaluates.
 	r, err := e.CompileUnaryTest("[1..10]")
 	if err != nil {
 		t.Fatal(err)
@@ -317,9 +451,44 @@ func TestInjectedClockDrivesTheTemporalBuiltins(t *testing.T) {
 		t.Errorf("date comparison against the injected clock = %v, want true", got)
 	}
 
+	// An injected clock's location is the engine's configured zone
+	// (feel.timezone): today() is the calendar date there, not in UTC.
+	kiritimati, err := time.LoadLocation("Pacific/Kiritimati")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zoned, err := NewEvaluator(FEEL, WithClock(func() time.Time { return fixed.In(kiritimati) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustEval(t, zoned, "string(today())", nil); got != "2021-06-16" {
+		t.Errorf("today() with a +14:00 clock = %v, want 2021-06-16", got)
+	}
+
 	// Without a clock, the real one applies and the built-ins still work.
 	live := newFEEL(t)
 	if _, ok := mustEval(t, live, "today()", nil).(time.Time); !ok {
 		t.Error("today() did not return a date without an injected clock")
+	}
+}
+
+func TestTemporalZoneProperties(t *testing.T) {
+	// DMN 1.5 §10.3.2.3 temporal properties: `time offset` is a days and
+	// time duration, null for a zoneless value.
+	e := newFEEL(t)
+	cases := map[string]any{
+		`string(time("10:00:00+02:00").time offset)`:                     "PT2H",
+		`string(date and time("2024-01-01T10:00:00Z").time offset)`:      "PT0S",
+		`time("10:00:00").time offset`:                                   nil,
+		`date and time("2024-01-01T10:00:00").time offset`:               nil,
+		`date and time("2024-01-01T10:00:00").timezone offset`:           nil,
+		`string(date and time("2024-01-01T10:00:00-05:30").time offset)`: "-PT5H30M",
+		`date and time("2024-01-01T10:00:00@Europe/Paris").timezone`:     "Europe/Paris",
+		`date and time("2024-01-01T10:00:00+02:00").timezone`:            nil,
+	}
+	for expr, want := range cases {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("%s = %#v, want %#v", expr, got, want)
+		}
 	}
 }

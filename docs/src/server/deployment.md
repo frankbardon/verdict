@@ -128,13 +128,17 @@ key has a documented default and a file only needs the keys it changes. See
   finding, so a table that develops a hole fails the build rather than a request.
 - **Turn on `strict_mode` in production**, and leave it off while modelling.
 - **Keep `feel.max_iterations` bounded.** It is the iteration budget of one
-  expression evaluation: every element a `for`, `some` or `every` iteration
-  context produces is charged against it, integer ranges and list domains
-  alike, so nested contexts (`for i in 1..n, j in 1..n`) are charged n². A model
-  accepted over Twirp or MCP could otherwise ask for a billion elements. The
-  1,000,000 default fails such an expression with `VERDICT_EVAL_005`, refusing
-  an over-long range before allocating it; each evaluation gets the whole
-  budget, so parallel evaluations do not starve one another. Raise it only for
-  a model that genuinely iterates more. There is no unlimited setting.
+  request: every element a `for`, `some` or `every` iteration context produces
+  anywhere in the request is charged against it — every decision evaluated
+  (parallel siblings included), every business knowledge model, boxed function
+  and decision service invoked from FEEL, every unary test — integer ranges and
+  list domains alike, so nested contexts (`for i in 1..n, j in 1..n`) are
+  charged n² and `for i in 1..n return bkm(i)` is charged the work of all n
+  calls. A model accepted over Twirp or MCP could otherwise ask for a billion
+  elements, directly or one function call at a time. The 1,000,000 default
+  fails such a request with `VERDICT_EVAL_005`, refusing an over-long range
+  before allocating it; each request gets the whole budget, so concurrent
+  requests do not starve one another. Raise it only for a model that genuinely
+  iterates more. There is no unlimited setting.
 - **Watch `fallback_used` in your traces.** A rising rate is an agent
   availability problem showing up before your users report it.

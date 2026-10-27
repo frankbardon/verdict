@@ -43,7 +43,7 @@ type NodeEvaluator = eval.NodeEvaluator
 // FunctionLibrary is a namespaced bundle of application FEEL functions.
 type FunctionLibrary = vfeel.FunctionLibrary
 
-// DefaultMaxIterations is the per-evaluation iteration budget an engine uses
+// DefaultMaxIterations is the per-request iteration budget an engine uses
 // unless WithMaxIterations sets another.
 const DefaultMaxIterations = vfeel.DefaultMaxIterations
 
@@ -198,20 +198,23 @@ func WithMemoization(on bool) Option {
 	return func(o *options) { o.memoize = on }
 }
 
-// WithMaxIterations sets the iteration budget of one FEEL expression
-// evaluation: the total number of elements its `for`, `some` and `every`
-// iteration contexts may produce together — integer ranges (`a..b`) and list
-// domains alike, nested and multi-context products (`for i in 1..n, j in
-// 1..n`) counted in full. An expression that would exceed it fails with
-// VERDICT_EVAL_005, an integer range before any of its elements is built,
-// rather than allocating work that exhausts memory — the risk with a model
-// loaded over the network through `verdict serve`. Every evaluation starts
-// with the whole budget; sibling decisions evaluating in parallel never draw
-// on each other's.
+// WithMaxIterations sets the iteration budget of one request: the total number
+// of elements the `for`, `some` and `every` iteration contexts of every FEEL
+// expression the request evaluates may produce together — integer ranges
+// (`a..b`) and list domains alike, nested and multi-context products (`for i
+// in 1..n, j in 1..n`) counted in full. One budget covers the whole request:
+// every decision of the evaluated slice (sibling decisions evaluating in
+// parallel included), every business knowledge model, boxed function and
+// decision service invoked from FEEL, every unary-test alternative. So `for i
+// in 1..1000 return bkm(i)` is charged the work of all thousand calls, not of
+// one. A request that would exceed it fails with VERDICT_EVAL_005, an integer
+// range before any of its elements is built, rather than allocating work that
+// exhausts memory — the risk with a model loaded over the network through
+// `verdict serve`. Every request starts with the whole budget.
 //
 // The default is 1,000,000 (DefaultMaxIterations): far beyond what a decision
-// iterates on purpose, small enough to bound one expression's lists to roughly
-// a hundred megabytes. Zero means that default; a negative value is a
+// model iterates on purpose, small enough to bound a request's lists to
+// roughly a hundred megabytes. Zero means that default; a negative value is a
 // configuration error. There is no "unlimited" setting — raise the budget
 // instead.
 func WithMaxIterations(n int64) Option {

@@ -151,6 +151,13 @@ func isOrderingComparison(x *Expr) bool {
 //
 // A nil test is the irrelevance marker and matches unconditionally.
 func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) (bool, error) {
+	return e.EvalUnaryTestBudget(u, input, vars, nil)
+}
+
+// EvalUnaryTestBudget is EvalUnaryTest drawing on a shared iteration budget:
+// every alternative charges the same one. A nil budget gives each alternative
+// a whole budget of its own, as EvalUnaryTest does.
+func (e *Evaluator) EvalUnaryTestBudget(u *UnaryTest, input any, vars map[string]any, budget *Budget) (bool, error) {
 	if u.MatchesAnything() {
 		if u != nil && u.negate {
 			return false, nil
@@ -169,7 +176,7 @@ func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) 
 	// not a match — unless some alternative matched outright.
 	matched, unknown := false, false
 	for _, alt := range u.alts {
-		v, err := e.Eval(alt.expr, scope)
+		v, err := e.EvalBudget(alt.expr, scope, budget)
 		if err != nil {
 			return false, err
 		}
@@ -177,16 +184,13 @@ func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) 
 			unknown = true
 			continue
 		}
-		if rv, isRange := v.(*pfeel.RangeValue); isRange && (IsNull(input) || rv.HasNullEndpoint()) {
-			// `[1..10]` against null, or `[null..10]` against anything:
-			// membership is the endpoint comparisons, and each is null for a
-			// null operand, so the test is null too.
-			unknown = true
-			continue
-		}
-		ok, err := interpretTestResult(v, input, alt.literalBool)
+		ok, known, err := interpretTestResult(v, input, alt.literalBool)
 		if err != nil {
 			return false, &EvalError{Text: alt.source, Err: err}
+		}
+		if !known {
+			unknown = true
+			continue
 		}
 		if ok {
 			matched = true
@@ -200,45 +204,58 @@ func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) 
 }
 
 // interpretTestResult applies DMN's rule for turning the value of a unary-test
-// alternative into a match decision.
-func interpretTestResult(v, input any, literalBool bool) (bool, error) {
-	if b, ok := v.(bool); ok && !literalBool {
+// alternative into a match decision. known is false when the test is null
+// rather than true or false — the cell and the input are of different kinds,
+// or of a kind with no order — so that neither the entry nor its `not(...)`
+// matches (DMN 1.5 §10.3.2.15, Table 51).
+func interpretTestResult(v, input any, literalBool bool) (ok, known bool, err error) {
+	if b, isBool := v.(bool); isBool && !literalBool {
 		// A comparison, a range membership check or a predicate call.
-		return b, nil
+		return b, true, nil
 	}
 	switch tv := v.(type) {
 	case *pfeel.RangeValue:
-		return rangeContains(tv, input)
+		// `[1..10]` is `? in [1..10]`: null for a null input or endpoint, and
+		// for an input the endpoints cannot be ordered against (`5` against
+		// `["a".."z"]`, `true` against `[false..true]`).
+		return membership(input, tv)
 	case []any:
-		// DMN 1.5 §7.3.2 (UnaryTests, alternatives a and b): the tested value satisfies a list
-		// either by being equal to it — a list-valued input against a list
-		// literal cell — or by being equal to one of its items.
-		if Equal(tv, input) {
-			return true, nil
+		// DMN 1.5 §7.3.2 (UnaryTests, alternatives a and b): the tested value
+		// satisfies a list either by being equal to it — a list-valued input
+		// against a list literal cell — or by being in it. Both are FEEL's
+		// three-valued `=` and `in`, folded as a disjunction (Table 51). The
+		// whole-list equality applies only to a list input: a scalar input is
+		// tested for membership alone, not also compared to the list itself.
+		inOk, inKnown, err := membership(input, tv)
+		if err != nil || inOk {
+			return inOk, inKnown, err
 		}
-		for _, item := range tv {
-			if Equal(item, input) {
-				return true, nil
+		if _, isList := input.([]any); isList {
+			eq, eqKnown := equal3(tv, input)
+			if eq {
+				return true, true, nil
 			}
+			return false, inKnown && eqKnown, nil
 		}
-		return false, nil
+		return false, inKnown, nil
 	}
-	// Any other value — including a bare boolean literal — is an equality test.
-	return Equal(v, input), nil
+	// Any other value — including a bare boolean literal — is an equality
+	// test, and an input of another kind makes it null (§10.3.2.2: `"1" = 1`
+	// is null).
+	eq, eqKnown := equal3(v, input)
+	return eq, eqKnown, nil
 }
 
-// rangeContains asks a FEEL range whether it contains the tested value.
-// Comparing incomparable types is not an error in a decision table: it simply
-// means the rule does not match, which is what lets a table mix string and
-// numeric inputs across rules without every row erroring out.
-func rangeContains(r *pfeel.RangeValue, input any) (bool, error) {
-	if IsNull(input) {
-		return false, nil
+// membership is FEEL's `input in container` for a range or list cell, read
+// three-valued. It goes through the fork's `in`, so a cell and the operator
+// cannot disagree.
+func membership(input, container any) (ok, known bool, err error) {
+	r, err := pfeel.In(input, container)
+	if err != nil {
+		return false, false, err
 	}
-	if _, err := r.Position(input); err != nil {
-		return false, nil
-	}
-	return r.Contains(input), nil
+	b, isBool := r.(bool)
+	return b, isBool, nil
 }
 
 // inputRefName is the identifier the tested value is also bound to.
