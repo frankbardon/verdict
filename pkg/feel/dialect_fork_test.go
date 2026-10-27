@@ -335,6 +335,34 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("a for over a non-list iterates the singleton list", func(t *testing.T) {
+		// DMN 1.5 implicit conversion (§10.3.2.9), as for quantifiers: a single
+		// value where a list is expected is the one-element list holding it.
+		// Upstream raised a type mismatch. Null is the singleton [null], and a
+		// range value is wrapped, not iterated; `1..3` still iterates.
+		cases := map[string]string{
+			"for x in 5 return x * 2":                 "[10]",
+			"for x in null return x":                  "[<nil>]",
+			`for s in "a" return s + "b"`:             "[ab]",
+			"for x in n return x + 1":                 "[8]",
+			"for x in 1, y in [2, 3] return x + y":    "[3 4]",
+			"for x in [1, 2], y in 3 return x * y":    "[3 6]",
+			"for x in [1, 2], y in x return y":        "[1 2]",
+			"for x in [1, 2], y in null return y":     "[<nil> <nil>]",
+			"for x in 1, y in 2, z in 3 return x+y+z": "[6]",
+			"for x in [1..3] return 2 in x":           "[true]",
+			"count(for x in [1..3] return x)":         "1",
+			"for x in 1..3 return x":                  "[1 2 3]",
+			"for x in 2, y in 1..x return y":          "[1 2]",
+		}
+		vars := map[string]any{"n": FromGo(7)}
+		for expr, want := range cases {
+			if s := fmt.Sprint(mustEval(t, e, expr, vars)); s != want {
+				t.Errorf("%s = %s, want %s", expr, s, want)
+			}
+		}
+	})
+
 	t.Run("an iteration context iterates an integer range", func(t *testing.T) {
 		// DMN 1.5 FEEL grammar rule 47 and §10.3.2.14: `name in a..b` iterates
 		// the integers from a to b inclusive, descending when b < a. Upstream

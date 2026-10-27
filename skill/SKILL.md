@@ -287,8 +287,10 @@ opens as an empty canvas.
   `[1,2,3]` and `3..1` counts down; both endpoints are included and must be
   integers, or the whole expression is null. `some`/`every` accept `a..b` too.
   Several contexts yield one flat list: `for x in [1,2], y in 1..x return y` is
-  `[1,1,2]`. Write `1..3`, not `[1..3]` — the bracketed form is a range value,
-  which `for` rejects as not a list.
+  `[1,1,2]`. A non-list domain is a one-element list, as for `some`/`every`:
+  `for x in 5 return x * 2` is `[10]`, `for x in null return x` is `[null]`.
+  Write `1..3`, not `[1..3]` — the bracketed form is a range value, so
+  `for x in [1..3] return x` is `[[1..3]]`, one element, not three.
 - **Input names come from the input-data variable**, not the file. `verdict
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated

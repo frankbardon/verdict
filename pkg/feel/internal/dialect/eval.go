@@ -379,45 +379,60 @@ func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, isRange := fe.ListExpr.(*IterationRange); isRange && listLike == nil {
+	aList, ok := iterationDomain(fe.ListExpr, listLike)
+	if !ok {
 		// An integer-range context with a non-integer endpoint: the whole
 		// for expression is null, not a type mismatch.
 		return nil, nil
 	}
 
-	if aList, ok := listLike.([]any); ok {
-		intp.PushEmpty()
-		results := make([]any, 0)
-		for _, val := range aList {
-			intp.Bind(fe.Varname, val)
+	intp.PushEmpty()
+	results := make([]any, 0)
+	for _, val := range aList {
+		intp.Bind(fe.Varname, val)
 
-			res, err := fe.ReturnExpr.Eval(intp)
-			if err != nil {
-				intp.Pop()
-				return nil, err
-			}
-			if fe.Continues {
-				if res == nil {
-					// The inner context was an integer range with a
-					// non-integer endpoint; the whole expression is null.
-					intp.Pop()
-					return nil, nil
-				}
-				// DMN 1.5 FEEL grammar rule 46 and §10.3.2.14: several
-				// iteration contexts range over their cartesian product and
-				// yield one flat list. Only the inner context's own list is
-				// spliced; the body's result is never flattened.
-				inner, _ := res.([]any)
-				results = append(results, inner...)
-				continue
-			}
-			results = append(results, res)
+		res, err := fe.ReturnExpr.Eval(intp)
+		if err != nil {
+			intp.Pop()
+			return nil, err
 		}
-		intp.Pop()
-		return results, nil
-	} else {
-		return nil, NewErrTypeMismatch("list")
+		if fe.Continues {
+			if res == nil {
+				// The inner context was an integer range with a
+				// non-integer endpoint; the whole expression is null.
+				intp.Pop()
+				return nil, nil
+			}
+			// DMN 1.5 FEEL grammar rule 46 and §10.3.2.14: several
+			// iteration contexts range over their cartesian product and
+			// yield one flat list. Only the inner context's own list is
+			// spliced; the body's result is never flattened.
+			inner, _ := res.([]any)
+			results = append(results, inner...)
+			continue
+		}
+		results = append(results, res)
 	}
+	intp.Pop()
+	return results, nil
+}
+
+// iterationDomain turns the evaluated domain of one iteration context of a
+// for, some or every into the list it iterates. DMN 1.5 implicit conversion
+// to a singleton list (§10.3.2.9): a single value where a list is expected is
+// the one-element list holding it, so a null domain is [null], not an error,
+// and the body or condition decides what an absent value means. A range value
+// such as [1..3] is not a list and is wrapped likewise. ok is false only for
+// an integer-range context with a non-integer endpoint, whose enclosing
+// expression is null rather than the singleton [null].
+func iterationDomain(listExpr Node, listLike any) (list []any, ok bool) {
+	if _, isRange := listExpr.(*IterationRange); isRange && listLike == nil {
+		return nil, false
+	}
+	if aList, isList := listLike.([]any); isList {
+		return aList, true
+	}
+	return []any{listLike}, true
 }
 
 // Quantified expressions yield a boolean, DMN 1.5 FEEL grammar rule 58 and
@@ -436,18 +451,9 @@ func quantify(intp *Interpreter, varname string, listExpr, cond Node, decisive b
 	if err != nil {
 		return nil, err
 	}
-	// DMN 1.5 implicit conversion to a singleton list (§10.3.2.9): a single
-	// value where a list is expected is the one-element list holding it. A
-	// null domain is therefore [null], not an error, and the condition decides
-	// what an absent value means.
-	if _, isRange := listExpr.(*IterationRange); isRange && listLike == nil {
-		// An integer-range context with a non-integer endpoint is null, not
-		// the singleton [null] a null domain expression would be.
-		return nil, nil
-	}
-	aList, ok := listLike.([]any)
+	aList, ok := iterationDomain(listExpr, listLike)
 	if !ok {
-		aList = []any{listLike}
+		return nil, nil
 	}
 
 	intp.PushEmpty()
