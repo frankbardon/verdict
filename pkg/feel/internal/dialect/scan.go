@@ -45,7 +45,13 @@ var tokenMatchers = []tokenMatcher{
 
 	match(TokenTemporal, `@"(\\.|[^"])*"`),
 	match(TokenString, `"(\\.|[^"])*"`),
-	match(TokenNumber, `\-?[0-9]+(\.[0-9]+)?\b`),
+	// VERDICT DIVERGENCE: a number literal is unsigned. Upstream folded a
+	// leading `-` into the literal regardless of what preceded it, so `x-1`
+	// scanned as `x` followed by the literal `-1` and evaluated to -1, and
+	// `1..n-1` was a syntax error. The minus is always its own token; the
+	// parser's negationOp turns a leading one into a Negation and addOrSubOp
+	// takes one after an operand as subtraction (DMN 1.5 grammar rules 4a, 4f).
+	match(TokenNumber, `[0-9]+(\.[0-9]+)?\b`),
 
 	match("?", ""),
 	match("..", ""),

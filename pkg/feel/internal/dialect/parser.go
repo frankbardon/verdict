@@ -282,8 +282,9 @@ func (p *Parser) mulOrDivOp() (Node, error) {
 // rules 4e and 4f). Upstream parsed neither: a leading `-` was only ever part
 // of a numeric literal. `**` binds tighter than `*` and `/` and associates
 // left, as the fork's other binary operators do; negation binds tighter than
-// `**`, matching a negative numeric literal, so `-x ** 2` is `(-x) ** 2` just
-// as `-2 ** 2` is 4.
+// `**`, matching upstream's negative numeric literal, so `-x ** 2` is
+// `(-x) ** 2` just as `-2 ** 2` is 4. The scanner no longer folds a minus into
+// a literal (see TokenNumber), so every leading `-` reaches negationOp.
 func (p *Parser) powOp() (Node, error) {
 	return p.binop(
 		[]string{"**"},

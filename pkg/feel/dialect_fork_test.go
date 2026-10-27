@@ -679,6 +679,71 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("binary minus without spaces is subtraction", func(t *testing.T) {
+		// Upstream scanned `-1` as a negative literal even after an operand, so
+		// `x-1` was `x` then `-1` and evaluated to -1, and `1..n-1` did not
+		// parse. A minus is now always its own token.
+		vars := map[string]any{"x": FromGo(5), "n": FromGo(4), "a": FromGo(7), "b": FromGo(2)}
+		for expr, want := range map[string]any{
+			"x-1": 4.0, "2-1": 1.0, "(3)-1": 2.0, "a-b": 5.0, "floor(2.5)-1": 1.0,
+			"[1,2][1]-1": 0.0, "x-1-1": 3.0, "x - -1": 6.0, "x--1": 6.0,
+			"-1": -1.0, "2 * -1": -2.0, "2*-1": -2.0, "-9 / 4": -2.25, "-0.5": -0.5,
+			"[-1, -2][2]": -2.0, "count([-1, -2])": 2.0,
+		} {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		for expr, want := range map[string]string{
+			"for i in 1..n-1 return i": "[1 2 3]",
+			"for i in 1..-1 return i":  "[1 0 -1]",
+		} {
+			if got := fmt.Sprint(mustEval(t, e, expr, vars)); got != want {
+				t.Errorf("%s = %s, want %s", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("negative numbers in unary tests", func(t *testing.T) {
+		for _, d := range []Dialect{FEEL, SFEEL} {
+			c := NewCompiler(d)
+			for src, want := range map[string][3]bool{
+				// test => whether -5, -1 and 0 match
+				"-1":       {false, true, false},
+				"< -1":     {true, false, false},
+				">= -1":    {false, true, true},
+				"[-5..-1]": {true, true, false},
+				"(-5..-1)": {false, false, false},
+				"-5, 0":    {true, false, true},
+			} {
+				ut, err := c.CompileUnaryTest(src)
+				if err != nil {
+					t.Errorf("dialect %v: %s does not compile: %v", d, src, err)
+					continue
+				}
+				for i, in := range []float64{-5, -1, 0} {
+					got, err := e.EvalUnaryTest(ut, FromGo(in), nil)
+					if err != nil {
+						t.Errorf("%s against %v: %v", src, in, err)
+						continue
+					}
+					if got != want[i] {
+						t.Errorf("dialect %v: %s matched %v = %v, want %v", d, src, in, got, want[i])
+					}
+				}
+			}
+		}
+		// The analyser reads a negated literal as the boundary it denotes.
+		ut, err := NewCompiler(FEEL).CompileUnaryTest("[-5..-1]")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lits := ut.Literals()
+		if len(lits) != 2 || lits[0].Text != "-5" || lits[1].Text != "-1" {
+			t.Errorf("[-5..-1] literals = %#v, want -5 and -1", lits)
+		}
+	})
+
 	t.Run("multi-word names without keywords still resolve", func(t *testing.T) {
 		vars := map[string]any{"Credit Rating": "good"}
 		if got := mustEval(t, e, `Credit Rating = "good"`, vars); got != true {
