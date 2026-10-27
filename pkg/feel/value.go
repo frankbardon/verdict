@@ -201,6 +201,136 @@ func ToGoExact(v any) any {
 	return ToGo(v)
 }
 
+// KeyOf renders v as a string that identifies it as a FEEL value: two values
+// get the same key only if they are the same kind and print the same lexical
+// form. Every scalar is tagged with its kind, so a string never meets a number
+// or a temporal that prints alike, a date never meets the midnight date and
+// time of that day, and a zoneless date and time never meets the same wall
+// clock at UTC (its lexical form has no `Z`). Numbers use their exact decimal
+// form. Values with no deterministic rendering (functions, unknown Go types)
+// report ok=false, so a caller using the key as a cache key can decline to
+// cache rather than risk a wrong hit.
+//
+// Two equal FEEL values can still get different keys (`1` and `1.0`, the same
+// instant at two offsets); that costs a cache miss, never a wrong answer.
+func KeyOf(v any) (string, bool) {
+	var b strings.Builder
+	if !writeKey(&b, v) {
+		return "", false
+	}
+	return b.String(), true
+}
+
+func writeKey(b *strings.Builder, v any) bool {
+	quote := func(tag, s string) {
+		b.WriteString(tag)
+		b.WriteByte(':')
+		b.WriteString(fmt.Sprintf("%q", s))
+	}
+	switch x := v.(type) {
+	case nil, *pfeel.NullValue:
+		b.WriteString("null")
+	case bool:
+		if x {
+			b.WriteString("true")
+		} else {
+			b.WriteString("false")
+		}
+	case string:
+		quote("s", x)
+	case *pfeel.Number:
+		if x == nil {
+			b.WriteString("null")
+			return true
+		}
+		quote("n", x.String())
+	case *pfeel.FEELDate:
+		if x == nil {
+			return false
+		}
+		quote("date", x.String())
+	case *pfeel.FEELTime:
+		if x == nil {
+			return false
+		}
+		quote("time", x.String())
+	case *pfeel.FEELDatetime:
+		if x == nil {
+			return false
+		}
+		quote("dt", x.String())
+	case *pfeel.FEELDuration:
+		if x == nil {
+			return false
+		}
+		if x.IsYearsMonths() {
+			quote("ymd", x.String())
+		} else {
+			quote("dtd", x.String())
+		}
+	case *pfeel.RangeValue:
+		if x == nil {
+			return false
+		}
+		b.WriteString("range(")
+		if x.StartOpen {
+			b.WriteByte('(')
+		} else {
+			b.WriteByte('[')
+		}
+		if !writeKey(b, x.Start) {
+			return false
+		}
+		b.WriteString("..")
+		if !writeKey(b, x.End) {
+			return false
+		}
+		if x.EndOpen {
+			b.WriteByte(')')
+		} else {
+			b.WriteByte(']')
+		}
+		b.WriteByte(')')
+	case map[string]any:
+		names := make([]string, 0, len(x))
+		for k := range x {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		b.WriteByte('{')
+		for i, k := range names {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(fmt.Sprintf("%q", k))
+			b.WriteByte(':')
+			if !writeKey(b, x[k]) {
+				return false
+			}
+		}
+		b.WriteByte('}')
+	case []any:
+		b.WriteByte('[')
+		for i, e := range x {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			if !writeKey(b, e) {
+				return false
+			}
+		}
+		b.WriteByte(']')
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
+		float32, float64, json.Number, time.Time, time.Duration:
+		// A plain Go scalar is keyed as the FEEL value it converts to.
+		return writeKey(b, FromGo(x))
+	default:
+		// Functions and anything else have no rendering the key can trust.
+		return false
+	}
+	return true
+}
+
 // durationToGo narrows a FEEL duration to a time.Duration. Years-and-months
 // durations have no exact nanosecond length, so they are returned as their
 // canonical ISO-8601 string rather than a wrong number.

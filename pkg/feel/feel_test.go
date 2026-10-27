@@ -779,3 +779,60 @@ func TestTemporalZoneProperties(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyOfSeparatesKinds pins issue #53: KeyOf is the BKM memo key, so two
+// distinct FEEL values must never share one, while identical values must.
+func TestKeyOfSeparatesKinds(t *testing.T) {
+	e := newFEEL(t)
+	key := func(expr string) string {
+		t.Helper()
+		v, err := e.EvalText(expr, nil)
+		if err != nil {
+			t.Fatalf("EvalText(%q): %v", expr, err)
+		}
+		k, ok := KeyOf(v)
+		if !ok {
+			t.Fatalf("KeyOf(%s) is unusable", expr)
+		}
+		return k
+	}
+	distinct := [][2]string{
+		{`date and time("2024-03-05T10:00:00")`, `date and time("2024-03-05T10:00:00Z")`},
+		{`date("2024-03-05")`, `date and time("2024-03-05T00:00:00Z")`},
+		{`date("2024-03-05")`, `date and time("2024-03-05T00:00:00")`},
+		{`time("10:00:00Z")`, `date and time("0000-01-01T10:00:00Z")`},
+		{`time("10:00:00")`, `time("10:00:00Z")`},
+		{`time("10:00:00")`, `time("10:00:00.5")`},
+		{`"1"`, `1`},
+		{`"2024-03-05"`, `date("2024-03-05")`},
+		{`"P1Y"`, `duration("P1Y")`},
+		{`duration("P1D")`, `duration("PT25H")`},
+		{`[1, "1"]`, `["1", 1]`},
+		{`{a: 1}`, `{a: "1"}`},
+		{`[1..2]`, `(1..2]`},
+		{`null`, `"null"`},
+		{`true`, `"true"`},
+	}
+	for _, p := range distinct {
+		if a, b := key(p[0]), key(p[1]); a == b {
+			t.Errorf("KeyOf(%s) = KeyOf(%s) = %s", p[0], p[1], a)
+		}
+	}
+	same := [][2]string{
+		{`time("10:00:00.250")`, `time("10:00:00.25")`},
+		{`{b: 2, a: 1}`, `{a: 1, b: 2}`},
+		{`duration("P1D")`, `duration("PT24H")`},
+		{`date and time("2024-03-05T10:00:00@Europe/Paris")`, `date and time("2024-03-05T10:00:00@Europe/Paris")`},
+	}
+	for _, p := range same {
+		if a, b := key(p[0]), key(p[1]); a != b {
+			t.Errorf("KeyOf(%s) = %s, KeyOf(%s) = %s; want equal", p[0], a, p[1], b)
+		}
+	}
+	if k, ok := KeyOf(int64(3)); !ok || k != key(`3`) {
+		t.Errorf("KeyOf(int64(3)) = %q, %v; want the key of FEEL 3", k, ok)
+	}
+	if _, ok := KeyOf(struct{}{}); ok {
+		t.Errorf("KeyOf of an unknown Go value should be unusable")
+	}
+}
