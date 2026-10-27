@@ -177,9 +177,10 @@ func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) 
 			unknown = true
 			continue
 		}
-		if _, isRange := v.(*pfeel.RangeValue); isRange && IsNull(input) {
-			// `[1..10]` against null: membership is the endpoint comparisons,
-			// and each is null for a null operand, so the test is null too.
+		if rv, isRange := v.(*pfeel.RangeValue); isRange && (IsNull(input) || rv.HasNullEndpoint()) {
+			// `[1..10]` against null, or `[null..10]` against anything:
+			// membership is the endpoint comparisons, and each is null for a
+			// null operand, so the test is null too.
 			unknown = true
 			continue
 		}

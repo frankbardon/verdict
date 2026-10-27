@@ -8,6 +8,32 @@ type RangeValue struct {
 	End     any
 }
 
+// HasNullEndpoint reports whether either endpoint is null. A literal such as
+// `[null..10]` has no defined start, and DMN 1.5 §10.3.2 makes every ordering
+// comparison against it null, so membership in it, and every range built-in
+// over it, is null rather than an answer computed from upstream's ordering of
+// null below every value. The fork builds ranges only from range literals
+// (`< 10` is a comparison, not a range), so a null endpoint here always came
+// from the model, never from an internal encoding of an unbounded interval.
+func (rv RangeValue) HasNullEndpoint() bool {
+	return isNullValue(rv.Start) || isNullValue(rv.End)
+}
+
+// nullOnNullEndpoint makes a range built-in yield null when its `a` or `b`
+// argument is a range with a null endpoint (see HasNullEndpoint).
+func nullOnNullEndpoint(nf *NativeFun) *NativeFun {
+	inner := nf.fn
+	nf.fn = func(args map[string]any) (any, error) {
+		for _, name := range []string{"a", "b"} {
+			if rv, ok := args[name].(*RangeValue); ok && rv.HasNullEndpoint() {
+				return null, nil
+			}
+		}
+		return inner(args)
+	}
+	return nf
+}
+
 func (rv RangeValue) BeforePoint(p any) (bool, error) {
 	pos, err := rv.Position(p)
 	if err != nil {
@@ -140,7 +166,8 @@ func (rv RangeValue) overlapsAfter(other RangeValue) (bool, error) {
 	}
 }
 
-func installRangeFunctions(prelude *Prelude) {
+func installRangeFunctions(p *Prelude) {
+	prelude := rangePrelude{p}
 	prelude.Bind("before", NewNativeFunc(func(kwargs map[string]any) (any, error) {
 		a := kwargs["a"]
 		b := kwargs["b"]
@@ -381,4 +408,12 @@ func installRangeFunctions(prelude *Prelude) {
 
 	}).Required("a", "b"))
 
+}
+
+// rangePrelude binds every range built-in through nullOnNullEndpoint, so a new
+// built-in added to installRangeFunctions cannot skip the null-endpoint rule.
+type rangePrelude struct{ p *Prelude }
+
+func (rp rangePrelude) Bind(name string, nf *NativeFun) {
+	rp.p.Bind(name, nullOnNullEndpoint(nf))
 }

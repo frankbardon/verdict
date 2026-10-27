@@ -49,6 +49,11 @@ yield null (DMN 1.5 §10.3.2), which is "not satisfied" — and `not(< 10)` and
 `not([1..10])` are null too, so they do not match either. Test for a missing
 value with an explicit `null` entry.
 
+A range with a null endpoint, such as `[null..10]` or `(5..null]`, is not
+"unbounded" — its endpoint comparisons are null, so it matches no input, and
+`not([null..10])` matches none either. Write an open-ended test as a
+comparison: `<= 10`, `> 5`.
+
 DMN spells an exclusive bound two ways — `(1..10]` and `]1..10]` are the same
 interval — and Verdict accepts both, because modellers and exporters both use
 both. The one place the bracket spelling costs something is a list index inside

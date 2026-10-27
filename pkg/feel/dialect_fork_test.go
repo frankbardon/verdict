@@ -381,6 +381,67 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("a range with a null endpoint yields null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2: membership and the range built-ins are endpoint
+		// comparisons, each null for a null endpoint. Upstream ordered null
+		// below every value, so `[null..10]` behaved as "up to 10".
+		for _, expr := range []string{
+			"5 in [null..10]", "5 in (5..null]", "15 in [null..10]", "5 in [null..null]",
+			"before([null..10], [20..30])", "after([20..30], (5..null])",
+			"before(1, [null..10])", "after([null..10], 20)",
+			"meets([1..5], [5..null])", "met by([5..null], [1..5])",
+			"overlaps([null..10], [5..20])", "overlaps before([1..10], [5..null])",
+			"overlaps after([5..null], [1..10])", "includes([null..10], 5)",
+			"includes([1..10], [null..5])", "during(5, [null..10])",
+			"during([null..5], [1..10])", "starts(1, [1..null])", "started by([null..5], 1)",
+			"finishes(10, [null..10])", "finished by([1..null], 10)",
+			"coincides([null..10], [null..10])",
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		for expr, want := range map[string]any{
+			"5 in [1..10]": true, "before([1..5], [6..10])": true,
+			"includes([1..10], 5)": true, "overlaps([1..5], [6..10])": false,
+			"before(1, 2)": true,
+		} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("a range unary test with a null endpoint never matches", func(t *testing.T) {
+		c := NewCompiler(FEEL)
+		cases := []struct {
+			src   string
+			input any
+			want  bool
+		}{
+			{"[null..10]", 5, false}, {"[null..10]", 15, false}, {"(5..null]", 7, false},
+			{"? in [null..10]", 5, false}, {"not([null..10])", 5, false},
+			{"not([null..10])", 15, false}, {"[null..10], 5", 5, true},
+			// Open-ended tests are comparisons, not null-endpoint ranges.
+			{"< 10", 5, true}, {"< 10", 15, false}, {">= 10", 10, true}, {"not(< 10)", 15, true},
+		}
+		for _, tc := range cases {
+			ut, err := c.CompileUnaryTest(tc.src)
+			if err != nil {
+				t.Errorf("%s does not compile: %v", tc.src, err)
+				continue
+			}
+			got, err := e.EvalUnaryTest(ut, FromGo(tc.input), nil)
+			if err != nil {
+				t.Errorf("%s against %v: %v", tc.src, tc.input, err)
+				continue
+			}
+			if got != tc.want {
+				t.Errorf("%s matched %v = %v, want %v", tc.src, tc.input, got, tc.want)
+			}
+		}
+	})
+
 	t.Run("multi-word names without keywords still resolve", func(t *testing.T) {
 		vars := map[string]any{"Credit Rating": "good"}
 		if got := mustEval(t, e, `Credit Rating = "good"`, vars); got != true {

@@ -465,7 +465,9 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 		// DMN 1.5 §10.3.2 makes an ordering comparison with a null operand
 		// null. Upstream ordered null below every value, so `null in [1..10]`
 		// was false and `not(null in [1..10])` was true.
-		if isNullValue(leftVal) {
+		// A null endpoint (`[null..10]`) is the same unknown on the range's
+		// side of those comparisons.
+		if isNullValue(leftVal) || rv.HasNullEndpoint() {
 			return null, nil
 		}
 		return rv.Contains(leftVal), nil

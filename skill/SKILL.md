@@ -264,7 +264,10 @@ opens as an empty canvas.
 - **Ordering a null is null.** `2 < null`, `null >= null` and
   `x > 5` with `x` missing all yield null, not true or false — and a `> 5`
   cell does not match a null input. Ranges too: `null in [1..10]` is null, and
-  neither `[1..10]` nor `not([1..10])` matches a null input. Equality is
+  neither `[1..10]` nor `not([1..10])` matches a null input. A null *endpoint*
+  is no bound, not "unbounded": `5 in [null..10]` and range built-ins over it
+  (`before`, `overlaps`, `includes`, …) are null, and a `[null..10]` cell
+  never matches — write `<= 10`. Equality is
   different: `null = null` is true. Guard with `x != null and x > 5` or an
   explicit `null` rule.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
