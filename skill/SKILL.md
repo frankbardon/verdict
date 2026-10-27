@@ -272,7 +272,9 @@ opens as an empty canvas.
   neither `[1..10]` nor `not([1..10])` matches a null input. A null *endpoint*
   is no bound, not "unbounded": `5 in [null..10]` and range built-ins over it
   (`before`, `overlaps`, `includes`, …) are null, and a `[null..10]` cell
-  never matches — write `<= 10`. Equality is
+  never matches — write `<= 10`. A null point is the same: every range
+  built-in given a null `a` or `b` (`before(null, [1..10])`,
+  `includes([1..10], null)`, `coincides(null, null)`) is null. Equality is
   different: `null = null` is true. Guard with `x != null and x > 5` or an
   explicit `null` rule.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,

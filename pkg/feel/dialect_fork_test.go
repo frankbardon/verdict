@@ -521,6 +521,45 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("a range built-in with a null operand yields null", func(t *testing.T) {
+		// DMN 1.5 §10.3.4: the range functions are ordering comparisons over
+		// points, and a parameter outside a built-in's domain makes it null.
+		// Upstream ordered a null point below every value, and raised a type
+		// mismatch for a null where a range was expected.
+		for _, expr := range []string{
+			"before(null, [1..10])", "before([1..10], null)", "before(null, 5)", "before(5, null)",
+			"after(null, 5)", "after(5, null)", "after(null, [1..10])", "after([1..10], null)",
+			"meets(null, [1..5])", "meets([1..5], null)", "met by(null, [1..5])", "met by([1..5], null)",
+			"overlaps(null, [1..5])", "overlaps([1..5], null)",
+			"overlaps before(null, [1..5])", "overlaps before([1..5], null)",
+			"overlaps after(null, [1..5])", "overlaps after([1..5], null)",
+			"finishes(null, [1..10])", "finishes(10, null)",
+			"finished by([1..10], null)", "finished by(null, 10)",
+			"includes([1..10], null)", "includes(null, 5)",
+			"during(null, [1..10])", "during(5, null)",
+			"starts(null, [1..10])", "starts(1, null)",
+			"started by([1..10], null)", "started by(null, 1)",
+			"coincides(null, 5)", "coincides(5, null)", "coincides(null, null)",
+			"coincides(null, [1..5])", "coincides([1..5], null)",
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		// Non-null operands are untouched. coincides over two points is left
+		// out: it still raises a type mismatch, which a later change owns.
+		for expr, want := range map[string]any{
+			"before(1, [2..10])": true, "after(11, [1..10])": true, "before(5, 1)": false,
+			"includes([1..10], 5)": true, "during(5, [1..10])": true,
+			"starts(1, [1..10])": true, "finishes(10, [1..10])": true,
+			"coincides([1..5], [1..5])": true,
+		} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
 	t.Run("a range unary test with a null endpoint never matches", func(t *testing.T) {
 		c := NewCompiler(FEEL)
 		cases := []struct {

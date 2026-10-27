@@ -19,12 +19,20 @@ func (rv RangeValue) HasNullEndpoint() bool {
 	return isNullValue(rv.Start) || isNullValue(rv.End)
 }
 
-// nullOnNullEndpoint makes a range built-in yield null when its `a` or `b`
-// argument is a range with a null endpoint (see HasNullEndpoint).
-func nullOnNullEndpoint(nf *NativeFun) *NativeFun {
+// nullOnNullOperand makes a range built-in yield null when its `a` or `b`
+// argument is null, or is a range with a null endpoint (see HasNullEndpoint).
+// DMN 1.5 §10.3.4 defines each range function by ordering comparisons between
+// points and endpoints, and says a built-in given a parameter outside its
+// domain yields null; null is not a point. Upstream ordered null below every
+// value, so `before(null, [1..10])` was false and `includes([1..10], null)`
+// false, while a null where a range was expected raised a type error.
+func nullOnNullOperand(nf *NativeFun) *NativeFun {
 	inner := nf.fn
 	nf.fn = func(args map[string]any) (any, error) {
 		for _, name := range []string{"a", "b"} {
+			if isNullValue(args[name]) {
+				return null, nil
+			}
 			if rv, ok := args[name].(*RangeValue); ok && rv.HasNullEndpoint() {
 				return null, nil
 			}
@@ -410,10 +418,10 @@ func installRangeFunctions(p *Prelude) {
 
 }
 
-// rangePrelude binds every range built-in through nullOnNullEndpoint, so a new
-// built-in added to installRangeFunctions cannot skip the null-endpoint rule.
+// rangePrelude binds every range built-in through nullOnNullOperand, so a new
+// built-in added to installRangeFunctions cannot skip the null-operand rule.
 type rangePrelude struct{ p *Prelude }
 
 func (rp rangePrelude) Bind(name string, nf *NativeFun) {
-	rp.p.Bind(name, nullOnNullEndpoint(nf))
+	rp.p.Bind(name, nullOnNullOperand(nf))
 }
