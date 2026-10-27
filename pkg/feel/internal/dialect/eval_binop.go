@@ -148,7 +148,60 @@ func compareInterfaces(leftVal, rightVal any) (int, error) {
 			}
 		}
 	}
+	if comparisonKind(leftVal) != comparisonKind(rightVal) {
+		return 0, NewEvalError(codeIncomparable, "incomparable types", fmt.Sprintf("cannot compare %T with %T", leftVal, rightVal))
+	}
 	return 0, NewEvalError(-3106, "invalid types", fmt.Sprintf("bad type in comparation, %T vs. %T", leftVal, rightVal))
+}
+
+// codeIncomparable is the EvalError code compareInterfaces reports when its
+// operands are of different kinds (a number and a string, a years-and-months
+// and a days-and-time duration). It is distinct from -3106, which still covers
+// two values of one kind that the fork cannot order.
+//
+// VERDICT DIVERGENCE: upstream raised -3106 for both, and `=`, `<`, `<=`, `>`,
+// `>=`, range membership and the range built-ins all propagated it as an
+// evaluation error. DMN 1.5 §10.3.2.15 says inputs outside an operator's
+// domain yield null, and Table 52 restricts every comparison to two operands
+// of the same kind; §10.3.2.2 gives `"1" = 1` as null explicitly. Those
+// callers turn this code into null (see isIncomparable).
+const codeIncomparable = -3107
+
+// isIncomparable reports whether err is compareInterfaces' different-kinds
+// error, at any depth of a list or context comparison.
+func isIncomparable(err error) bool {
+	var evalError *EvalError
+	return errors.As(err, &evalError) && evalError.Code == codeIncomparable
+}
+
+// comparisonKind names the FEEL kind a value is compared as. Values of
+// different kinds are never comparable. The three temporal types share one
+// kind because compareInterfaces orders their mixtures through instantOf; the
+// two duration types do not, because DMN keeps them distinct.
+func comparisonKind(v any) string {
+	switch x := v.(type) {
+	case string:
+		return "string"
+	case *Number:
+		return "number"
+	case bool:
+		return "boolean"
+	case []any:
+		return "list"
+	case map[string]any:
+		return "context"
+	case *RangeValue:
+		return "range"
+	case *FEELDuration:
+		if x.isYearsMonths() {
+			return "years and months duration"
+		}
+		return "days and time duration"
+	}
+	if _, ok := instantOf(v); ok {
+		return "temporal"
+	}
+	return fmt.Sprintf("%T", v)
 }
 
 // instantOf reports the instant a temporal value denotes, whichever of FEEL's
@@ -387,6 +440,9 @@ func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool) (any, e
 	}
 	r, err := compareInterfaces(leftVal, rightVal)
 	if err != nil {
+		if isIncomparable(err) {
+			return null, nil
+		}
 		return false, err
 	}
 	return holds(r), nil
@@ -416,18 +472,29 @@ func (binop Binop) compareLEOp(intp *Interpreter) (any, error) {
 	return binop.orderingOp(intp, func(r int) bool { return r <= 0 })
 }
 
+// equalOp implements FEEL's `=`. Operands of different kinds compare as null
+// (DMN 1.5 §10.3.2.2: `"1" = 1` is null); a null operand still makes a
+// boolean, so `null = null` is true and `2 = null` is false.
 func (binop Binop) equalOp(intp *Interpreter) (any, error) {
 	r, err := binop.compareValues(intp)
 	if err != nil {
+		if isIncomparable(err) {
+			return null, nil
+		}
 		return false, err
 	} else {
 		return r == 0, nil
 	}
 }
 
+// notEqalOp implements FEEL's `!=`, which DMN 1.5 §10.3.2.15 defines as
+// not(e1 = e2): null for operands of different kinds, as `=` is.
 func (binop Binop) notEqalOp(intp *Interpreter) (any, error) {
 	r, err := binop.compareValues(intp)
 	if err != nil {
+		if isIncomparable(err) {
+			return null, nil
+		}
 		var evalError *EvalError
 		if errors.As(err, &evalError) && evalError.Code == -3106 {
 			// type mismatch
@@ -539,6 +606,14 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 		// side of those comparisons.
 		if isNullValue(leftVal) || rv.HasNullEndpoint() {
 			return null, nil
+		}
+		// A point of another kind than the endpoints (`5 in ["a".."z"]`)
+		// makes those comparisons null too, where upstream panicked.
+		if _, err := rv.Position(leftVal); err != nil {
+			if isIncomparable(err) {
+				return null, nil
+			}
+			return nil, err
 		}
 		return rv.Contains(leftVal), nil
 	case []any:

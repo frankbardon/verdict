@@ -173,6 +173,75 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("comparison of different kinds is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.2 (`"1" = 1` is null) and §10.3.2.15 (inputs outside
+		// an operator's domain are null; Table 52 needs two operands of one
+		// kind). Upstream raised "bad type in comparation" for every one.
+		for _, expr := range []string{
+			`1 = "a"`, `"a" = 1`, `1 != "a"`, `true = 1`, `[1] = ["a"]`, `{a: 1} = {a: "x"}`,
+			`1 < "a"`, `1 <= "a"`, `"a" > 1`, `"a" >= 1`, `true < 1`,
+			`date("2024-01-01") < 5`, `date("2024-01-01") = "2024-01-01"`,
+			`duration("P1Y") < duration("P1D")`, `duration("P1Y") = duration("P1D")`,
+			`duration("P1M") != duration("PT1H")`,
+			`5 in ["a".."z"]`,
+			`before(1, "a")`, `after("a", 1)`, `before(1, ["a".."z"])`, `after(["a".."z"], 1)`,
+			`includes([1..10], "a")`, `during("a", [1..10])`, `starts(1, ["a".."z"])`,
+			`finishes("z", [1..10])`, `meets([1..5], ["a".."z"])`, `overlaps([1..5], ["a".."z"])`,
+			`coincides(1, "a")`, `coincides([1..5], ["a".."e"])`,
+			`before(duration("P1Y"), duration("P1D"))`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		// Null equality and same-kind comparisons are unchanged.
+		for expr, want := range map[string]any{
+			"null = null": true, "2 = null": false, `"a" = null`: false, "2 != null": true,
+			`1 = 1`: true, `"a" = "a"`: true, `"a" != "b"`: true, `1 < 2`: true, `"a" < "b"`: true, `[1] = [1, 2]`: false,
+			`duration("P1Y") = duration("P12M")`: true, `duration("PT23H") < duration("P1D")`: true,
+			`date("2024-01-01") < date and time("2024-01-02T00:00:00")`: true,
+			`5 in [1..10]`: true, `before(1, 2)`: true, `coincides("a", "a")`: true,
+		} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("a unary test of another kind than its input does not match", func(t *testing.T) {
+		// A decision table mixing kinds across rules must not error out: a
+		// mismatched test is "not satisfied" (the comparisons are null), and
+		// not(...) over a null comparison is null, so not a match either.
+		c := NewCompiler(FEEL)
+		cases := []struct {
+			src   string
+			input any
+			want  bool
+		}{
+			{`"a"`, 5, false}, {`"a", 5`, 5, true}, {"5", "a", false},
+			{"< 5", "a", false}, {">= 5", "a", false}, {`< "m"`, 5, false},
+			{"? = 5", "a", false}, {"? != 5", "a", false},
+			{"[1..10]", "a", false}, {`["a".."z"]`, 5, false},
+			{"not(< 5)", "a", false}, {`not(< 5, "a")`, "a", false}, {`not(< 5, "b")`, "a", false}, {`not("b")`, "a", true},
+			{`< 5`, 3, true},
+		}
+		for _, tc := range cases {
+			ut, err := c.CompileUnaryTest(tc.src)
+			if err != nil {
+				t.Errorf("%s does not compile: %v", tc.src, err)
+				continue
+			}
+			got, err := e.EvalUnaryTest(ut, FromGo(tc.input), nil)
+			if err != nil {
+				t.Errorf("%s against %v: %v", tc.src, tc.input, err)
+				continue
+			}
+			if got != tc.want {
+				t.Errorf("%s matched %v = %v, want %v", tc.src, tc.input, got, tc.want)
+			}
+		}
+	})
+
 	t.Run("a comparison unary test does not match a null input", func(t *testing.T) {
 		// The comparison yields null, which is "not satisfied" — it must not
 		// fall through to equality, where null would equal the null input.
@@ -827,9 +896,10 @@ func TestForkedDefects(t *testing.T) {
 				t.Errorf("%s = %#v, want a parse failure", expr, ToGo(v))
 			}
 		}
-		// The two duration kinds are distinct types and do not compare.
-		if v, err := e.EvalText(`duration("P1Y") = duration("P1D")`, nil); err == nil {
-			t.Errorf(`duration("P1Y") = duration("P1D") = %#v, want a type error`, ToGo(v))
+		// The two duration kinds are distinct types and do not compare: the
+		// comparison is null (see "comparison of different kinds is null").
+		if got := mustEval(t, e, `duration("P1Y") = duration("P1D")`, nil); got != nil {
+			t.Errorf(`duration("P1Y") = duration("P1D") = %#v, want null`, got)
 		}
 	})
 

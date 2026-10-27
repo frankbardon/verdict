@@ -277,6 +277,12 @@ opens as an empty canvas.
   `includes([1..10], null)`, `coincides(null, null)`) is null. Equality is
   different: `null = null` is true. Guard with `x != null and x > 5` or an
   explicit `null` rule.
+- **Comparing different kinds is null, not an error.** `1 = "a"`, `1 != "a"`,
+  `1 < "a"`, `duration("P1Y") < duration("P1D")`, `5 in ["a".."z"]` and range
+  built-ins over mixed kinds (`before(1, "a")`, `coincides(1, "a")`) all yield
+  null. In a table, a `< 5` cell against a string input simply does not match,
+  and neither does `not(< 5)`; an equality cell such as `"gold"` against a
+  number does not match, so `not("gold")` does.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration

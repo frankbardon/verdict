@@ -222,3 +222,47 @@ func TestAgreeingOverlapUnderAnyIsNotAnError(t *testing.T) {
 		}
 	}
 }
+
+// TestMixedKindEntriesDoNotFailTheTable checks DMN 1.5 §10.3.2.15 at the engine
+// level: a rule whose input entry is of another kind than the input (`< 5`
+// against a string, `"gold"` against a number) is simply not matched. Upstream
+// raised a type mismatch from the comparison, which surfaced as a
+// VERDICT_EVAL_005 and failed the whole decision.
+func TestMixedKindEntriesDoNotFailTheTable(t *testing.T) {
+	doc := `{"vdj":"1.0","id":"mixed","conformance_level":"feel",
+	  "input_data":[{"id":"tier","name":"Tier","variable":{"name":"Tier","type_ref":"Any"}}],
+	  "decisions":[{"id":"band","name":"Band","required_inputs":["tier"],
+	    "variable":{"name":"Band","type_ref":"string"},
+	    "logic":{"kind":"decisionTable","hit_policy":"FIRST",
+	      "inputs":[{"expression":"Tier"}],
+	      "outputs":[{"name":"band","type_ref":"string"}],
+	      "rules":[
+	        {"id":"r1","when":["< 5"],"then":["\"low\""]},
+	        {"id":"r2","when":["not(< 5)"],"then":["\"not low\""]},
+	        {"id":"r3","when":["\"gold\""],"then":["\"gold\""]},
+	        {"id":"r4","when":["-"],"then":["\"other\""]}]}}]}`
+
+	e, err := verdict.NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	for in, want := range map[any]string{3: "low", 7: "not low", "gold": "gold", "silver": "other"} {
+		res, err := e.EvaluateDecision(context.Background(), m.ID, "Band", verdict.Inputs{"Tier": in})
+		if err != nil {
+			t.Errorf("Tier %v: %v", in, err)
+			continue
+		}
+		for _, d := range res.Diagnostics {
+			if d.Code == diag.CodeExpressionError {
+				t.Errorf("Tier %v: a mismatched entry failed the table: %s", in, d)
+			}
+		}
+		if got := res.Outputs["Band"]; got != want {
+			t.Errorf("Tier %v: Band = %#v, want %q", in, got, want)
+		}
+	}
+}

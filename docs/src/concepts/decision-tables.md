@@ -49,6 +49,12 @@ yield null (DMN 1.5 §10.3.2.15), which is "not satisfied" — and `not(< 10)` a
 `not([1..10])` are null too, so they do not match either. Test for a missing
 value with an explicit `null` entry.
 
+An entry of another kind than its input is the same: `< 10` against the string
+`"gold"` is null (DMN 1.5 §10.3.2.15 defines comparison only between two values
+of one kind), so neither `< 10` nor `not(< 10)` matches, and the table does not
+fail. An equality entry such as `"gold"` against a number is simply not equal,
+so `not("gold")` matches it.
+
 A range with a null endpoint, such as `[null..10]` or `(5..null]`, is not
 "unbounded" — its endpoint comparisons are null, so it matches no input, and
 `not([null..10])` matches none either. Write an open-ended test as a

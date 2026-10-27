@@ -20,7 +20,8 @@ func (rv RangeValue) HasNullEndpoint() bool {
 }
 
 // nullOnNullOperand makes a range built-in yield null when its `a` or `b`
-// argument is null, or is a range with a null endpoint (see HasNullEndpoint).
+// argument is null, or is a range with a null endpoint (see HasNullEndpoint),
+// or when a comparison inside it pairs values of different kinds.
 // DMN 1.5 §10.3.4.7 defines each range function by ordering comparisons between
 // points and endpoints, and says a built-in given a parameter outside its
 // domain yields null; null is not a point. Upstream ordered null below every
@@ -37,7 +38,13 @@ func nullOnNullOperand(nf *NativeFun) *NativeFun {
 				return null, nil
 			}
 		}
-		return inner(args)
+		v, err := inner(args)
+		if err != nil && isIncomparable(err) {
+			// A point or endpoint of another kind than its counterpart
+			// (`before(1, "a")`) is outside the built-in's domain.
+			return null, nil
+		}
+		return v, err
 	}
 	return nf
 }
