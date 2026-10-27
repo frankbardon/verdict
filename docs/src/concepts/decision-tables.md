@@ -49,16 +49,28 @@ yield null (DMN 1.5 §10.3.2.15), which is "not satisfied" — and `not(< 10)` a
 `not([1..10])` are null too, so they do not match either. Test for a missing
 value with an explicit `null` entry.
 
-An entry of another kind than its input is the same: `< 10` against the string
-`"gold"` is null (DMN 1.5 §10.3.2.15 defines comparison only between two values
-of one kind), so neither `< 10` nor `not(< 10)` matches, and the table does not
-fail. An equality entry such as `"gold"` against a number is simply not equal,
-so `not("gold")` matches it.
+An entry of another kind than its input is the same, whatever its form. DMN 1.5
+§10.3.2.15 defines `=`, `<` and range membership only between two values of one
+kind, and §10.3.2.2 gives `"1" = 1` as null, so `< 10` against the string
+`"gold"`, `"gold"` against the number `5`, `["a".."z"]` against `5` and
+`[false..true]` against `true` (booleans have no order, Table 54) are all null.
+None of them matches, their `not(...)` is null too (Table 51), so `not("gold")`
+does not match `5` either — and the table does not fail. An entry with several
+alternatives is a disjunction: `not(1, "a")` against `2` is null, because
+`2 = "a"` is. To catch "anything that is not this", give the kinds their own
+rules or end the table with a `-` rule.
 
-A list literal entry such as `[1, 2]` matches an input equal to one of its
-items, and also a list-valued input equal to the list itself (DMN 1.5 §7.3.2):
-lists are equal when they have the same length and equal elements in order,
-so `[1, 2]` matches `[1, 2]` but not `[2, 1]` (§10.3.2.15, Table 53).
+A list literal entry such as `[1, 2]` is `? in [1, 2]` — true when an item is
+equal to the input, null when no item is but some item is of another kind — and,
+for a list-valued input, also `? = [1, 2]` (DMN 1.5 §7.3.2): lists are equal
+when they have the same length and equal elements in order, so `[1, 2]`
+matches `[1, 2]` but not `[2, 1]` (§10.3.2.15, Table 53). `not(["a", "b"])`
+matches `"c"` but not `5`.
+
+Equality is FEEL's `=` everywhere a table compares values — equality cells,
+list cells, ANY agreement, PRIORITY and OUTPUT ORDER ranking — so `1` equals
+`1.00`, and two temporals denoting the same instant are equal however they are
+written.
 
 A range with a null endpoint, such as `[null..10]` or `(5..null]`, is not
 "unbounded" — its endpoint comparisons are null, so it matches no input, and

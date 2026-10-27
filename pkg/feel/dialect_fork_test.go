@@ -1594,6 +1594,48 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("a unary entry of another kind than its input is null, so its not(...) does not match either", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15 and §10.3.2.2 make `=` and `in` between values of
+		// different kinds null, and Table 54 orders no booleans; Table 51 makes
+		// not(null) null. The unary-test layer used a two-valued equality and
+		// read an incomparable range as false, so not("gold") matched 5 and
+		// not([false..true]) matched true. Cells now go through the fork's
+		// exported Equal and In.
+		c := NewCompiler(FEEL)
+		cases := []struct {
+			src   string
+			input any
+			want  bool
+		}{
+			{`"gold"`, 5, false}, {`not("gold")`, 5, false},
+			{`["a".."z"]`, 5, false}, {`not(["a".."z"])`, 5, false},
+			{"[false..true]", true, false}, {"not([false..true])", true, false},
+			{`["a", "b"]`, 5, false}, {`not(["a", "b"])`, 5, false},
+			{"not(true)", 5, false}, {`not(1, "a")`, 2, false},
+			// Same kind: still two-valued.
+			{`not("gold")`, "silver", true}, {`not(["a", "b"])`, "c", true},
+			{"not([1..10])", 11, true}, {`not(1, "a")`, 1, false},
+			{"not(true)", false, true},
+			// A list input against a list cell: `? = cell or ? in cell`.
+			{"[1, 2]", []any{1, 2}, true}, {"[[1, 2], [3]]", []any{3}, true},
+		}
+		for _, tc := range cases {
+			ut, err := c.CompileUnaryTest(tc.src)
+			if err != nil {
+				t.Errorf("%s does not compile: %v", tc.src, err)
+				continue
+			}
+			got, err := e.EvalUnaryTest(ut, FromGo(tc.input), nil)
+			if err != nil {
+				t.Errorf("%s against %v: %v", tc.src, tc.input, err)
+				continue
+			}
+			if got != tc.want {
+				t.Errorf("%s matched %v = %v, want %v", tc.src, tc.input, got, tc.want)
+			}
+		}
+	})
+
 	t.Run("booleans are unordered for range membership and range built-ins", func(t *testing.T) {
 		// DMN 1.5 §10.3.2.15, Table 54 orders no booleans, so membership in a
 		// boolean range and the §10.3.4.7 range functions over booleans are

@@ -229,6 +229,38 @@ func TestCompareAndEqual(t *testing.T) {
 	if !Equal(FromGo(1), FromGo(1.0)) {
 		t.Error("1 and 1.0 should be equal FEEL numbers")
 	}
+	// Equal is the fork's `=` with null read as false. The structural
+	// comparison it replaced compared temporals field by field, so two
+	// renderings of one instant were unequal although `=` said true.
+	e := newFEEL(t)
+	for _, p := range []struct {
+		a, b string
+		want bool
+	}{
+		{`time("10:00:00+01:00")`, `time("09:00:00Z")`, true},
+		{`date and time("2020-01-01T10:00:00+01:00")`, `date and time("2020-01-01T09:00:00Z")`, true},
+		{`duration("PT60M")`, `duration("PT1H")`, true},
+		{`{a: 1.0, b: [1, 2]}`, `{a: 1, b: [1.00, 2]}`, true},
+		{`[1, "a"]`, `[1, 2]`, false}, // `=` is null
+		{`1`, `"1"`, false},           // `=` is null
+		{`null`, `null`, true},
+		{`1`, `null`, false},
+	} {
+		a, err := e.EvalText(p.a, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := e.EvalText(p.b, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := Equal(a, b); got != p.want {
+			t.Errorf("Equal(%s, %s) = %v, want %v", p.a, p.b, got, p.want)
+		}
+	}
+	if got := mustEval(t, e, `duplicate values([time("10:00:00+01:00"), time("09:00:00Z")])`, nil); len(got.([]any)) != 1 {
+		t.Errorf("duplicate values over one instant twice = %v, want one item", got)
+	}
 	if c, ok := Compare(FromGo(1), FromGo(2)); !ok || c != -1 {
 		t.Errorf("Compare(1,2) = %d,%v", c, ok)
 	}
@@ -251,8 +283,8 @@ func TestUnaryTestSemantics(t *testing.T) {
 	if ok, err := e.EvalUnaryTest(x, FromGo(true), nil); err != nil || !ok {
 		t.Errorf("unary test `true` against true = %v (err %v), want true", ok, err)
 	}
-	// A range whose bounds cannot be compared with the tested value is a
-	// non-match rather than an error, so a mixed-type table still evaluates.
+	// A range whose bounds cannot be compared with the tested value is null —
+	// neither a match nor an error — so a mixed-type table still evaluates.
 	r, err := e.CompileUnaryTest("[1..10]")
 	if err != nil {
 		t.Fatal(err)

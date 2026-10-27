@@ -267,6 +267,45 @@ func TestMixedKindEntriesDoNotFailTheTable(t *testing.T) {
 	}
 }
 
+// TestMixedKindEntriesAreUnknownNotFalse checks the three-valued side of the
+// same rule: an entry of another kind than the input is null, not false, so
+// its not(...) does not match either (DMN 1.5 §10.3.2.15, §10.3.2.2 and
+// Table 51). Before, not("gold") matched a numeric input.
+func TestMixedKindEntriesAreUnknownNotFalse(t *testing.T) {
+	doc := `{"vdj":"1.0","id":"mixed3","conformance_level":"feel",
+	  "input_data":[{"id":"tier","name":"Tier","variable":{"name":"Tier","type_ref":"Any"}}],
+	  "decisions":[{"id":"band","name":"Band","required_inputs":["tier"],
+	    "variable":{"name":"Band","type_ref":"string"},
+	    "logic":{"kind":"decisionTable","hit_policy":"FIRST",
+	      "inputs":[{"expression":"Tier"}],
+	      "outputs":[{"name":"band","type_ref":"string"}],
+	      "rules":[
+	        {"id":"r1","when":["not(\"gold\")"],"then":["\"not gold\""]},
+	        {"id":"r2","when":["\"gold\""],"then":["\"gold\""]},
+	        {"id":"r3","when":["[\"a\"..\"z\"]"],"then":["\"letter\""]},
+	        {"id":"r4","when":["not([\"a\"..\"z\"])"],"then":["\"not letter\""]},
+	        {"id":"r5","when":["-"],"then":["\"other\""]}]}}]}`
+
+	e, err := verdict.NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	for in, want := range map[any]string{5: "other", "gold": "gold", "silver": "not gold"} {
+		res, err := e.EvaluateDecision(context.Background(), m.ID, "Band", verdict.Inputs{"Tier": in})
+		if err != nil {
+			t.Errorf("Tier %v: %v", in, err)
+			continue
+		}
+		if got := res.Outputs["Band"]; got != want {
+			t.Errorf("Tier %v: Band = %#v, want %q", in, got, want)
+		}
+	}
+}
+
 // TestListInputMatchesAnEqualListCell checks DMN 1.5 §7.3.2 alternative (a) at
 // the engine level: a list-valued input satisfies a list literal entry it is
 // equal to, element by element (§10.3.2.15, Table 53). Upstream's list

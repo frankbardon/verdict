@@ -290,16 +290,21 @@ opens as an empty canvas.
 - **Comparing different kinds is null, not an error.** `1 = "a"`, `1 != "a"`,
   `1 < "a"`, `duration("P1Y") < duration("P1D")`, `5 in ["a".."z"]` and range
   built-ins over mixed kinds (`before(1, "a")`, `coincides(1, "a")`) all yield
-  null. In a table, a `< 5` cell against a string input simply does not match,
-  and neither does `not(< 5)`; an equality cell such as `"gold"` against a
-  number does not match, so `not("gold")` does.
+  null. In a table every cell form follows suit: a `< 5`, `"gold"`,
+  `["a".."z"]` or `[false..true]` cell against an input of another (or, for
+  booleans, unordered) kind is null — it does not match, and neither does its
+  `not(...)`: `not("gold")` does not match `5`, `not(["a", "b"])` does not
+  match `5` but does match `"c"`. Separate kinds into their own rules, or end
+  with a `-` rule.
 - **Lists and contexts compare element by element; they have no order.**
   `[1, 2] = [1, 2]` and `{a: 1, b: 2} = {b: 2, a: 1}` are true, `[1, 2] =
   [2, 1]` and `{a: 1} = {b: 1}` false; a mixed-kind element pair makes it null
   (`[1, "a"] = [1, 2]`) unless another pair is false. `[1, 2] < [1, 3]` is
   null. `list contains`, `index of`, `union`, `distinct values`,
   `duplicate values` and `in` find list and context elements by value, and a
-  `[1, 2]` cell matches a list input equal to it as well as `1` or `2`.
+  `[1, 2]` cell matches a list input equal to it as well as `1` or `2`. Table
+  equality (cells, ANY agreement, PRIORITY/OUTPUT ORDER ranking) is this same
+  `=`: `1` equals `1.00`, `time("10:00:00+01:00")` equals `time("09:00:00Z")`.
 - **Ranges compare by endpoints and closedness; they have no order.**
   `[1..2] = [1..2]` is true, `[1..2] = (1..2]` and `[1..2] = [1..3]` false;
   `[1..2] < [3..4]` is null.

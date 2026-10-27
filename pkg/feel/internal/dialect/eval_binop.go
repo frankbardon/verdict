@@ -357,6 +357,23 @@ func feelEqual(a, b any) (any, error) {
 	return r == 0, nil
 }
 
+// Equal implements FEEL's `=` for callers outside this package, and yields
+// true, false or null. A pair the fork cannot compare at all (two functions)
+// is false, as it is for valuesEqual and list membership.
+//
+// VERDICT DIVERGENCE: upstream had no exported equality. pkg/feel used its own
+// two-valued structural comparison for the ANY hit policy, unary-test equality
+// and `duplicate values`, which disagreed with `=` on temporals and durations
+// and could not say "unknown"; it now derives from this, so FEEL has one
+// equality (DMN 1.5 §10.3.2.15, Tables 52 and 53).
+func Equal(a, b any) any {
+	r, err := feelEqual(a, b)
+	if err != nil {
+		return false
+	}
+	return r
+}
+
 // valuesEqual reports whether a = b is true. The list built-ins that search or
 // deduplicate by equality (`list contains`, `index of`, `union`,
 // `distinct values`) and list membership (`in`) use it, so a list or a context
@@ -790,6 +807,18 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return In(leftVal, rightVal)
+}
+
+// In implements FEEL's `e in container` for a range or a list container, and
+// yields true, false or null. inOp evaluates its operands and delegates here.
+//
+// VERDICT DIVERGENCE: upstream had no exported membership test. Verdict's
+// unary-test layer (pkg/feel/unarytest.go) interprets a range or list cell as
+// `? in cell` (DMN 1.5 §10.3.2.9, Table 49), and calling this rather than
+// re-deriving membership keeps one implementation, so a decision-table cell
+// and the `in` operator cannot disagree about a mixed-kind or unordered input.
+func In(leftVal, rightVal any) (any, error) {
 	switch rv := rightVal.(type) {
 	case *RangeValue:
 		// Range membership is the conjunction of the endpoint comparisons, and
