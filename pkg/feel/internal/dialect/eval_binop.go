@@ -556,6 +556,15 @@ func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool) (any, e
 	if isNullValue(leftVal) || isNullValue(rightVal) {
 		return null, nil
 	}
+	// VERDICT DIVERGENCE: upstream ordered false below true, so `true < false`
+	// was false and `false < true` true. DMN 1.5 §10.3.2.15 Table 54 defines
+	// `<`, `<=`, `>` and `>=` for no boolean pair, and inputs outside an
+	// operator's domain are null. Equality between booleans is unaffected.
+	if _, ok := leftVal.(bool); ok {
+		if _, ok := rightVal.(bool); ok {
+			return null, nil
+		}
+	}
 	r, err := compareInterfaces(leftVal, rightVal)
 	if err != nil {
 		if isIncomparable(err) || isUnordered(err) {
@@ -643,22 +652,36 @@ func (binop Binop) modOp(intp *Interpreter) (any, error) {
 		"%")
 }
 
-// circuit break operators
+// andOp and orOp implement FEEL's three-valued conjunction and disjunction
+// (DMN 1.5 §10.3.2.15, Table 51). Only a boolean counts as one: null and every
+// non-boolean operand are "otherwise", so `true and null` is null, `false and
+// null` false, `true or 1` true and `false or "x"` null. The left operand still
+// short-circuits when it alone decides the result (`false and …`, `true or …`).
+//
+// VERDICT DIVERGENCE: upstream coerced each operand through boolValue, which
+// reads null, 0, "" and empty collections as false and anything else as true,
+// so `true and null` was false and `false or 1` true.
 func (binop Binop) andOp(intp *Interpreter) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-	leftBool := boolValue(leftVal)
-	if !leftBool {
+	if b, ok := leftVal.(bool); ok && !b {
 		return false, nil
 	}
 	rightVal, err := binop.Right.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-	rightBool := boolValue(rightVal)
-	return rightBool, nil
+	rightBool, rightOK := rightVal.(bool)
+	switch {
+	case rightOK && !rightBool:
+		return false, nil
+	case rightOK && leftVal == true:
+		return true, nil
+	default:
+		return null, nil
+	}
 }
 
 func (binop Binop) orOp(intp *Interpreter) (any, error) {
@@ -666,16 +689,22 @@ func (binop Binop) orOp(intp *Interpreter) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	leftBool := boolValue(leftVal)
-	if leftBool {
+	if b, ok := leftVal.(bool); ok && b {
 		return true, nil
 	}
 	rightVal, err := binop.Right.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-	rightBool := boolValue(rightVal)
-	return rightBool, nil
+	rightBool, rightOK := rightVal.(bool)
+	switch {
+	case rightOK && rightBool:
+		return true, nil
+	case rightOK && leftVal == false:
+		return false, nil
+	default:
+		return null, nil
+	}
 }
 
 func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {

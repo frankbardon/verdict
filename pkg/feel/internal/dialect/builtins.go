@@ -160,8 +160,14 @@ func installBuiltinFunctions(prelude *Prelude) {
 	}).Required("from"))
 
 	// boolean functions
-	prelude.Bind("not", wrapTyped(func(v any) (bool, error) {
-		return !boolValue(v), nil
+	// VERDICT DIVERGENCE: upstream negated boolValue(v), so `not(null)` and
+	// `not(0)` were true. DMN 1.5 §10.3.2.15 Table 51 negates a boolean and
+	// makes everything else null.
+	prelude.Bind("not", NewNativeFunc(func(args map[string]any) (any, error) {
+		if b, ok := args["from"].(bool); ok {
+			return !b, nil
+		}
+		return null, nil
 	}).Required("from"))
 
 	prelude.Bind("is defined", NewMacro(func(intp *Interpreter, args map[string]Node, varArgs []Node) (any, error) {

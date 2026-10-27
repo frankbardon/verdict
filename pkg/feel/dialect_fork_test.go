@@ -1429,6 +1429,79 @@ func TestForkedDefects(t *testing.T) {
 			t.Errorf(`Credit Rating = "good" evaluated to %#v, want true`, got)
 		}
 	})
+
+	t.Run("not, and and or are three-valued", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 51. Only a boolean counts as one; null and
+		// every other kind are "otherwise". Upstream v1.0.6 coerced operands
+		// through boolValue, so null, 0 and "" read as false and 1 as true.
+		operands := map[string]any{
+			"true": true, "false": false, "null": nil, "1": nil, `"x"`: nil,
+		}
+		and := func(a, b any) any {
+			switch {
+			case a == false || b == false:
+				return false
+			case a == true && b == true:
+				return true
+			}
+			return nil
+		}
+		or := func(a, b any) any {
+			switch {
+			case a == true || b == true:
+				return true
+			case a == false && b == false:
+				return false
+			}
+			return nil
+		}
+		for l, lv := range operands {
+			for r, rv := range operands {
+				for op, want := range map[string]any{"and": and(lv, rv), "or": or(lv, rv)} {
+					expr := l + " " + op + " " + r
+					if got := mustEval(t, e, expr, nil); got != want {
+						t.Errorf("%s = %#v, want %#v", expr, got, want)
+					}
+				}
+			}
+		}
+		nots := map[string]any{
+			"not(true)":            false,
+			"not(false)":           true,
+			"not(null)":            nil,
+			"not(0)":               nil,
+			`not("")`:              nil,
+			"not([])":              nil,
+			`not(5 in ["a".."z"])`: nil,
+			"not(from: true)":      false,
+			"not(true and null)":   nil,
+			"not(false and null)":  true,
+		}
+		for expr, want := range nots {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("booleans have no order", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 54 defines no ordering over booleans.
+		// Upstream v1.0.6 ordered false below true.
+		for _, op := range []string{"<", "<=", ">", ">="} {
+			for _, pair := range [][2]string{{"true", "false"}, {"false", "true"}, {"true", "true"}, {"false", "false"}} {
+				expr := pair[0] + " " + op + " " + pair[1]
+				if got := mustEval(t, e, expr, nil); got != nil {
+					t.Errorf("%s = %#v, want null", expr, got)
+				}
+			}
+		}
+		// Equality is defined over booleans, and unaffected.
+		for expr, want := range map[string]any{"true = true": true, "true = false": false, "true != false": true} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {

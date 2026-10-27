@@ -278,6 +278,13 @@ opens as an empty canvas.
   `includes([1..10], null)`, `coincides(null, null)`) is null. Equality is
   different: `null = null` is true. Guard with `x != null and x > 5` or an
   explicit `null` rule.
+- **`and`, `or` and `not` are three-valued; booleans have no order.** Only
+  `true` and `false` count: null and any other kind (`0`, `""`, `[]`) are
+  unknown, never falsy. `false and null` is false, `true and null` null,
+  `true or null` true, `false or null` null; `not(null)`, `not(0)` and
+  `not(5 in ["a".."z"])` are null. That is why `x != null and x > 5` is a safe
+  guard — a missing `x` makes it false, not null. `true < false` and the other
+  orderings of two booleans are null; `=` and `!=` still work on them.
 - **Comparing different kinds is null, not an error.** `1 = "a"`, `1 != "a"`,
   `1 < "a"`, `duration("P1Y") < duration("P1D")`, `5 in ["a".."z"]` and range
   built-ins over mixed kinds (`before(1, "a")`, `coincides(1, "a")`) all yield
