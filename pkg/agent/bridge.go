@@ -31,7 +31,12 @@ type Request struct {
 	DecisionName string
 	// Prompt is the rendered prompt template.
 	Prompt string
-	// Inputs are the bound, FEEL-evaluated inputs, converted to plain Go values.
+	// Inputs are the bound, FEEL-evaluated inputs in the boundary shape
+	// feel.ToGo produces, the same one Result.Outputs and the trace carry:
+	// numbers are float64, every temporal and duration is its FEEL lexical
+	// string ("2024-03-05", "10:00:00", "2024-03-05T10:00:00",
+	// "2024-03-05T10:00:00+02:00", "P1DT2H", "P1Y2M"), null is nil, and
+	// contexts and lists are map[string]any and []any of the same.
 	Inputs map[string]any
 	// OutputType is the shape the response must conform to.
 	OutputType model.TypeSpec

@@ -93,6 +93,14 @@ When an answer is wrong, the trace tells you *which node* is wrong before you
 read any rules. `matched_rules` is usually the whole story: a rule you did not
 expect fired, or none did and the table defaulted.
 
+Values in the trace (`inputs`, `output`, `input_values`) — and in
+`Result.Outputs`, agent inputs, MCP, Twirp and CLI output — are numbers as
+`float64` and every temporal and duration as its FEEL lexical string:
+`"2024-03-05"`, `"10:00:00"`, `"2024-03-05T10:00:00"` (zoneless: no `Z`),
+`"2024-03-05T10:00:00+02:00"`, `"...@Europe/Paris"`, `"P1DT2H"`, `"P1Y2M"`. Read
+a value's kind and zone from its string; feed it back through `date()`,
+`time()`, `date and time()` or `duration()`.
+
 ## Authoring: decision tables
 
 A decision table has **input clauses** (expressions evaluated once per
@@ -235,7 +243,11 @@ Two dialects, selected per model with `conformanceLevel`:
 Five rules that make this safe:
 
 1. **The agent sees only its bindings.** Never the model context. Bind the
-   minimum — an agent that can see the applicant's ID can key on it.
+   minimum — an agent that can see the applicant's ID can key on it. The
+   bound values arrive in the trace's boundary shape (temporals and durations
+   as FEEL lexical strings, numbers as `float64`), and the prompt template
+   prints scalars in FEEL lexical form (`1000000`, `2024-03-05`, `P1DT2H`,
+   `null`) and contexts/lists as indented JSON.
 2. **The output type is declared and enforced.** An enumeration becomes a
    provider-side schema *and* a post-hoc check. A non-conforming answer is a
    failure, not a value.
@@ -454,7 +466,8 @@ opens as an empty canvas.
   service receives and returns its values unconverted: a zoneless date and
   time stays zoneless, a `date` or `time` keeps its kind, a years-and-months
   duration stays a duration and a number keeps every decimal digit. Only
-  `Result.Outputs` and the trace are narrowed to plain Go/JSON.
+  `Result.Outputs` and the trace are narrowed to plain Go/JSON (temporals and
+  durations as FEEL lexical strings, numbers as `float64`).
 - **An empty cell means `-`** (any), not "equals empty string".
 - **`itemDefinition` is an `xsd:choice`.** A type is *either* a constrained
   simple type (`typeRef` + `allowedValues`) *or* a structure (`itemComponent`)

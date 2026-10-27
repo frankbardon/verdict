@@ -31,7 +31,12 @@ type Inputs map[string]any
 
 // Result is the outcome of an evaluation.
 type Result struct {
-	// Outputs are the values of the evaluated entry points.
+	// Outputs are the values of the evaluated entry points, in the boundary
+	// shape feel.ToGo produces: numbers are float64, every temporal and
+	// duration is its FEEL lexical string ("2024-03-05", "10:00:00",
+	// "2024-03-05T10:00:00", "...Z", "...+02:00", "...@Europe/Paris",
+	// "P1DT2H", "P1Y2M"), null is nil, and contexts and lists are
+	// map[string]any and []any of the same.
 	Outputs map[string]any
 	// Trace is the execution record; nil when tracing is off.
 	Trace *trace.Trace

@@ -39,6 +39,7 @@ Echo(0.1) + 0.2 = 0.3                                                           
 ```
 
 Values are narrowed to plain Go — and, from there, JSON — only where they leave
-the engine: `Result.Outputs` and the [trace](traces.md). A value returned
-through a service is narrowed at that boundary exactly as the same value
-returned directly.
+the engine: `Result.Outputs` and the [trace](traces.md), in the boundary shape
+described under [Values](traces.md#values) (temporals and durations as their
+FEEL lexical strings, numbers as `float64`). A value returned through a service
+is narrowed at that boundary exactly as the same value returned directly.

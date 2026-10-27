@@ -78,6 +78,18 @@ can see an identifier can learn to key on it.
 Bind the minimum. If a decision needs the applicant's tenure, bind the tenure,
 not the applicant.
 
+The bound values reach the bridge as `Request.Inputs` in the same boundary shape
+as `Result.Outputs` and the trace (see [Values](traces.md#values)): numbers are
+`float64`, and every temporal and duration is its FEEL lexical string —
+`"2024-03-05"`, `"10:00:00"`, `"2024-03-05T10:00:00"` (zoneless, no `Z`),
+`"2024-03-05T10:00:00+02:00"`, `"P1DT2H"`, `"P1Y2M"`. The HTTP bridge's
+`inputs` and the Nexus bridge carry exactly that.
+
+The prompt template is rendered from the same bindings. A scalar prints in its
+FEEL lexical form — `{{ .amount }}` gives `1000000`, not Go's `1e+06`; a date
+gives `2024-03-05`, a duration `P1DT2H`, and null gives `null` — and a context
+or list prints as indented JSON in the boundary shape.
+
 ### 2. The output type is declared and enforced
 
 The declared type is used **twice**: it is projected into a provider-side schema
@@ -134,7 +146,9 @@ type Bridge interface {
 ```
 
 That is the whole interface. The bridge receives a rendered prompt, the bound
-inputs, and the declared output type; it returns a value. It does not know it is
+inputs (in the boundary shape above), and the declared output type; it returns
+a value. Its answer is coerced to the declared type exactly as before: a
+temporal may come back as a lexical string or a Go `time.Time`. It does not know it is
 inside a decision graph, and it does not implement retry, timeouts or validation.
 
 Three ship in the box:

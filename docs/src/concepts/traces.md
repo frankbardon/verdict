@@ -33,6 +33,41 @@ type Node struct {
 The JSON encoding is a stable contract. Dashboards, the Nexus event bus and the
 `verdict trace` renderer all read it.
 
+## Values
+
+A node's `inputs`, its `output` and the `input_values` annotation carry FEEL
+values in one boundary shape — the same one `Result.Outputs`, an agent's
+`Request.Inputs`, the MCP `eval` tool, Twirp's `outputs_json`, `verdict eval`
+and the Nexus events carry, because all of them come from one conversion
+(`feel.ToGo`):
+
+| FEEL value | Go | JSON |
+|---|---|---|
+| number | `float64` | `0.1`, `1000000` |
+| string, boolean | `string`, `bool` | `"x"`, `true` |
+| `date` | `string` | `"2024-03-05"` |
+| `time` | `string` | `"10:00:00"`, `"10:00:00Z"`, `"10:00:00+02:00"` |
+| `date and time`, zoneless | `string` | `"2024-03-05T10:00:00"` |
+| `date and time`, zoned | `string` | `"2024-03-05T10:00:00Z"`, `"...+02:00"`, `"...@Europe/Paris"` |
+| days and time duration | `string` | `"P1DT2H"` |
+| years and months duration | `string` | `"P1Y2M"` |
+| null | `nil` | `null` |
+| context, list | `map[string]any`, `[]any` | the same rules, element by element |
+
+Every temporal and duration is its FEEL lexical form, so it says what kind it
+is and keeps its zone-ness: a zoneless date and time has no `Z`, a date is not a
+midnight timestamp, and a fraction of a second is printed when there is one.
+Each string parses back to the same value through `date()`, `time()`,
+`date and time()` or `duration()`. Numbers are narrowed to `float64`; the
+arithmetic inside the evaluator is exact, only the boundary value is not.
+
+Before v0.4.0 temporals were Go `time.Time` values (a date as
+`"2024-03-05T00:00:00Z"`, a time as `"0000-01-01T10:00:00Z"`, a zoneless date
+and time with a `Z`) and a days and time duration was a `time.Duration`
+(integer nanoseconds in JSON). A consumer that parsed those must read the
+lexical strings instead; a Go caller that type-asserted `time.Time` or
+`time.Duration` on an output now gets a `string`.
+
 ## Annotations
 
 Annotation keys are exported constants in `pkg/trace` and are part of the

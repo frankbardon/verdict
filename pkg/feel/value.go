@@ -134,14 +134,24 @@ func fromGoReflect(v any) any {
 	return v
 }
 
-// ToGo converts a FEEL value back into plain Go: numbers become float64, FEEL
-// temporals become time.Time or time.Duration, null becomes nil, and contexts
+// ToGo converts a FEEL value into the plain Go value Verdict hands to the
+// outside world: Result.Outputs, every trace node, an agent's Request.Inputs,
+// and so every JSON surface built on them (MCP, Twirp, the CLI, Nexus). It is
+// the one boundary conversion, so every one of those surfaces shows a value
+// the same way.
+//
+// Numbers become float64. Every temporal and both duration kinds become their
+// FEEL lexical string, so the value says what kind it is and keeps its
+// zone-ness: a date is "2024-03-05", a time "10:00:00" (or "10:00:00Z",
+// "10:00:00+02:00"), a date and time "2024-03-05T10:00:00" when zoneless and
+// "...Z", "...+02:00" or "...@Europe/Paris" when zoned, and a duration
+// "P1DT2H" or "P1Y2M". Each string parses back to the same FEEL value through
+// date(), time(), date and time() or duration(). Null becomes nil, and contexts
 // and lists are converted element-wise.
 //
 // FEEL numbers carry more precision than a float64 can hold. ToGo is the
 // interop boundary, not the arithmetic one — every calculation happens in full
 // precision inside the evaluator and only the final value is narrowed here.
-// Use ToGoExact when the extra digits matter.
 func ToGo(v any) any {
 	switch x := v.(type) {
 	case nil:
@@ -154,19 +164,32 @@ func ToGo(v any) any {
 		}
 		return x.Float64()
 	case *pfeel.FEELDate:
-		return x.Date()
-	case *pfeel.FEELTime:
-		return x.Time()
-	case *pfeel.FEELDatetime:
-		return x.Time()
-	case *pfeel.FEELDuration:
-		return durationToGo(x)
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, e := range x {
-			out[k] = ToGo(e)
+		if x == nil {
+			return nil
 		}
-		return out
+		return x.String()
+	case *pfeel.FEELTime:
+		if x == nil {
+			return nil
+		}
+		return x.String()
+	case *pfeel.FEELDatetime:
+		if x == nil {
+			return nil
+		}
+		return x.String()
+	case *pfeel.FEELDuration:
+		if x == nil {
+			return nil
+		}
+		return x.String()
+	case map[string]any:
+		return contextToGo(x)
+	case pfeel.Scope:
+		// A context built by the evaluator (a context literal, a boxed
+		// context) is the fork's named map type; it is the same FEEL context
+		// and must not reach the boundary unconverted.
+		return contextToGo(x)
 	case []any:
 		out := make([]any, len(x))
 		for i, e := range x {
@@ -178,27 +201,12 @@ func ToGo(v any) any {
 	}
 }
 
-// ToGoExact is ToGo except that numbers are rendered as their exact decimal
-// string. Trace serialisation uses it when configured for full fidelity.
-func ToGoExact(v any) any {
-	if n, ok := v.(*pfeel.Number); ok && n != nil {
-		return n.String()
+func contextToGo(x map[string]any) map[string]any {
+	out := make(map[string]any, len(x))
+	for k, e := range x {
+		out[k] = ToGo(e)
 	}
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, e := range x {
-			out[k] = ToGoExact(e)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, e := range x {
-			out[i] = ToGoExact(e)
-		}
-		return out
-	}
-	return ToGo(v)
+	return out
 }
 
 // KeyOf renders v as a string that identifies it as a FEEL value: two values
@@ -331,19 +339,6 @@ func writeKey(b *strings.Builder, v any) bool {
 	return true
 }
 
-// durationToGo narrows a FEEL duration to a time.Duration. Years-and-months
-// durations have no exact nanosecond length, so they are returned as their
-// canonical ISO-8601 string rather than a wrong number.
-func durationToGo(d *pfeel.FEELDuration) any {
-	if d == nil {
-		return nil
-	}
-	if d.IsYearsMonths() {
-		return d.String()
-	}
-	return d.Duration()
-}
-
 // Equal reports whether a = b is true in FEEL (DMN 1.5 §10.3.2.15, Tables 52
 // and 53). It is the fork's `=` with a null verdict folded to false, so it
 // cannot disagree with an `=` in an expression: 1 and 1.00 are equal, as are
@@ -427,10 +422,11 @@ func TypeName(v any) string {
 // datetimeFromGo builds a FEEL date-and-time from a Go time. The embedded
 // library keeps its temporal fields unexported and offers only string parsing,
 // so the conversion round-trips through the offset-bearing ISO-8601 form it
-// accepts. Sub-second precision is not representable in that form and is
-// dropped, which matches DMN's own second-resolution literal grammar.
+// accepts. The fraction of a second is kept to the nanosecond, as a FEEL date
+// and time holds it, so a sub-second input is not silently truncated. The
+// result is always zoned: a time.Time has no zoneless form.
 func datetimeFromGo(t time.Time) any {
-	dt, err := pfeel.ParseDatetime(t.Format("2006-01-02T15:04:05-07:00"))
+	dt, err := pfeel.ParseDatetime(t.Format("2006-01-02T15:04:05.999999999-07:00"))
 	if err != nil {
 		return Null
 	}

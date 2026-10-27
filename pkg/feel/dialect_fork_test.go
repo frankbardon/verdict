@@ -929,9 +929,9 @@ func TestForkedDefects(t *testing.T) {
 		for expr, want := range map[string]any{
 			"abs(2)": 2.0, "abs(-2)": 2.0, "abs(-2.5)": 2.5, "abs(0)": 0.0, "abs(10)": 10.0, "abs(-10)": 10.0,
 			"abs(x)": 3.0, "abs(n: -7)": 7.0, "abs(-x)": 3.0,
-			`abs(duration("-PT5H"))`: 5 * time.Hour, `abs(duration("PT5H"))`: 5 * time.Hour,
-			`abs(@"-PT5H")`: 5 * time.Hour, "abs(d)": 5 * time.Hour, "-d": 5 * time.Hour,
-			`abs(date and time("2024-01-01T00:00:00") - date and time("2024-01-02T01:00:00"))`:    25 * time.Hour,
+			`abs(duration("-PT5H"))`: "PT5H", `abs(duration("PT5H"))`: "PT5H",
+			`abs(@"-PT5H")`: "PT5H", "abs(d)": "PT5H", "-d": "PT5H",
+			`abs(date and time("2024-01-01T00:00:00") - date and time("2024-01-02T01:00:00"))`:    "P1DT1H",
 			`string(date and time("2024-01-01T00:00:00") - date and time("2024-01-02T01:00:00"))`: "-P1DT1H",
 			`string(d)`: "-PT5H",
 			`abs(duration("-P1Y")) = duration("P1Y")`:     true,
@@ -1027,16 +1027,15 @@ func TestForkedDefects(t *testing.T) {
 			"1 / 0": nil, "0 / 0": nil,
 			"1 + 2": 3.0, "x - 1": 2.0, "x * 2": 6.0, "x / 2": 1.5,
 			`"a" + "b"`: "ab",
-			`@"2024-01-02T00:00:00" - @"2024-01-01T00:00:00"`: 24 * time.Hour,
+			`@"2024-01-02T00:00:00" - @"2024-01-01T00:00:00"`: "P1D",
 		} {
 			if got := mustEval(t, e, expr, vars); got != want {
 				t.Errorf("%s = %#v, want %#v", expr, got, want)
 			}
 		}
-		want := time.Date(2024, time.January, 1, 1, 0, 0, 0, time.UTC)
-		got, ok := mustEval(t, e, `@"2024-01-01T00:00:00" + duration("PT1H")`, nil).(time.Time)
-		if !ok || !got.Equal(want) {
-			t.Errorf("date and time + duration = %#v, want %v", got, want)
+		// The sum keeps the operand's zone-ness: zoneless in, zoneless out.
+		if got := mustEval(t, e, `@"2024-01-01T00:00:00" + duration("PT1H")`, nil); got != "2024-01-01T01:00:00" {
+			t.Errorf("date and time + duration = %#v, want 2024-01-01T01:00:00", got)
 		}
 	})
 
@@ -1048,7 +1047,7 @@ func TestForkedDefects(t *testing.T) {
 			"-x": -3.0, "- x": -3.0, "-(x + 1)": -4.0, "--x": 3.0, "1 - -x": 4.0,
 			"-x ** 2": 9.0, "-2 ** 2": 4.0,
 			"0 ** -1": nil, "(-8) ** 0.5": nil, "10 ** 100000": nil,
-			`-duration("PT1H")`: -time.Hour,
+			`-duration("PT1H")`: "-PT1H",
 		} {
 			if got := mustEval(t, e, expr, vars); got != want {
 				t.Errorf("%s = %#v, want %#v", expr, got, want)
@@ -1257,7 +1256,7 @@ func TestForkedDefects(t *testing.T) {
 				t.Errorf("%s = %#v, want %v", expr, got, want)
 			}
 		}
-		if got := mustEval(t, e, `duration("PT1.5S")`, nil); got != 1500*time.Millisecond {
+		if got := mustEval(t, e, `duration("PT1.5S")`, nil); got != "PT1.5S" {
 			t.Errorf(`duration("PT1.5S") = %#v, want 1.5s`, got)
 		}
 		// Adding the two kinds is outside + 's domain (§10.3.2.15): null.

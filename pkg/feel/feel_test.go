@@ -531,13 +531,13 @@ func TestRoundTripValues(t *testing.T) {
 	if out["n"] != 3.0 || out["f"] != 2.5 || out["s"] != "x" || out["b"] != true {
 		t.Errorf("scalar round trip lost fidelity: %#v", out)
 	}
-	// Round-tripping normalises the location to a fixed UTC offset: the
-	// embedded library exposes no constructor from a time.Time and its parse
-	// grammar carries an offset, not a zone name. The instant is preserved.
-	if got, ok := out["t"].(time.Time); !ok || !got.Equal(when) {
-		t.Errorf("time round trip = %v, want the same instant as %v", out["t"], when)
+	// A Go time comes back as its FEEL lexical form. The location is
+	// normalised to a fixed offset (the embedded library's parse grammar
+	// carries an offset, not a zone name) and UTC prints as Z.
+	if got := out["t"]; got != "2024-03-01T12:30:00Z" {
+		t.Errorf("time round trip = %v, want 2024-03-01T12:30:00Z (the instant %v)", got, when)
 	}
-	if got, want := out["d"], 90*time.Minute; got != want {
+	if got, want := out["d"], "PT1H30M"; got != want {
 		t.Errorf("duration round trip = %v, want %v", got, want)
 	}
 	if got := out["nil"]; got != nil {
@@ -724,13 +724,11 @@ func TestInjectedClockDrivesTheTemporalBuiltins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, ok := mustEval(t, e, "today()", nil).(time.Time)
-	if !ok || got.Format("2006-01-02") != "2021-06-15" {
-		t.Errorf("today() = %v, want 2021-06-15", mustEval(t, e, "today()", nil))
+	if got := mustEval(t, e, "today()", nil); got != "2021-06-15" {
+		t.Errorf("today() = %v, want 2021-06-15", got)
 	}
-	nowVal, ok := mustEval(t, e, "now()", nil).(time.Time)
-	if !ok || !nowVal.Equal(fixed) {
-		t.Errorf("now() = %v, want %v", nowVal, fixed)
+	if got := mustEval(t, e, "now()", nil); got != "2021-06-15T14:30:00Z" {
+		t.Errorf("now() = %v, want 2021-06-15T14:30:00Z", got)
 	}
 	// Derived arithmetic must follow the same clock, or half a model is frozen
 	// and the other half is not.
@@ -754,7 +752,7 @@ func TestInjectedClockDrivesTheTemporalBuiltins(t *testing.T) {
 
 	// Without a clock, the real one applies and the built-ins still work.
 	live := newFEEL(t)
-	if _, ok := mustEval(t, live, "today()", nil).(time.Time); !ok {
+	if v, err := live.EvalText("today()", nil); err != nil || TypeName(v) != "date" {
 		t.Error("today() did not return a date without an injected clock")
 	}
 }
@@ -835,4 +833,56 @@ func TestKeyOfSeparatesKinds(t *testing.T) {
 	if _, ok := KeyOf(struct{}{}); ok {
 		t.Errorf("KeyOf of an unknown Go value should be unusable")
 	}
+}
+
+// TestToGoEmitsFEELLexicalForms pins issue #46: the boundary conversion prints
+// every temporal and both duration kinds in their FEEL lexical form, keeping
+// kind and zone-ness, while numbers stay float64.
+func TestToGoEmitsFEELLexicalForms(t *testing.T) {
+	e := newFEEL(t)
+	for expr, want := range map[string]any{
+		`date("2024-03-05")`:                                "2024-03-05",
+		`time("10:00:00")`:                                  "10:00:00",
+		`time("10:00:00Z")`:                                 "10:00:00Z",
+		`time("10:00:00+02:00")`:                            "10:00:00+02:00",
+		`date and time("2024-03-05T10:00:00")`:              "2024-03-05T10:00:00",
+		`date and time("2024-03-05T10:00:00Z")`:             "2024-03-05T10:00:00Z",
+		`date and time("2024-03-05T10:00:00+02:00")`:        "2024-03-05T10:00:00+02:00",
+		`date and time("2024-03-05T10:00:00@Europe/Paris")`: "2024-03-05T10:00:00@Europe/Paris",
+		`date and time("2024-03-05T10:00:00.25")`:           "2024-03-05T10:00:00.25",
+		`duration("P1DT2H")`:                                "P1DT2H",
+		`duration("P1Y2M")`:                                 "P1Y2M",
+		`duration("-PT0.5S")`:                               "-PT0.5S",
+		`1000000`:                                           1000000.0,
+		`0.1`:                                               0.1,
+	} {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("ToGo(%s) = %#v, want %#v", expr, got, want)
+		}
+	}
+	// Contexts, the fork's own Scope map included, and lists convert their
+	// elements the same way.
+	got := ToGo(pfeel.Scope{"d": mustFEEL(t, e, `date("2024-03-05")`), "l": []any{mustFEEL(t, e, `duration("PT1H")`)}})
+	m, ok := got.(map[string]any)
+	if !ok || m["d"] != "2024-03-05" || m["l"].([]any)[0] != "PT1H" {
+		t.Errorf("ToGo(Scope) = %#v", got)
+	}
+}
+
+// TestFromGoKeepsSubSecondTimes pins the inbound half of #46: a Go time with a
+// fraction of a second reaches FEEL with it, not truncated to the second.
+func TestFromGoKeepsSubSecondTimes(t *testing.T) {
+	in := time.Date(2024, 3, 5, 10, 0, 0, 250_000_000, time.UTC)
+	if got := ToGo(FromGo(in)); got != "2024-03-05T10:00:00.25Z" {
+		t.Errorf("ToGo(FromGo(%v)) = %#v, want 2024-03-05T10:00:00.25Z", in, got)
+	}
+}
+
+func mustFEEL(t *testing.T, e *Evaluator, text string) any {
+	t.Helper()
+	v, err := e.EvalText(text, nil)
+	if err != nil {
+		t.Fatalf("EvalText(%q): %v", text, err)
+	}
+	return v
 }

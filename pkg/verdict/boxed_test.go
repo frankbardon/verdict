@@ -165,7 +165,7 @@ func TestMemoizationDoesNotChangeResults(t *testing.T) {
 }
 
 // TestMemoKeysKeepTemporalKindsApart pins issue #53: the BKM memo key was
-// built from ToGo, which maps every temporal to a Go time.Time, so a zoneless
+// built from ToGo, which then mapped every temporal to a Go time.Time, so a zoneless
 // date and time and the same wall clock at UTC, a date and its midnight date
 // and time, and a time and a date and time all shared a key, and the second
 // call returned the first call's result. Each twin decision depends on its
