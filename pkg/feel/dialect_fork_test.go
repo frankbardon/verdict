@@ -1145,6 +1145,49 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("years and months duration pins the day to the end of the month", func(t *testing.T) {
+		// DMN 1.5 §9.4 gives date ± years and months duration the semantics of
+		// XPath op:add-yearMonthDuration-to-date(Time), whose XSD 1.1 Part 2
+		// Appendix E algorithm pins a day past the end of the resulting month
+		// to its last day. Upstream built the result with time.Date, which
+		// rolled it forwards: 2026-01-31 + P1M was 2026-03-03.
+		strs := map[string]string{
+			`string(date("2026-01-31") + duration("P1M"))`:   "2026-02-28",
+			`string(date("2028-01-31") + duration("P1M"))`:   "2028-02-29",
+			`string(date("2026-03-31") - duration("P1M"))`:   "2026-02-28",
+			`string(date("2026-01-31") + duration("P1Y1M"))`: "2027-02-28",
+			`string(date("2028-02-29") + duration("P1Y"))`:   "2029-02-28",
+			`string(date("2028-02-29") - duration("P4Y"))`:   "2024-02-29",
+			`string(date("2026-05-31") + duration("-P1M"))`:  "2026-04-30",
+			`string(duration("P1M") + date("2026-01-31"))`:   "2026-02-28",
+			`string(date("2026-01-30") + duration("P1M"))`:   "2026-02-28",
+			`string(date("2026-01-28") + duration("P1M"))`:   "2026-02-28",
+			`string(date("2026-08-31") + duration("P1M"))`:   "2026-09-30",
+			`string(date("2026-01-31") - duration("P2M"))`:   "2025-11-30",
+			// A date and time keeps its time of day and its zone or offset.
+			`string(date and time("2026-01-31T10:30:15") + duration("P1M"))`: "2026-02-28T10:30:15@UTC",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		// years and months duration(from, to) counts whole months by the day
+		// of the month and is not the inverse of the pinning: Jan 31 to Feb 28
+		// is not a whole month, though Jan 31 + P1M is Feb 28.
+		bools := map[string]bool{
+			`years and months duration(date("2026-01-31"), date("2026-02-28")) = duration("P0M")`:  true,
+			`years and months duration(date("2026-01-31"), date("2026-03-31")) = duration("P2M")`:  true,
+			`years and months duration(date("2026-02-28"), date("2026-03-31")) = duration("P1M")`:  true,
+			`years and months duration(date("2026-03-31"), date("2026-02-28")) = duration("-P1M")`: true,
+		}
+		for expr, want := range bools {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
 	t.Run("conversion built-ins are null outside their domain", func(t *testing.T) {
 		// DMN 1.5 §10.3.4: "Whenever a parameter is outside its domain, the
 		// result of the built-in is null." Upstream raised "fail to parse
@@ -1216,7 +1259,6 @@ func TestForkedDefects(t *testing.T) {
 		// than a nanosecond, and the date(date and time) / time(time | date
 		// and time) overloads, which the fork does not implement.
 		for _, expr := range []string{
-			`date and time("2012-12-25T11:00:00@Europe/Paris")`, `time("11:00:00@Etc/UTC")`,
 			`duration("P200000D")`, `duration("PT0.0000000001S")`,
 			`date(date and time("2012-12-25T11:00:00"))`, `time(time("10:00:00"))`, `time(date and time("2012-12-25T11:00:00"))`,
 		} {

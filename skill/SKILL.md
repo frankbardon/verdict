@@ -308,8 +308,10 @@ opens as an empty canvas.
   to a date, date and time or time commutes (`@"P1D" + d`); subtracting one
   *from* a duration is null. `time ± days and time duration` wraps within the
   day (`23:00 + PT2H` is `01:00`); a time with a years and months duration is
-  null. Whole years and months between dates is `years and months duration(a,
-  b)`, not `b - a`.
+  null. Adding months pins the day to the end of a shorter month
+  (`date("2026-01-31") + @"P1M"` is `2026-02-28`; time and offset are kept).
+  Whole years and months between dates is `years and months duration(a, b)`,
+  not `b - a` — and it counts by day of month, so Jan 31 to Feb 28 is `P0M`.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration

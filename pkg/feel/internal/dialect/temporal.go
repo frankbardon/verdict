@@ -201,24 +201,45 @@ func (dt FEELDatetime) String() string {
 	return dt.t.Format("2006-01-02T15:04:05@MST")
 }
 
+// Add is date and time ± duration (DMN 1.5 §10.3.2.15, Table 57); a negative
+// duration subtracts. A years and months duration moves the calendar month and
+// keeps the time of day and the location. Upstream built the result with
+// time.Date, which normalises an out-of-range day forwards, so 2026-01-31 +
+// P1M was 2026-03-03. The day is now pinned to the last day of the resulting
+// month (2026-02-28), as XPath op:add-yearMonthDuration-to-dateTime does by the
+// XSD 1.1 Part 2 Appendix E algorithm §9.4 names; see NOTICE.md. A days and
+// time duration adds its exact length.
 func (dt *FEELDatetime) Add(dur *FEELDuration) *FEELDatetime {
-	if dur.Years > 0 || dur.Months > 0 {
-		durMonths := dur.Years*12 + dur.Months
-		timeMonths := dt.t.Year()*12 + int(dt.t.Month()-1)
-
-		newTimeMonths := timeMonths + durMonths
-		if dur.Neg {
-			newTimeMonths = timeMonths - durMonths
+	if dur.isYearsMonths() {
+		months := dur.signedMonths()
+		total := int64(dt.t.Year())*12 + int64(dt.t.Month()-1) + months
+		year, month := floorDiv(total, 12), total-floorDiv(total, 12)*12
+		day := dt.t.Day()
+		if last := daysIn(int(year), time.Month(month+1)); day > last {
+			day = last
 		}
 		return &FEELDatetime{
 			t: time.Date(
-				newTimeMonths/12, time.Month(newTimeMonths%12+1),
-				dt.t.Day(), dt.t.Hour(), dt.t.Minute(),
-				dt.t.Second(), dt.t.Nanosecond(),
+				int(year), time.Month(month+1), day,
+				dt.t.Hour(), dt.t.Minute(), dt.t.Second(), dt.t.Nanosecond(),
 				dt.t.Location()),
 		}
 	}
 	return &FEELDatetime{t: dt.t.Add(dur.Duration())}
+}
+
+// floorDiv is a / b rounded towards negative infinity, for b > 0.
+func floorDiv(a, b int64) int64 {
+	q := a / b
+	if a%b < 0 {
+		q--
+	}
+	return q
+}
+
+// daysIn is the number of days in the month of the year.
+func daysIn(year int, month time.Month) int {
+	return time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
 }
 
 // subInstants is the days and time duration a - b, the valuedtd⁻¹ of the
@@ -509,7 +530,7 @@ func compareDurations(a, b *FEELDuration) (r int, ok bool) {
 // days and time or a years and months duration) evaluates it as the date of
 // date and time(date, midnight) + duration, so a days-and-time duration moves
 // whole days and drops any remainder of a day, and a years-and-months duration
-// moves calendar months.
+// moves calendar months, pinning the day to the end of a shorter month.
 func (d *FEELDate) AddDuration(dur *FEELDuration) *FEELDate {
 	dt := (&FEELDatetime{t: d.t}).Add(dur).t
 	return &FEELDate{t: time.Date(dt.Year(), dt.Month(), dt.Day(), 0, 0, 0, 0, d.t.Location())}
