@@ -12,6 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	// VERDICT DIVERGENCE: the IANA time zone database is embedded, so an
+	// `@Europe/Paris` zone id resolves in a scratch container with no
+	// /usr/share/zoneinfo, and resolves alike on every host.
+	_ "time/tzdata"
 )
 
 var ErrParseTemporal = errors.New("fail to parse temporal value")
@@ -23,30 +28,115 @@ var ErrParseTemporal = errors.New("fail to parse temporal value")
 // domain, the fork is what falls short.
 var ErrUnsupportedTimeZone = errors.New("time zone id not supported")
 
-// parseZoned tries each layout against s. VERDICT DIVERGENCE: a trailing
-// lowercase `z` is read as UTC, as in DMN 1.5 Table 72's own examples
-// (`time("23:59:00z")`), and a string whose local part parses but whose `@`
-// zone id does not is ErrUnsupportedTimeZone rather than ErrParseTemporal.
+// ErrTimeZoneIDOnTime reports a time string whose `@` zone id has more than
+// one offset in its history, so a time of day alone cannot say which applies.
+// It wraps ErrParseTemporal: time(from) yields null on it, and an at-literal
+// naming it is a load error that says why.
 //
-// zoned reports whether the string carried a time offset or a zone: every
-// layout but the first, which is the zoneless local form. VERDICT DIVERGENCE:
-// upstream discarded the distinction, so `10:00:00` and `10:00:00Z` were one
-// value; see FEELTime.
-func parseZoned(s string, layouts []string, local string) (t time.Time, zoned bool, err error) {
+// VERDICT DIVERGENCE: DMN 1.5 does not say how a time, which has no date,
+// takes its offset from a zone id whose rules depend on the date
+// (§10.3.2.3.4). Resolving it at the evaluation's date would make one literal
+// mean different instants in summer and winter, so the fork rejects it. A
+// zone id with a single fixed offset (`UTC`, `Etc/GMT+5`) is unambiguous and
+// accepted.
+var ErrTimeZoneIDOnTime = fmt.Errorf("%w: a time cannot take a zone id whose offset varies by date; use an offset", ErrParseTemporal)
+
+// zoneKind is how a time or date and time string placed itself relative to
+// UTC: not at all (a local value), by a time offset (`Z`, `+02:00`), or by an
+// IANA zone id (`@Europe/Paris`).
+type zoneKind int
+
+const (
+	zoneNone zoneKind = iota
+	zoneOffset
+	zoneID
+)
+
+// parseZoned tries each layout against s: the first is the zoneless local
+// form, the others carry a time offset. Failing those, `local@zone-id` is the
+// local form placed in the IANA zone, whose rules give the offset at that
+// wall clock (DMN 1.5 §10.3.2.3.6). VERDICT DIVERGENCE: a trailing lowercase
+// `z` is read as UTC, as in DMN 1.5 Table 72's own examples
+// (`time("23:59:00z")`); a string whose local part parses but whose `@` zone
+// id the time zone database does not know is ErrUnsupportedTimeZone rather
+// than ErrParseTemporal; and upstream discarded the zone kind, so `10:00:00`
+// and `10:00:00Z` were one value (see FEELTime) and a zone id went through
+// Go's `MST` abbreviation layout, which read `@CET` as UTC and could not read
+// `@Europe/Paris` at all.
+//
+// An offset value is held in a location named only by its offset, never the
+// process's local zone (time.Parse picks Local when the offsets agree), so
+// nothing about it depends on where the engine runs.
+func parseZoned(s string, layouts []string, local string) (t time.Time, zone zoneKind, err error) {
 	if strings.HasSuffix(s, "z") {
 		s = s[:len(s)-1] + "Z"
 	}
 	for i, pat := range layouts {
 		if t, err := time.Parse(pat, s); err == nil {
-			return t, i > 0, nil
+			if i == 0 {
+				return t, zoneNone, nil
+			}
+			return atFixedOffset(t), zoneOffset, nil
 		}
 	}
-	if i := strings.LastIndex(s, "@"); i > 0 {
-		if _, err := time.Parse(local, s[:i]); err == nil {
-			return time.Time{}, false, fmt.Errorf("%w: %s", ErrUnsupportedTimeZone, s[i+1:])
-		}
+	i := strings.LastIndex(s, "@")
+	if i <= 0 {
+		return time.Time{}, zoneNone, ErrParseTemporal
 	}
-	return time.Time{}, false, ErrParseTemporal
+	wall, err := time.Parse(local, s[:i])
+	if err != nil {
+		return time.Time{}, zoneNone, ErrParseTemporal
+	}
+	id := s[i+1:]
+	if id == "" {
+		return time.Time{}, zoneNone, ErrParseTemporal
+	}
+	loc, err := loadZone(id)
+	if err != nil {
+		return time.Time{}, zoneNone, fmt.Errorf("%w: %s", ErrUnsupportedTimeZone, id)
+	}
+	return time.Date(wall.Year(), wall.Month(), wall.Day(),
+		wall.Hour(), wall.Minute(), wall.Second(), wall.Nanosecond(), loc), zoneID, nil
+}
+
+// loadZone resolves an IANA zone id. `Local` names the process's zone, which
+// a decision must not depend on, so it is not a zone id here.
+func loadZone(id string) (*time.Location, error) {
+	if id == "Local" {
+		return nil, ErrUnsupportedTimeZone
+	}
+	return time.LoadLocation(id)
+}
+
+// atFixedOffset is t in a location that is its offset and nothing else: UTC
+// for a zero offset, otherwise an unnamed fixed zone.
+func atFixedOffset(t time.Time) time.Time {
+	_, offset := t.Zone()
+	if offset == 0 {
+		return t.In(time.UTC)
+	}
+	return t.In(time.FixedZone("", offset))
+}
+
+// hasFixedOffset reports whether loc has had one offset for all time, so that
+// a time of day in it has an unambiguous UTC form.
+func hasFixedOffset(loc *time.Location) bool {
+	start, end := time.Date(2000, 1, 1, 0, 0, 0, 0, loc).ZoneBounds()
+	return start.IsZero() && end.IsZero()
+}
+
+// formatZoned is t in DMN's lexical form (§10.3.4.1, Table 72): the local
+// layout, then nothing for a local value, `@zone-id` for one placed by an IANA
+// zone id, and otherwise its offset — `Z` for UTC, `+05:00` for any other — so
+// that parsing the string gives the value back.
+func formatZoned(t time.Time, layout string, hasOffset, zoneID bool) string {
+	switch {
+	case !hasOffset:
+		return t.Format(layout)
+	case zoneID:
+		return t.Format(layout) + "@" + t.Location().String()
+	}
+	return t.Format(layout + "Z07:00")
 }
 
 type HasTime interface {
@@ -67,9 +157,13 @@ type HasDate interface {
 // form; one without is a local time of day whose relation to UTC is unknown.
 // The operators use the flag as Tables 53, 54 and 57 require; see
 // mixedZones in eval_binop.go.
+//
+// zoneID is set when the offset came from an IANA zone id rather than being
+// written out: the value then prints as `@zone-id` and has a `timezone`.
 type FEELTime struct {
 	t         time.Time
 	hasOffset bool
+	zoneID    bool
 }
 
 func (t FEELTime) Time() time.Time {
@@ -83,19 +177,24 @@ func (t FEELTime) HasOffset() bool {
 }
 
 // VERDICT DIVERGENCE: Z07:00 (upstream -07:00) also admits the UTC
-// designator `Z`, which DMN 1.5 §10.3.4.1 Table 72 uses in its examples.
+// designator `Z`, which DMN 1.5 §10.3.4.1 Table 72 uses in its examples. The
+// upstream `@MST` layout is gone: parseZoned reads a zone id itself.
 var timePatterns = []string{
 	"15:04:05",
 	"15:04:05Z07:00",
-	"15:04:05@MST",
 }
 
+// ParseTime parses a time string. A zone id whose offset varies by date is
+// ErrTimeZoneIDOnTime.
 func ParseTime(temporalStr string) (*FEELTime, error) {
-	t, zoned, err := parseZoned(temporalStr, timePatterns, "15:04:05")
+	t, zone, err := parseZoned(temporalStr, timePatterns, "15:04:05")
 	if err != nil {
 		return nil, err
 	}
-	return &FEELTime{t: t, hasOffset: zoned}, nil
+	if zone == zoneID && !hasFixedOffset(t.Location()) {
+		return nil, ErrTimeZoneIDOnTime
+	}
+	return &FEELTime{t: t, hasOffset: zone != zoneNone, zoneID: zone == zoneID}, nil
 }
 
 func (t FEELTime) GetAttr(name string) (interface{}, bool) {
@@ -107,7 +206,7 @@ func (t FEELTime) GetAttr(name string) (interface{}, bool) {
 	case "second":
 		return t.t.Second(), true
 	}
-	return zoneAttr(t.t, t.hasOffset, name)
+	return zoneAttr(t.t, t.hasOffset, t.zoneID, name)
 }
 
 // zoneAttr answers the zone properties of a time or a date and time (DMN 1.5
@@ -115,8 +214,11 @@ func (t FEELTime) GetAttr(name string) (interface{}, bool) {
 // days and time duration. VERDICT DIVERGENCE: all three are null for a
 // zoneless value — "returns null when the object does not have a time offset
 // set" — where upstream answered "UTC" and 0, which a zoneless value does not
-// have. Upstream had no `time offset` at all.
-func zoneAttr(t time.Time, hasOffset bool, name string) (any, bool) {
+// have. Upstream had no `time offset` at all. `timezone` is the IANA zone id,
+// and null for a value written with an offset, which names no zone: upstream
+// answered Go's name for the offset's location, `""` or the process zone's
+// abbreviation.
+func zoneAttr(t time.Time, hasOffset, zoneID bool, name string) (any, bool) {
 	switch name {
 	case "time offset", "timezone", "timezone offset":
 	default:
@@ -125,12 +227,15 @@ func zoneAttr(t time.Time, hasOffset bool, name string) (any, bool) {
 	if !hasOffset {
 		return null, true
 	}
-	zoneName, offset := t.Zone()
+	_, offset := t.Zone()
 	switch name {
 	case "time offset":
 		return NewFEELDuration(time.Duration(offset) * time.Second), true
 	case "timezone":
-		return zoneName, true
+		if !zoneID {
+			return null, true
+		}
+		return t.Location().String(), true
 	}
 	return offset, true
 }
@@ -139,13 +244,11 @@ func (t FEELTime) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.String())
 }
 
-// String prints a zoneless time without an offset (`10:00:00`), so that
+// String prints the time in its lexical form (see formatZoned): `10:00:00`,
+// `10:00:00Z`, `10:00:00+02:00` or `10:00:00@Etc/UTC`, so that
 // time(string(t)) is t again.
 func (t FEELTime) String() string {
-	if !t.hasOffset {
-		return t.t.Format("15:04:05")
-	}
-	return t.t.Format("15:04:05-07:00")
+	return formatZoned(t.t, "15:04:05", t.hasOffset, t.zoneID)
 }
 
 type FEELDate struct {
@@ -195,9 +298,13 @@ func ParseDate(timeStr string) (*FEELDate, error) {
 // VERDICT DIVERGENCE: upstream read a zoneless date and time as UTC. DMN 1.5
 // §10.3.2.3.6: one without an offset is a local date and time, which has no
 // UTC form; see FEELTime.
+//
+// zoneID is as for FEELTime: t is then in the IANA location, whose rules give
+// the offset at that date.
 type FEELDatetime struct {
 	t         time.Time
 	hasOffset bool
+	zoneID    bool
 }
 
 func (dt FEELDatetime) Time() time.Time {
@@ -242,20 +349,22 @@ func (dt FEELDatetime) GetAttr(name string) (interface{}, bool) {
 	case "second":
 		return dt.t.Second(), true
 	}
-	return zoneAttr(dt.t, dt.hasOffset, name)
+	return zoneAttr(dt.t, dt.hasOffset, dt.zoneID, name)
 }
 
 func (dt FEELDatetime) MarshalJSON() ([]byte, error) {
 	return json.Marshal(dt.String())
 }
 
-// String prints a zoneless date and time without an offset
-// (`2024-01-01T10:00:00`), so that date and time(string(dt)) is dt again.
+// String prints the date and time in its lexical form (see formatZoned):
+// `2024-01-01T10:00:00`, `...Z`, `...+05:00` or `...@Europe/Paris`, so that
+// date and time(string(dt)) is dt again.
+//
+// VERDICT DIVERGENCE: upstream printed every offset through Go's `MST`
+// layout, so `+05:00` printed as `@+0500` and `Z` as `@UTC`, neither of which
+// is DMN's lexical form.
 func (dt FEELDatetime) String() string {
-	if !dt.hasOffset {
-		return dt.t.Format("2006-01-02T15:04:05")
-	}
-	return dt.t.Format("2006-01-02T15:04:05@MST")
+	return formatZoned(dt.t, "2006-01-02T15:04:05", dt.hasOffset, dt.zoneID)
 }
 
 // Add is date and time ± duration (DMN 1.5 §10.3.2.15, Table 57); a negative
@@ -282,9 +391,10 @@ func (dt *FEELDatetime) Add(dur *FEELDuration) *FEELDatetime {
 				dt.t.Hour(), dt.t.Minute(), dt.t.Second(), dt.t.Nanosecond(),
 				dt.t.Location()),
 			hasOffset: dt.hasOffset,
+			zoneID:    dt.zoneID,
 		}
 	}
-	return &FEELDatetime{t: dt.t.Add(dur.Duration()), hasOffset: dt.hasOffset}
+	return &FEELDatetime{t: dt.t.Add(dur.Duration()), hasOffset: dt.hasOffset, zoneID: dt.zoneID}
 }
 
 // floorDiv is a / b rounded towards negative infinity, for b > 0.
@@ -313,19 +423,21 @@ func subInstants(a, b time.Time) (*FEELDuration, error) {
 	return NewFEELDuration(delta), nil
 }
 
-// VERDICT DIVERGENCE: Z07:00 as in timePatterns.
+// VERDICT DIVERGENCE: Z07:00 and no `@MST`, as in timePatterns.
 var dateTimePatterns = []string{
 	"2006-01-02T15:04:05",
 	"2006-01-02T15:04:05Z07:00",
-	"2006-01-02T15:04:05@MST",
 }
 
+// ParseDatetime parses a date and time string. An IANA zone id is resolved
+// by its rules at that date and time, so `2026-01-01T10:00:00@Europe/Paris`
+// is the instant `2026-01-01T09:00:00Z` (DMN 1.5 §10.3.2.3.6).
 func ParseDatetime(temporalStr string) (*FEELDatetime, error) {
-	t, zoned, err := parseZoned(temporalStr, dateTimePatterns, "2006-01-02T15:04:05")
+	t, zone, err := parseZoned(temporalStr, dateTimePatterns, "2006-01-02T15:04:05")
 	if err != nil {
 		return nil, err
 	}
-	return &FEELDatetime{t: t, hasOffset: zoned}, nil
+	return &FEELDatetime{t: t, hasOffset: zone != zoneNone, zoneID: zone == zoneID}, nil
 }
 
 func MustParseDatetime(temporalStr string) *FEELDatetime {
@@ -621,7 +733,7 @@ func (tm *FEELTime) AddDuration(dur *FEELDuration) *FEELTime {
 		x += day
 	}
 	midnight := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
-	return &FEELTime{t: midnight.Add(time.Duration(x)), hasOffset: tm.hasOffset}
+	return &FEELTime{t: midnight.Add(time.Duration(x)), hasOffset: tm.hasOffset, zoneID: tm.zoneID}
 }
 
 var yearmonthDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)Y)?((\d+)M)?$`)
@@ -730,10 +842,11 @@ func ParseTemporalValue(temporalStr string) (interface{}, error) {
 	if tErr == nil {
 		return t, nil
 	}
-	// VERDICT DIVERGENCE: name the unsupported zone id rather than the
-	// generic parse failure the duration fallback would report.
+	// VERDICT DIVERGENCE: name the unsupported zone id, or the zone id a
+	// time cannot take, rather than the generic parse failure the duration
+	// fallback would report.
 	for _, err := range []error{dtErr, tErr} {
-		if errors.Is(err, ErrUnsupportedTimeZone) {
+		if errors.Is(err, ErrUnsupportedTimeZone) || errors.Is(err, ErrTimeZoneIDOnTime) {
 			return nil, err
 		}
 	}
@@ -810,10 +923,13 @@ func installDatetimeFunctions(prelude *Prelude) {
 		return &FEELDatetime{t: time.Now(), hasOffset: true}, nil
 	}))
 
+	// VERDICT DIVERGENCE: today() is the current date in UTC, where every
+	// parsed date lives. Upstream took the date in the process's local zone
+	// and kept that location, so the same model answered differently on a
+	// host east or west of UTC. pkg/feel's injected clock overrides this.
 	prelude.Bind("today", wrapTyped(func() (interface{}, error) {
-		now := time.Now()
-		date := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-		return &FEELDate{t: date}, nil
+		now := time.Now().UTC()
+		return &FEELDate{t: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)}, nil
 	}))
 
 	prelude.Bind("day of week", wrapTyped(func(v HasDate) (interface{}, error) {

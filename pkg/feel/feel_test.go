@@ -349,6 +349,20 @@ func TestInjectedClockDrivesTheTemporalBuiltins(t *testing.T) {
 		t.Errorf("date comparison against the injected clock = %v, want true", got)
 	}
 
+	// An injected clock's location is the engine's configured zone
+	// (feel.timezone): today() is the calendar date there, not in UTC.
+	kiritimati, err := time.LoadLocation("Pacific/Kiritimati")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zoned, err := NewEvaluator(FEEL, WithClock(func() time.Time { return fixed.In(kiritimati) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustEval(t, zoned, "string(today())", nil); got != "2021-06-16" {
+		t.Errorf("today() with a +14:00 clock = %v, want 2021-06-16", got)
+	}
+
 	// Without a clock, the real one applies and the built-ins still work.
 	live := newFEEL(t)
 	if _, ok := mustEval(t, live, "today()", nil).(time.Time); !ok {
@@ -367,6 +381,8 @@ func TestTemporalZoneProperties(t *testing.T) {
 		`date and time("2024-01-01T10:00:00").time offset`:               nil,
 		`date and time("2024-01-01T10:00:00").timezone offset`:           nil,
 		`string(date and time("2024-01-01T10:00:00-05:30").time offset)`: "-PT5H30M",
+		`date and time("2024-01-01T10:00:00@Europe/Paris").timezone`:     "Europe/Paris",
+		`date and time("2024-01-01T10:00:00+02:00").timezone`:            nil,
 	}
 	for expr, want := range cases {
 		if got := mustEval(t, e, expr, nil); got != want {

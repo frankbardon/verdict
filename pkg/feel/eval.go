@@ -129,6 +129,9 @@ func NewEvaluator(d Dialect, opts ...Option) (*Evaluator, error) {
 }
 
 // clockFunctions builds the temporal built-ins that read the injected clock.
+// today() is the calendar date in the clock's location, which is the engine's
+// configured zone (feel.timezone, UTC by default); without a clock the fork's
+// today() is the UTC date.
 func clockFunctions(clock func() time.Time) map[string]any {
 	return map[string]any{
 		"now": nativeFunc(Function{

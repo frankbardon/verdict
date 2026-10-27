@@ -1211,11 +1211,11 @@ func TestForkedDefects(t *testing.T) {
 			`string(duration("P1DT1H") + date and time("2026-01-01T00:00:00"))`: "2026-01-02T01:00:00",
 			// time ± days and time duration wraps within the day, and commutes.
 			`string(time("10:00:00+02:00") + duration("PT1H"))`: "11:00:00+02:00",
-			`string(time("23:00:00Z") + duration("PT2H"))`:      "01:00:00+00:00",
-			`string(time("01:00:00Z") - duration("PT2H"))`:      "23:00:00+00:00",
-			`string(time("10:00:00Z") + duration("P3DT1H"))`:    "11:00:00+00:00",
-			`string(time("10:00:00Z") - duration("-PT1.5S"))`:   "10:00:01+00:00",
-			`string(duration("PT90M") + time("10:00:00Z"))`:     "11:30:00+00:00",
+			`string(time("23:00:00Z") + duration("PT2H"))`:      "01:00:00Z",
+			`string(time("01:00:00Z") - duration("PT2H"))`:      "23:00:00Z",
+			`string(time("10:00:00Z") + duration("P3DT1H"))`:    "11:00:00Z",
+			`string(time("10:00:00Z") - duration("-PT1.5S"))`:   "10:00:01Z",
+			`string(duration("PT90M") + time("10:00:00Z"))`:     "11:30:00Z",
 			// date ± years and months duration, and commuted.
 			`string(date("2026-01-15") + duration("P1M"))`: "2026-02-15",
 			`string(date("2026-01-15") - duration("P1Y"))`: "2025-01-15",
@@ -1779,6 +1779,108 @@ func TestForkedDefects(t *testing.T) {
 			}
 			if got != want {
 				t.Errorf("%s matched 10:00:00 = %v, want %v", src, got, want)
+			}
+		}
+	})
+
+	t.Run("IANA zone ids resolve and every zoned value prints in its lexical form", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.3.6: a date and time with an IANA zone id has the
+		// offset that zone's rules give at that date, and compares with an
+		// offset value by instant. Table 72: string() is the lexical form, so
+		// an offset prints as `Z` or `+05:00` and only a zone id as `@id`.
+		// Upstream could not read `@Europe/Paris`, read `@CET` as UTC, printed
+		// `+05:00` as `@+0500` and `Z` as `@UTC`, and named a zone for a value
+		// written with an offset.
+		cases := map[string]any{
+			`date and time("2026-01-01T10:00:00@Europe/Paris") = date and time("2026-01-01T09:00:00Z")`:      true,
+			`@"2026-01-01T10:00:00@Europe/Paris" = @"2026-01-01T09:00:00Z"`:                                  true,
+			`date and time("2026-07-01T10:00:00@Europe/Paris") = date and time("2026-07-01T10:00:00+02:00")`: true,
+			`date and time("2026-01-01T10:00:00@Europe/Paris") < date and time("2026-01-01T09:30:00Z")`:      true,
+			`date and time("2026-01-01T10:00:00@Europe/Paris") = date and time("2026-01-01T10:00:00")`:       nil,
+			`date and time("2026-01-01T10:00:00@CET") = date and time("2026-01-01T09:00:00Z")`:               true,
+			`date and time("2026-01-01T10:00:00@Europe/Paris").timezone`:                                     "Europe/Paris",
+			`string(date and time("2026-01-01T10:00:00@Europe/Paris").time offset)`:                          "PT1H",
+			`date and time("2026-01-01T10:00:00+01:00").timezone`:                                            nil,
+			`date and time("2026-01-01T10:00:00Z").timezone`:                                                 nil,
+			`time("10:00:00+01:00").timezone`:                                                                nil,
+			`string(date and time("2026-02-28T23:59:59+05:00"))`:                                             "2026-02-28T23:59:59+05:00",
+			`string(date and time("2026-02-28T23:59:59-03:30"))`:                                             "2026-02-28T23:59:59-03:30",
+			`string(date and time("2026-02-28T23:59:59Z"))`:                                                  "2026-02-28T23:59:59Z",
+			`string(date and time("2026-02-28T23:59:59+00:00"))`:                                             "2026-02-28T23:59:59Z",
+			`string(date and time("2026-01-01T10:00:00@Europe/Paris"))`:                                      "2026-01-01T10:00:00@Europe/Paris",
+			`string(date and time("2026-03-15T10:00:00@Europe/Paris") + duration("P1M"))`:                    "2026-04-15T10:00:00@Europe/Paris",
+			`string(time("10:00:00+02:00"))`:                                                                 "10:00:00+02:00",
+			`string(time("10:00:00Z"))`:                                                                      "10:00:00Z",
+			`string(time("10:00:00@Etc/UTC"))`:                                                               "10:00:00@Etc/UTC",
+			// A time takes a zone id only when its offset never varies.
+			`time("10:00:00@Europe/Paris")`:                     nil,
+			`time("10:00:00@Etc/GMT-2") = time("08:00:00Z")`:    true,
+			`time("10:00:00@Etc/UTC").timezone`:                 "Etc/UTC",
+			`string(time("10:00:00@Etc/GMT-2").time offset)`:    "PT2H",
+			`time("10:00:00@Etc/UTC") = time("10:00:00")`:       nil,
+			`time(string(time("10:00:00@Etc/GMT-2"))).timezone`: "Etc/GMT-2",
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		// x = date and time(string(x)), and string() is stable, for zoned,
+		// zoneless and IANA values alike.
+		for _, lit := range []string{
+			"2026-02-28T23:59:59+05:00", "2026-02-28T23:59:59Z", "2026-02-28T23:59:59",
+			"2026-01-01T10:00:00@Europe/Paris", "2026-07-01T10:00:00@America/New_York",
+		} {
+			for expr, want := range map[string]any{
+				fmt.Sprintf(`date and time(string(date and time(%q))) = date and time(%q)`, lit, lit): true,
+				fmt.Sprintf(`string(date and time(string(date and time(%q))))`, lit):                  lit,
+			} {
+				if got := mustEval(t, e, expr, nil); got != want {
+					t.Errorf("%s = %#v, want %#v", expr, got, want)
+				}
+			}
+		}
+		for _, lit := range []string{"10:00:00+05:00", "10:00:00Z", "10:00:00", "10:00:00@Etc/UTC"} {
+			if got := mustEval(t, e, fmt.Sprintf(`string(time(string(time(%q))))`, lit), nil); got != lit {
+				t.Errorf("time %s round-tripped to %#v", lit, got)
+			}
+		}
+		// A zone id the database does not know still raises, and an
+		// at-literal time with a varying zone id is a load error naming why.
+		for _, src := range []string{
+			`date and time("2026-01-01T10:00:00@Mars/Olympus")`,
+			`date and time("2026-01-01T10:00:00@Local")`,
+		} {
+			if _, err := e.EvalText(src, nil); err == nil || !strings.Contains(err.Error(), "time zone id") {
+				t.Errorf("%s: err = %v, want an unsupported time zone id", src, err)
+			}
+		}
+		if _, err := e.EvalText(`@"10:00:00@Europe/Paris"`, nil); err == nil || !strings.Contains(err.Error(), "zone id") {
+			t.Errorf(`@"10:00:00@Europe/Paris": err = %v, want a zone id error`, err)
+		}
+	})
+
+	t.Run("today() is the UTC date whatever the process's zone", func(t *testing.T) {
+		// Upstream built today() in time.Local and kept that location, so a
+		// host east or west of UTC disagreed with every parsed date for part
+		// of each day. Between them, +14 and -12 differ from UTC's date at
+		// every moment, so this fails on the upstream code whenever it runs.
+		saved := time.Local
+		t.Cleanup(func() { time.Local = saved })
+		for _, zone := range []string{"Pacific/Kiritimati", "Etc/GMT+12"} {
+			loc, err := time.LoadLocation(zone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Local = loc
+			before := time.Now().UTC().Format("2006-01-02")
+			got := mustEval(t, e, `string(today())`, nil)
+			after := time.Now().UTC().Format("2006-01-02")
+			if got != before && got != after {
+				t.Errorf("with time.Local = %s, today() = %v, want the UTC date %s", zone, got, before)
+			}
+			if got := mustEval(t, e, fmt.Sprintf(`today() = date(%q) or today() = date(%q)`, before, after), nil); got != true {
+				t.Errorf("with time.Local = %s, today() is not the UTC date: %v", zone, got)
 			}
 		}
 	})

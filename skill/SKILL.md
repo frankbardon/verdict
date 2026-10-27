@@ -323,8 +323,8 @@ opens as an empty canvas.
   supported). The literal `@"P1Y2D"` is a syntax error instead:
   `VERDICT_LOAD_013` when the model loads. A string the spec allows but Verdict
   cannot hold still fails the evaluation (`VERDICT_EVAL_005`) rather than
-  reading as malformed: an IANA zone (`"10:00:00@Europe/Paris"` — use `Z` or
-  `+01:00`), a duration finer than a nanosecond (`PT0.0000000001S`) or longer
+  reading as malformed: a zone id the time zone database does not know
+  (`"2026-01-01T10:00:00@Mars/Olympus"`), a duration finer than a nanosecond (`PT0.0000000001S`) or longer
   than about 292 years of days and time (`P200000D`), and `date(<date and
   time>)` / `time(<time or date and time>)`.
 - **Durations are normalised.** `duration("P26M")` is `P2Y2M` and
@@ -355,6 +355,19 @@ opens as an empty canvas.
   zone-ness. `.time offset` (a duration) and `.timezone` are null for a zoneless
   value, and `string()` omits the offset (`"10:00:00"`). In a decision table a
   zoneless input never equals a zoned cell — write inputs and cells the same way.
+- **IANA zone ids work on date and times.** `date and time("2026-01-01T10:00:00@Europe/Paris")`
+  (and `@"...@Europe/Paris"`) takes the zone's offset at that date, so it equals
+  `2026-01-01T09:00:00Z`; ids and offsets compare by instant. `.timezone` is the
+  id, and null for a value written with an offset (`.time offset` still gives
+  the offset). A **time** takes only a zone id with one fixed offset (`@UTC`,
+  `@Etc/GMT-2`): `time("10:00:00@Europe/Paris")` is null (DST makes its offset
+  depend on a date it does not have) — write `10:00:00+01:00`.
+- **`string()` of a temporal is its lexical form**, and parses back to the same
+  value: `"2026-02-28T23:59:59+05:00"`, `"...Z"` for a zero offset,
+  `"...@Europe/Paris"` only for a zone id, `"2026-02-28T23:59:59"` with none;
+  likewise for `time`.
+- **`today()` is the UTC date**, not the host's: with `feel.timezone` set (the
+  engine clock's zone, UTC by default) it is the date in that zone.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration
