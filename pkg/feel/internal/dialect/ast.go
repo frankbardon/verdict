@@ -9,6 +9,20 @@ type Scope map[string]interface{}
 
 type Interpreter struct {
 	ScopeStack []Scope
+	// MaxIterations is the iteration budget of one evaluation: the total
+	// number of elements every iteration context of every for, some and
+	// every may produce, nested and multi-context products included. Zero
+	// means no budget, which is upstream's behaviour; the façade always sets
+	// one.
+	//
+	// VERDICT DIVERGENCE: see NOTICE.md. The fork takes the budget as a
+	// plain field rather than importing any Verdict configuration.
+	MaxIterations int64
+	// iterations counts the elements charged against MaxIterations so far.
+	// It lives on the interpreter, which is built afresh for every
+	// evaluation and never shared between goroutines, so the budget is per
+	// evaluation and needs no lock.
+	iterations uint64
 }
 
 type Node interface {
@@ -313,11 +327,14 @@ func (mt MultiTests) Repr() string {
 	return fmt.Sprintf("(multitests %s)", strings.Join(s, " "))
 }
 
-// ForExpr FOR expression
+// ForExpr FOR expression. A `for` with several iteration contexts parses as
+// nested ForExprs, one per context; every one but the innermost has Continues
+// set, and its ReturnExpr is the next context's ForExpr.
 type ForExpr struct {
 	Varname    string
 	ListExpr   Node
 	ReturnExpr Node
+	Continues  bool
 	textRange  TextRange
 }
 
@@ -326,6 +343,23 @@ func (fe ForExpr) TextRange() TextRange {
 }
 func (fe ForExpr) Repr() string {
 	return fmt.Sprintf("(for %s %s %s)", fe.Varname, fe.ListExpr.Repr(), fe.ReturnExpr.Repr())
+}
+
+// IterationRange is the integer-range form of an iteration context,
+// `name in Start .. End`, DMN 1.5 FEEL grammar rule 63. It is only ever the
+// ListExpr of a ForExpr, SomeExpr or EveryExpr; a bare `a..b` is not an
+// expression anywhere else.
+type IterationRange struct {
+	Start     Node
+	End       Node
+	textRange TextRange
+}
+
+func (ir IterationRange) TextRange() TextRange {
+	return ir.textRange
+}
+func (ir IterationRange) Repr() string {
+	return fmt.Sprintf("(iterrange %s %s)", ir.Start.Repr(), ir.End.Repr())
 }
 
 // SomeExpr some expression

@@ -5,7 +5,7 @@ import pfeel "github.com/frankbardon/verdict/pkg/feel/internal/dialect"
 // violatesSFEEL reports the first Conformance-Level-2 violation in an AST, or
 // "" when the tree is valid S-FEEL.
 //
-// S-FEEL (DMN 1.5 §10.3.4) is the subset a Level 2 engine must support: number,
+// S-FEEL (DMN 1.5 clause 9) is the subset a Level 2 engine must support: number,
 // string, boolean, date/time and duration literals; arithmetic, comparison and
 // range operators; conjunction and disjunction; list literals; and qualified
 // names. Iteration (`for`/`some`/`every`), conditionals (`if`) and inline
@@ -38,6 +38,8 @@ func violatesSFEEL(n pfeel.Node) string {
 		return violatesSFEEL(v.Right)
 	case *pfeel.DotOp:
 		return violatesSFEEL(v.Left)
+	case *pfeel.Negation:
+		return violatesSFEEL(v.Operand)
 	case *pfeel.RangeNode:
 		if r := violatesSFEEL(v.Start); r != "" {
 			return r

@@ -274,8 +274,38 @@ func (p *Parser) addOrSubOp() (Node, error) {
 func (p *Parser) mulOrDivOp() (Node, error) {
 	return p.binop(
 		[]string{"*", "/", "%"},
-		p.parseFuncallOrIndexOrDot,
+		p.powOp,
 	)
+}
+
+// VERDICT DIVERGENCE: exponentiation and arithmetic negation (DMN 1.5 grammar
+// rules 4.c and 4.d). Upstream parsed neither: a leading `-` was only ever part
+// of a numeric literal. `**` binds tighter than `*` and `/` and associates
+// left, as the fork's other binary operators do; negation binds tighter than
+// `**`, matching upstream's negative numeric literal, so `-x ** 2` is
+// `(-x) ** 2` just as `-2 ** 2` is 4. The scanner no longer folds a minus into
+// a literal (see TokenNumber), so every leading `-` reaches negationOp.
+func (p *Parser) powOp() (Node, error) {
+	return p.binop(
+		[]string{"**"},
+		p.negationOp,
+	)
+}
+
+func (p *Parser) negationOp() (Node, error) {
+	if !p.CurrentToken().Expect("-") {
+		return p.parseFuncallOrIndexOrDot()
+	}
+	textRange := p.startTextRange()
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	operand, err := p.negationOp()
+	if err != nil {
+		return nil, err
+	}
+	textRange.End = p.CurrentToken().Pos
+	return &Negation{Operand: operand, textRange: textRange}, nil
 }
 
 func (p *Parser) parseFuncallOrIndexOrDot() (Node, error) {
@@ -443,7 +473,7 @@ func (p *Parser) singleElement() (Node, error) {
 		return p.parseBracketOrRange()
 	case "[":
 		return p.parseRangeOrArray()
-	// VERDICT DIVERGENCE: `]` opens an exclusive interval — DMN 1.5 §10.3.1.7
+	// VERDICT DIVERGENCE: `]` opens an exclusive interval — DMN 1.5 §10.3.1.2 (grammar rules 9, 11)
 	// admits `]a..b]` alongside `(a..b]`. A closing bracket can never begin an
 	// expression, so routing it here is unambiguous.
 	case "]":
@@ -776,13 +806,27 @@ func (p *Parser) parseMapKey() (string, error) {
 
 func (p *Parser) parseTemporalNode() (Node, error) {
 	rng := p.startTextRange()
-	v := p.CurrentToken().Value
+	tok := p.CurrentToken()
+	v := tok.Value
+	// VERDICT DIVERGENCE: an at-literal whose string is not a date, time, date
+	// and time or duration string is a syntax error, raised here rather than
+	// when the literal is evaluated. DMN 1.5 §10.3.1.2, additional syntax
+	// rules: "The string in rule 65 must follow the date string, time string,
+	// date and time string or duration string syntax". Unlike the conversion
+	// built-ins (null outside their domain, §10.3.4), a malformed literal is
+	// rejected at load, as VERDICT_LOAD_013.
+	node := &TemporalNode{Value: v}
+	if _, perr := ParseTemporalValue(node.Content()); perr != nil {
+		return nil, fmt.Errorf("invalid temporal literal %s, at %d %d: %w",
+			v, tok.Pos.Row, tok.Pos.Column, perr)
+	}
 	err := p.scanner.Next()
 	if err != nil {
 		return nil, err
 	}
 	rng.End = p.CurrentToken().Pos
-	return &TemporalNode{Value: v, textRange: rng}, nil
+	node.textRange = rng
+	return node, nil
 }
 
 func (p *Parser) parseMapNode() (Node, error) {
@@ -888,7 +932,7 @@ func (p *Parser) parseForExpr() (Node, error) {
 		return nil, err
 	}
 
-	listExpr, err := p.expression()
+	listExpr, err := p.iterationContext()
 	if err != nil {
 		return nil, err
 	}
@@ -898,10 +942,15 @@ func (p *Parser) parseForExpr() (Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The remaining contexts iterate inside this one; Continues makes
+		// Eval splice their results into one flat list rather than nest them.
+		rng.End = p.CurrentToken().Pos
 		return &ForExpr{
 			Varname:    varName,
 			ListExpr:   listExpr,
 			ReturnExpr: returnExpr,
+			Continues:  true,
+			textRange:  rng,
 		}, nil
 	}
 
@@ -926,6 +975,42 @@ func (p *Parser) parseForExpr() (Node, error) {
 	}, nil
 }
 
+// iterationContext parses the domain of one iteration context, DMN 1.5 FEEL
+// grammar rule 63: `expression [ ".." expression ]`. The two-expression form
+// is an integer range and parses to an IterationRange; upstream parsed only
+// the list form, so `for i in 1..3` was a syntax error at the `..`.
+//
+// VERDICT DIVERGENCE: the spec's rule 46 gives `some` and `every` a plain
+// expression, not an iteration context; the fork accepts the integer-range
+// form there too (an open DMN issue proposes the same), see NOTICE.md.
+func (p *Parser) iterationContext() (Node, error) {
+	rng := p.startTextRange()
+	start, err := p.expression()
+	if err != nil {
+		return nil, err
+	}
+	if p.CurrentToken().Kind != ".." {
+		return start, nil
+	}
+	err = p.scanner.Next()
+	if err != nil {
+		return nil, err
+	}
+	end, err := p.expression()
+	if err != nil {
+		return nil, err
+	}
+	rng.End = p.CurrentToken().Pos
+	return &IterationRange{Start: start, End: end, textRange: rng}, nil
+}
+
+// parseSomeOrEvery parses a quantified expression with one or more
+// comma-separated iteration contexts, DMN 1.5 FEEL grammar rule 46:
+// `some x in A, y in B satisfies P`. Upstream accepted a single context only.
+// Several contexts desugar to nested quantifiers of the same kind, innermost
+// last, the way parseForExpr nests `for`: a later context sees the names bound
+// by earlier ones, and because the inner quantifier's three-valued result is
+// folded by the outer one, the answer is the fold over the cartesian product.
 func (p *Parser) parseSomeOrEvery() (Node, error) {
 	rng := p.startTextRange()
 	cmd := p.CurrentToken().Value
@@ -933,23 +1018,40 @@ func (p *Parser) parseSomeOrEvery() (Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	// parse variable name
-	varName, err := p.parseName("in")
-	if err != nil {
-		return nil, err
-	}
 
-	if !p.CurrentToken().ExpectKeywords("in") {
-		return nil, p.Unexpected("in")
+	type iterContext struct {
+		varName  string
+		listExpr Node
 	}
-	err = p.scanner.Next()
-	if err != nil {
-		return nil, err
-	}
+	var contexts []iterContext
+	for {
+		// parse variable name
+		varName, err := p.parseName("in")
+		if err != nil {
+			return nil, err
+		}
 
-	listExpr, err := p.expression()
-	if err != nil {
-		return nil, err
+		if !p.CurrentToken().ExpectKeywords("in") {
+			return nil, p.Unexpected("in")
+		}
+		err = p.scanner.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		listExpr, err := p.iterationContext()
+		if err != nil {
+			return nil, err
+		}
+		contexts = append(contexts, iterContext{varName: varName, listExpr: listExpr})
+
+		if !p.CurrentToken().Expect(",") {
+			break
+		}
+		err = p.scanner.Next()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if !p.CurrentToken().ExpectKeywords("satisfies") {
@@ -965,22 +1067,27 @@ func (p *Parser) parseSomeOrEvery() (Node, error) {
 		return nil, err
 	}
 	rng.End = p.CurrentToken().Pos
-	if cmd == "some" {
-		return &SomeExpr{
-			Varname:    varName,
-			ListExpr:   listExpr,
-			FilterExpr: filterExpr,
-			textRange:  rng,
-		}, nil
-	} else {
-		return &EveryExpr{
-			Varname:    varName,
-			ListExpr:   listExpr,
-			FilterExpr: filterExpr,
-			textRange:  rng,
-		}, nil
-	}
 
+	node := filterExpr
+	for i := len(contexts) - 1; i >= 0; i-- {
+		c := contexts[i]
+		if cmd == "some" {
+			node = &SomeExpr{
+				Varname:    c.varName,
+				ListExpr:   c.listExpr,
+				FilterExpr: node,
+				textRange:  rng,
+			}
+		} else {
+			node = &EveryExpr{
+				Varname:    c.varName,
+				ListExpr:   c.listExpr,
+				FilterExpr: node,
+				textRange:  rng,
+			}
+		}
+	}
+	return node, nil
 }
 
 func (p *Parser) parseFunDef() (Node, error) {

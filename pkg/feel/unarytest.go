@@ -38,6 +38,12 @@ type unaryAlt struct {
 	// test outcome, so it must not be short-circuited by the boolean branch of
 	// the result interpreter.
 	literalBool bool
+	// comparison marks an alternative whose top-level node is an ordering
+	// comparison or a membership test (`< 10`, `? >= 5`, `? in [1..10]`). Such
+	// a test yields null when the input is null (DMN 1.5 §10.3.2.15), and a null
+	// outcome is "not satisfied" — it must not fall through to the equality
+	// branch, where null would equal a null input.
+	comparison bool
 }
 
 // Text returns the source entry.
@@ -116,7 +122,7 @@ func (c *Compiler) compileUnaryTest(text string) (*UnaryTest, error) {
 			}
 			return nil, &CompileError{Text: part, Dialect: c.dialect, Err: err}
 		}
-		u.alts = append(u.alts, &unaryAlt{expr: x, source: part, literalBool: isBoolLiteral(x)})
+		u.alts = append(u.alts, &unaryAlt{expr: x, source: part, literalBool: isBoolLiteral(x), comparison: isOrderingComparison(x)})
 	}
 	if len(u.alts) == 0 {
 		return nil, &CompileError{Text: text, Dialect: c.dialect, Reason: "entry has no test"}
@@ -127,6 +133,18 @@ func (c *Compiler) compileUnaryTest(text string) (*UnaryTest, error) {
 func isBoolLiteral(x *Expr) bool {
 	_, ok := x.node.(*pfeel.BoolNode)
 	return ok
+}
+
+func isOrderingComparison(x *Expr) bool {
+	b, ok := x.node.(*pfeel.Binop)
+	if !ok {
+		return false
+	}
+	switch b.Op {
+	case "<", "<=", ">", ">=", "in":
+		return true
+	}
+	return false
 }
 
 // EvalUnaryTest evaluates an input entry with the tested value bound to `?`.
@@ -146,11 +164,25 @@ func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) 
 	scope["?"] = input
 	scope[inputRefName] = input
 
-	matched := false
+	// unknown records an alternative that yielded null rather than a verdict.
+	// The entry is a FEEL disjunction, so not(...) over it is null — and so
+	// not a match — unless some alternative matched outright.
+	matched, unknown := false, false
 	for _, alt := range u.alts {
 		v, err := e.Eval(alt.expr, scope)
 		if err != nil {
 			return false, err
+		}
+		if alt.comparison && IsNull(v) {
+			unknown = true
+			continue
+		}
+		if rv, isRange := v.(*pfeel.RangeValue); isRange && (IsNull(input) || rv.HasNullEndpoint()) {
+			// `[1..10]` against null, or `[null..10]` against anything:
+			// membership is the endpoint comparisons, and each is null for a
+			// null operand, so the test is null too.
+			unknown = true
+			continue
 		}
 		ok, err := interpretTestResult(v, input, alt.literalBool)
 		if err != nil {
@@ -162,7 +194,7 @@ func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) 
 		}
 	}
 	if u.negate {
-		return !matched, nil
+		return !matched && !unknown, nil
 	}
 	return matched, nil
 }
@@ -178,6 +210,12 @@ func interpretTestResult(v, input any, literalBool bool) (bool, error) {
 	case *pfeel.RangeValue:
 		return rangeContains(tv, input)
 	case []any:
+		// DMN 1.5 §7.3.2 (UnaryTests, alternatives a and b): the tested value satisfies a list
+		// either by being equal to it — a list-valued input against a list
+		// literal cell — or by being equal to one of its items.
+		if Equal(tv, input) {
+			return true, nil
+		}
 		for _, item := range tv {
 			if Equal(item, input) {
 				return true, nil

@@ -211,14 +211,7 @@ func durationToGo(d *pfeel.FEELDuration) any {
 	if d.Years != 0 || d.Months != 0 {
 		return d.String()
 	}
-	total := time.Duration(d.Days)*24*time.Hour +
-		time.Duration(d.Hours)*time.Hour +
-		time.Duration(d.Minutes)*time.Minute +
-		time.Duration(d.Seconds)*time.Second
-	if d.Neg {
-		total = -total
-	}
-	return total
+	return d.Duration()
 }
 
 // Equal compares two FEEL values structurally. It is used by the ANY hit policy

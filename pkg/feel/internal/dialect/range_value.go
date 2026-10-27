@@ -8,6 +8,47 @@ type RangeValue struct {
 	End     any
 }
 
+// HasNullEndpoint reports whether either endpoint is null. A literal such as
+// `[null..10]` has no defined start, and DMN 1.5 §10.3.2.15 makes every ordering
+// comparison against it null, so membership in it, and every range built-in
+// over it, is null rather than an answer computed from upstream's ordering of
+// null below every value. The fork builds ranges only from range literals
+// (`< 10` is a comparison, not a range), so a null endpoint here always came
+// from the model, never from an internal encoding of an unbounded interval.
+func (rv RangeValue) HasNullEndpoint() bool {
+	return isNullValue(rv.Start) || isNullValue(rv.End)
+}
+
+// nullOnNullOperand makes a range built-in yield null when its `a` or `b`
+// argument is null, or is a range with a null endpoint (see HasNullEndpoint),
+// or when a comparison inside it pairs values of different kinds.
+// DMN 1.5 §10.3.4.7 defines each range function by ordering comparisons between
+// points and endpoints, and says a built-in given a parameter outside its
+// domain yields null; null is not a point. Upstream ordered null below every
+// value, so `before(null, [1..10])` was false and `includes([1..10], null)`
+// false, while a null where a range was expected raised a type error.
+func nullOnNullOperand(nf *NativeFun) *NativeFun {
+	inner := nf.fn
+	nf.fn = func(args map[string]any) (any, error) {
+		for _, name := range []string{"a", "b"} {
+			if isNullValue(args[name]) {
+				return null, nil
+			}
+			if rv, ok := args[name].(*RangeValue); ok && rv.HasNullEndpoint() {
+				return null, nil
+			}
+		}
+		v, err := inner(args)
+		if err != nil && isIncomparable(err) {
+			// A point or endpoint of another kind than its counterpart
+			// (`before(1, "a")`) is outside the built-in's domain.
+			return null, nil
+		}
+		return v, err
+	}
+	return nf
+}
+
 func (rv RangeValue) BeforePoint(p any) (bool, error) {
 	pos, err := rv.Position(p)
 	if err != nil {
@@ -140,7 +181,8 @@ func (rv RangeValue) overlapsAfter(other RangeValue) (bool, error) {
 	}
 }
 
-func installRangeFunctions(prelude *Prelude) {
+func installRangeFunctions(p *Prelude) {
+	prelude := rangePrelude{p}
 	prelude.Bind("before", NewNativeFunc(func(kwargs map[string]any) (any, error) {
 		a := kwargs["a"]
 		b := kwargs["b"]
@@ -346,26 +388,19 @@ func installRangeFunctions(prelude *Prelude) {
 		}
 	}).Required("a", "b"))
 
+	// coincides dispatches on the argument types rather than decoding them
+	// into range structs: upstream's mapstructure decode turned a number (a
+	// struct) into a zero RangeValue, so `coincides(1, 1)` compared two nil
+	// endpoints and raised a type mismatch. DMN 1.5 §10.3.4.7 defines two
+	// signatures, (point, point) as `point1 = point2` and (range, range) as
+	// equal endpoints and equal closedness; a point paired with a range is
+	// outside both and yields null.
 	prelude.Bind("coincides", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		type coincidesArgs struct {
-			A *RangeValue `json:"a"`
-			B *RangeValue `json:"b"`
-		}
-		args := coincidesArgs{}
-		if err := decodeKWArgs(kwargs, &args); err != nil {
-			// a, b is not rangevalue
-			r, err := compareInterfaces(kwargs["a"], kwargs["b"])
-			if err != nil {
-				return nil, err
-			}
-			return r == 0, nil
-		} else {
-			a := args.A
-			b := args.B
-			if a.StartOpen != b.StartOpen {
-				return false, nil
-			}
-			if a.EndOpen != b.EndOpen {
+		a, aRange := kwargs["a"].(*RangeValue)
+		b, bRange := kwargs["b"].(*RangeValue)
+		switch {
+		case aRange && bRange:
+			if a.StartOpen != b.StartOpen || a.EndOpen != b.EndOpen {
 				return false, nil
 			}
 			cmpStart, err := compareInterfaces(a.Start, b.Start)
@@ -377,8 +412,23 @@ func installRangeFunctions(prelude *Prelude) {
 				return nil, err
 			}
 			return cmpStart == 0 && cmpEnd == 0, nil
+		case aRange || bRange:
+			return null, nil
+		default:
+			r, err := compareInterfaces(kwargs["a"], kwargs["b"])
+			if err != nil {
+				return nil, err
+			}
+			return r == 0, nil
 		}
-
 	}).Required("a", "b"))
 
+}
+
+// rangePrelude binds every range built-in through nullOnNullOperand, so a new
+// built-in added to installRangeFunctions cannot skip the null-operand rule.
+type rangePrelude struct{ p *Prelude }
+
+func (rp rangePrelude) Bind(name string, nf *NativeFun) {
+	rp.p.Bind(name, nullOnNullOperand(nf))
 }

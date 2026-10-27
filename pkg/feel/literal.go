@@ -51,6 +51,14 @@ func literalsOf(n pfeel.Node) []Literal {
 		return nil
 	case *pfeel.NumberNode:
 		return []Literal{{Text: v.Repr(), Value: pfeel.NewNumber(v.Value)}}
+	case *pfeel.Negation:
+		// A negative number is a negated literal in the AST (`< -1`), and the
+		// analyser needs it as the boundary it denotes.
+		if num, ok := v.Operand.(*pfeel.NumberNode); ok {
+			text := "-" + num.Value
+			return []Literal{{Text: text, Value: pfeel.NewNumber(text)}}
+		}
+		return nil
 	case *pfeel.StringNode:
 		s := v.Content()
 		return []Literal{{Text: `"` + s + `"`, Value: s}}

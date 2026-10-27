@@ -3,6 +3,8 @@ package dialect
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math/big"
 	"reflect"
 )
 
@@ -325,86 +327,224 @@ func (ifExpr IfExpr) Eval(intp *Interpreter) (any, error) {
 	}
 }
 
+// Eval yields the integers from Start to End inclusive, ascending or
+// descending as the endpoints run, DMN 1.5 §10.3.2.14: `1..3` is [1, 2, 3]
+// and `3..1` is [3, 2, 1]. The grammar requires both endpoints to be integers;
+// any other endpoint, null included, is outside the semantic domain and the
+// result is null, which the enclosing for, some or every turns into a null
+// result of its own.
+func (ir IterationRange) Eval(intp *Interpreter) (any, error) {
+	startVal, err := ir.Start.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	endVal, err := ir.End.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	from, ok := iterationEndpoint(startVal)
+	if !ok {
+		return nil, nil
+	}
+	to, ok := iterationEndpoint(endVal)
+	if !ok {
+		return nil, nil
+	}
+	step := int64(1)
+	// The element count minus one, in unsigned arithmetic so that the full
+	// int64 span cannot overflow. Charged against the evaluation's iteration
+	// budget before anything is allocated: a model loaded over the network
+	// must not be able to ask for a billion-element list.
+	span := uint64(to) - uint64(from)
+	if to < from {
+		step = -1
+		span = uint64(from) - uint64(to)
+	}
+	results := make([]any, 0)
+	if intp.MaxIterations > 0 {
+		// span+1 wraps to zero only for the full 2^64-element span, which
+		// no int64 budget admits.
+		if span == ^uint64(0) {
+			return nil, &IterationBudgetExceededError{Limit: intp.MaxIterations}
+		}
+		if err := intp.chargeIterations(span + 1); err != nil {
+			return nil, err
+		}
+		// Bounded by the budget, so sizing the list up front is safe.
+		results = make([]any, 0, span+1)
+	}
+	for i := from; ; i += step {
+		results = append(results, NewNumberFromInt64(i))
+		if i == to {
+			break
+		}
+	}
+	return results, nil
+}
+
+// chargeIterations spends n elements of the evaluation's iteration budget,
+// failing when the total would exceed Interpreter.MaxIterations. A zero
+// budget charges nothing.
+func (intp *Interpreter) chargeIterations(n uint64) error {
+	limit := intp.MaxIterations
+	if limit <= 0 {
+		return nil
+	}
+	if n > uint64(limit)-intp.iterations {
+		return &IterationBudgetExceededError{Limit: limit}
+	}
+	intp.iterations += n
+	return nil
+}
+
+// chargeDomain charges the elements of a for, some or every domain against
+// the iteration budget. An integer-range context charged its own elements
+// before building them, so only a list (or singleton) domain is charged here.
+func (intp *Interpreter) chargeDomain(listExpr Node, list []any) error {
+	if _, isRange := listExpr.(*IterationRange); isRange {
+		return nil
+	}
+	return intp.chargeIterations(uint64(len(list)))
+}
+
+// IterationBudgetExceededError reports an evaluation whose iteration contexts
+// would together produce more elements than Interpreter.MaxIterations allows.
+type IterationBudgetExceededError struct {
+	Limit int64
+}
+
+func (e *IterationBudgetExceededError) Error() string {
+	return fmt.Sprintf("iteration exceeds the limit of %d elements per evaluation", e.Limit)
+}
+
+// iterationEndpoint reports v as an int64 when it is an integral FEEL number
+// that fits one exactly. A string is not a number here, even one that parses.
+func iterationEndpoint(v any) (int64, bool) {
+	n, ok := v.(*Number)
+	if !ok || !n.v.IsInt() {
+		return 0, false
+	}
+	i, acc := n.v.Int64()
+	return i, acc == big.Exact
+}
+
 func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 	listLike, err := fe.ListExpr.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-
-	if aList, ok := listLike.([]any); ok {
-		intp.PushEmpty()
-		results := make([]any, 0)
-		for _, val := range aList {
-			intp.Bind(fe.Varname, val)
-
-			res, err := fe.ReturnExpr.Eval(intp)
-			if err != nil {
-				intp.Pop()
-				return nil, err
-			}
-			results = append(results, res)
-		}
-		intp.Pop()
-		return results, nil
-	} else {
-		return nil, NewErrTypeMismatch("list")
+	aList, ok := iterationDomain(fe.ListExpr, listLike)
+	if !ok {
+		// An integer-range context with a non-integer endpoint: the whole
+		// for expression is null, not a type mismatch.
+		return nil, nil
 	}
+	if err := intp.chargeDomain(fe.ListExpr, aList); err != nil {
+		return nil, err
+	}
+
+	intp.PushEmpty()
+	results := make([]any, 0)
+	for _, val := range aList {
+		intp.Bind(fe.Varname, val)
+
+		res, err := fe.ReturnExpr.Eval(intp)
+		if err != nil {
+			intp.Pop()
+			return nil, err
+		}
+		if fe.Continues {
+			if res == nil {
+				// The inner context was an integer range with a
+				// non-integer endpoint; the whole expression is null.
+				intp.Pop()
+				return nil, nil
+			}
+			// DMN 1.5 FEEL grammar rule 44 and §10.3.2.14: several
+			// iteration contexts range over their cartesian product and
+			// yield one flat list. Only the inner context's own list is
+			// spliced; the body's result is never flattened.
+			inner, _ := res.([]any)
+			results = append(results, inner...)
+			continue
+		}
+		results = append(results, res)
+	}
+	intp.Pop()
+	return results, nil
+}
+
+// iterationDomain turns the evaluated domain of one iteration context of a
+// for, some or every into the list it iterates. DMN 1.5 implicit conversion
+// to a singleton list (§10.3.2.9.4): a single value where a list is expected is
+// the one-element list holding it, so a null domain is [null], not an error,
+// and the body or condition decides what an absent value means. A range value
+// such as [1..3] is not a list and is wrapped likewise. ok is false only for
+// an integer-range context with a non-integer endpoint, whose enclosing
+// expression is null rather than the singleton [null].
+func iterationDomain(listExpr Node, listLike any) (list []any, ok bool) {
+	if _, isRange := listExpr.(*IterationRange); isRange && listLike == nil {
+		return nil, false
+	}
+	if aList, isList := listLike.([]any); isList {
+		return aList, true
+	}
+	return []any{listLike}, true
+}
+
+// Quantified expressions yield a boolean, DMN 1.5 FEEL grammar rule 46 and
+// §10.3.2.15: `some` is true if the condition is true for any element,
+// `every` is true if it is true for all of them, and both fold a null or
+// non-boolean condition into a null result when no element decides the
+// answer outright. Upstream returned the first matching element from `some`
+// and the list of matching elements from `every`, so neither was usable as a
+// condition, and `some` leaked an interpreter scope on its early return.
+
+// quantify evaluates cond for every element of list, bound to varname, and
+// folds the results three-valued. decisive is the condition value that settles
+// the answer on its own: true for `some`, false for `every`.
+func quantify(intp *Interpreter, varname string, listExpr, cond Node, decisive bool) (any, error) {
+	listLike, err := listExpr.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	aList, ok := iterationDomain(listExpr, listLike)
+	if !ok {
+		return nil, nil
+	}
+	if err := intp.chargeDomain(listExpr, aList); err != nil {
+		return nil, err
+	}
+
+	intp.PushEmpty()
+	defer intp.Pop()
+	undecided := false
+	for _, val := range aList {
+		intp.Bind(varname, val)
+		res, err := cond.Eval(intp)
+		if err != nil {
+			return nil, err
+		}
+		b, isBool := res.(bool)
+		switch {
+		case !isBool:
+			undecided = true
+		case b == decisive:
+			return decisive, nil
+		}
+	}
+	if undecided {
+		return nil, nil
+	}
+	return !decisive, nil
 }
 
 func (sexpr SomeExpr) Eval(intp *Interpreter) (any, error) {
-	listLike, err := sexpr.ListExpr.Eval(intp)
-	if err != nil {
-		return nil, err
-	}
-
-	if aList, ok := listLike.([]any); ok {
-		intp.PushEmpty()
-		for _, val := range aList {
-			intp.Bind(sexpr.Varname, val)
-
-			res, err := sexpr.FilterExpr.Eval(intp)
-			if err != nil {
-				intp.Pop()
-				return nil, err
-			}
-			if boolValue(res) {
-				return val, nil
-			}
-		}
-		intp.Pop()
-		return nil, nil
-	} else {
-		return nil, NewErrTypeMismatch("list")
-	}
+	return quantify(intp, sexpr.Varname, sexpr.ListExpr, sexpr.FilterExpr, true)
 }
 
 func (ee EveryExpr) Eval(intp *Interpreter) (any, error) {
-	listLike, err := ee.ListExpr.Eval(intp)
-	if err != nil {
-		return nil, err
-	}
-
-	if aList, ok := listLike.([]any); ok {
-		intp.PushEmpty()
-		chooses := make([]any, 0)
-		for _, val := range aList {
-			intp.Bind(ee.Varname, val)
-
-			res, err := ee.FilterExpr.Eval(intp)
-			if err != nil {
-				intp.Pop()
-				return nil, err
-			}
-
-			if boolValue(res) {
-				chooses = append(chooses, val)
-			}
-		}
-		intp.Pop()
-		return chooses, nil
-	} else {
-		return nil, NewErrTypeMismatch("list")
-	}
+	return quantify(intp, ee.Varname, ee.ListExpr, ee.FilterExpr, false)
 }
 
 func (fd FunDef) Eval(intp *Interpreter) (any, error) {

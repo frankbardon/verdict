@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -123,14 +124,39 @@ func extractList(args map[string]any, argName string) ([]any, error) {
 	}
 }
 
+// numericLiteral is DMN 1.5 grammar rule 35, the domain of number(from).
+// Table 72's footnote cites "grammar rule 37", which is digits; and rule 35's
+// parentheses do not close, so the exponent is read as applying to either
+// mantissa form.
+var numericLiteral = regexp.MustCompile(`^-?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$`)
+
 func installBuiltinFunctions(prelude *Prelude) {
 	// conversion functions
-	prelude.Bind("string", wrapTyped(func(v any) (string, error) {
+	// VERDICT DIVERGENCE: string(null) is null rather than the Go rendering of
+	// the null value ("&{}"). DMN 1.5 §10.3.4.1 Table 72: string(from) takes a
+	// non-null from, with string(null) = null as its example.
+	prelude.Bind("string", NewNativeFunc(func(kwargs map[string]any) (any, error) {
+		v := kwargs["from"]
+		if _, isNull := v.(*NullValue); isNull || v == nil {
+			return null, nil
+		}
 		return fmt.Sprintf("%s", v), nil
 	}).Required("from"))
 
-	prelude.Bind("number", wrapTyped(func(v any) (*Number, error) {
-		return ParseNumberWithErr(v)
+	// VERDICT DIVERGENCE: number yields null for a string that is not a
+	// numeric literal and for an argument it cannot read, instead of 0 (the
+	// big.Float that SetString left untouched) or an error. DMN 1.5 §10.3.4.1
+	// Table 72: from must conform to the numeric-literal grammar, and §10.3.4
+	// makes a parameter outside its domain null.
+	prelude.Bind("number", NewNativeFunc(func(kwargs map[string]any) (any, error) {
+		if s, ok := kwargs["from"].(string); ok && !numericLiteral.MatchString(s) {
+			return null, nil
+		}
+		n, err := ParseNumberWithErr(kwargs["from"])
+		if err != nil {
+			return null, nil
+		}
+		return n, nil
 	}).Required("from"))
 
 	// boolean functions
@@ -213,8 +239,8 @@ func installBuiltinFunctions(prelude *Prelude) {
 	// list functions
 	prelude.Bind("list contains", wrapTyped(func(list []any, elem any) (bool, error) {
 		for _, entry := range list {
-			if cmp, err := compareInterfaces(entry, elem); err == nil && cmp == 0 {
-				return true, err
+			if valuesEqual(entry, elem) {
+				return true, nil
 			}
 		}
 		return false, nil
@@ -514,7 +540,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 	prelude.Bind("index of", wrapTyped(func(list []any, match any) ([]any, error) {
 		matched := make([]any, 0)
 		for i, elem := range list {
-			if cmp, err := compareInterfaces(elem, match); err == nil && cmp == 0 {
+			if valuesEqual(elem, match) {
 				matched = append(matched, N(toFEELIndex(i)))
 			}
 		}
@@ -534,7 +560,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 			for _, elem := range list {
 				found := false
 				for _, setElem := range elemSet {
-					if cmp, err := compareInterfaces(elem, setElem); err == nil && cmp == 0 {
+					if valuesEqual(elem, setElem) {
 						found = true
 						break
 					}
@@ -552,7 +578,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 		for _, elem := range list {
 			found := false
 			for _, setElem := range elemSet {
-				if cmp, err := compareInterfaces(elem, setElem); err == nil && cmp == 0 {
+				if valuesEqual(elem, setElem) {
 					found = true
 					break
 				}

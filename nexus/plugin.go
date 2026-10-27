@@ -80,6 +80,10 @@ type pluginConfig struct {
 	Posture string
 	// DefaultMaxLatency bounds an agent decision that declares no policy.
 	DefaultMaxLatency time.Duration
+	// MaxIterations is the per-evaluation iteration budget: the elements
+	// every `for`/`some`/`every` context of one expression may produce in
+	// total. Zero means the engine default.
+	MaxIterations int64
 }
 
 // NewPlugin constructs the plugin. Nexus's plugin registry calls it.
@@ -161,6 +165,9 @@ func (p *Plugin) Init(ctx nexusengine.PluginContext) error {
 	}
 	if len(p.config.Redact) > 0 {
 		opts = append(opts, verdict.WithRedactedInputs(p.config.Redact...))
+	}
+	if p.config.MaxIterations > 0 {
+		opts = append(opts, verdict.WithMaxIterations(p.config.MaxIterations))
 	}
 	if p.config.DefaultMaxLatency > 0 {
 		opts = append(opts, verdict.WithDefaultMaxLatency(p.config.DefaultMaxLatency))

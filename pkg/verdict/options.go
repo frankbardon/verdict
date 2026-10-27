@@ -43,6 +43,10 @@ type NodeEvaluator = eval.NodeEvaluator
 // FunctionLibrary is a namespaced bundle of application FEEL functions.
 type FunctionLibrary = vfeel.FunctionLibrary
 
+// DefaultMaxIterations is the per-evaluation iteration budget an engine uses
+// unless WithMaxIterations sets another.
+const DefaultMaxIterations = vfeel.DefaultMaxIterations
+
 // Clock supplies the current time. Injecting one makes evaluations that read
 // the clock — `now()`, `today()`, trace timestamps — deterministic in tests.
 type Clock func() time.Time
@@ -51,18 +55,19 @@ type Clock func() time.Time
 type Option func(*options)
 
 type options struct {
-	dialect      FEELDialect
-	functionLibs []FunctionLibrary
-	bridge       AgentBridge
-	tracing      TracingMode
-	redact       []string
-	strict       bool
-	nodeEvals    map[model.Kind]NodeEvaluator
-	maxLatency   time.Duration
-	parallel     bool
-	memoize      bool
-	maxDepth     int
-	clock        Clock
+	dialect       FEELDialect
+	functionLibs  []FunctionLibrary
+	bridge        AgentBridge
+	tracing       TracingMode
+	redact        []string
+	strict        bool
+	nodeEvals     map[model.Kind]NodeEvaluator
+	maxLatency    time.Duration
+	parallel      bool
+	memoize       bool
+	maxDepth      int
+	maxIterations int64
+	clock         Clock
 }
 
 func defaultOptions() options {
@@ -72,9 +77,10 @@ func defaultOptions() options {
 		// A decision that calls an agent with no declared latency policy still
 		// needs a bound; 30s matches the configuration default and is generous
 		// enough for a multi-turn session while still being a bound.
-		maxLatency: 30 * time.Second,
-		parallel:   true,
-		nodeEvals:  map[model.Kind]NodeEvaluator{},
+		maxLatency:    30 * time.Second,
+		parallel:      true,
+		maxIterations: vfeel.DefaultMaxIterations,
+		nodeEvals:     map[model.Kind]NodeEvaluator{},
 	}
 }
 
@@ -85,12 +91,15 @@ func (o options) validate() error {
 	if o.maxLatency < 0 {
 		return fmt.Errorf("verdict: default max latency cannot be negative")
 	}
+	if o.maxIterations < 0 {
+		return fmt.Errorf("verdict: max iterations cannot be negative")
+	}
 	return nil
 }
 
 // feelOptions projects the engine options onto the expression evaluator's own.
 func (o options) feelOptions() []vfeel.Option {
-	opts := []vfeel.Option{}
+	opts := []vfeel.Option{vfeel.WithMaxIterations(o.maxIterations)}
 	if len(o.functionLibs) > 0 {
 		opts = append(opts, vfeel.WithLibraries(o.functionLibs...))
 	}
@@ -187,6 +196,26 @@ func WithParallelDecisions(parallel bool) Option {
 // their outputs are not referentially transparent.
 func WithMemoization(on bool) Option {
 	return func(o *options) { o.memoize = on }
+}
+
+// WithMaxIterations sets the iteration budget of one FEEL expression
+// evaluation: the total number of elements its `for`, `some` and `every`
+// iteration contexts may produce together — integer ranges (`a..b`) and list
+// domains alike, nested and multi-context products (`for i in 1..n, j in
+// 1..n`) counted in full. An expression that would exceed it fails with
+// VERDICT_EVAL_005, an integer range before any of its elements is built,
+// rather than allocating work that exhausts memory — the risk with a model
+// loaded over the network through `verdict serve`. Every evaluation starts
+// with the whole budget; sibling decisions evaluating in parallel never draw
+// on each other's.
+//
+// The default is 1,000,000 (DefaultMaxIterations): far beyond what a decision
+// iterates on purpose, small enough to bound one expression's lists to roughly
+// a hundred megabytes. Zero means that default; a negative value is a
+// configuration error. There is no "unlimited" setting — raise the budget
+// instead.
+func WithMaxIterations(n int64) Option {
+	return func(o *options) { o.maxIterations = n }
 }
 
 // WithMaxDepth bounds recursive invocation through decision services.

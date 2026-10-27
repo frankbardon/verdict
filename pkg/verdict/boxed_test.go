@@ -2,7 +2,10 @@ package verdict_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/frankbardon/verdict/pkg/diag"
@@ -203,6 +206,47 @@ func TestSFEELModelRejectsLevel3Constructs(t *testing.T) {
 	}
 }
 
+// TestArithmeticOnAMissingInputIsNull checks DMN 1.5 §10.3.2.15 at the engine
+// level: `A + B` with B not supplied is null — an absent answer flagged by
+// VERDICT_EVAL_004 — not a VERDICT_EVAL_005 expression failure.
+func TestArithmeticOnAMissingInputIsNull(t *testing.T) {
+	doc := `{"vdj":"1.0","id":"sum","conformance_level":"feel",
+	  "input_data":[
+	    {"id":"a","name":"A","variable":{"name":"A","type_ref":"number"}},
+	    {"id":"b","name":"B","variable":{"name":"B","type_ref":"number"}}],
+	  "decisions":[{"id":"total","name":"Total","required_inputs":["a","b"],
+	    "variable":{"name":"Total","type_ref":"number"},
+	    "logic":{"kind":"literalExpression","text":"A + B"}}]}`
+
+	e, err := verdict.NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	res, err := e.Evaluate(context.Background(), m.ID, verdict.Inputs{"A": 2})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if got, ok := res.Outputs["Total"]; !ok || got != nil {
+		t.Errorf("Total = %#v (present %v), want null", got, ok)
+	}
+	missing := false
+	for _, d := range res.Diagnostics {
+		switch d.Code {
+		case diag.CodeExpressionError:
+			t.Errorf("arithmetic on a missing input failed the expression: %s", d)
+		case diag.CodeMissingInput:
+			missing = true
+		}
+	}
+	if !missing {
+		t.Errorf("no VERDICT_EVAL_004 diagnostic for the missing input: %v", res.Diagnostics)
+	}
+}
+
 // TestRecursiveServiceTerminates checks the one bound the DRG's acyclicity does
 // not supply. Requirement edges cannot loop, but a literal expression invoking
 // a decision service can — and does, in this model. Without a depth cap the
@@ -234,4 +278,108 @@ func TestRecursiveServiceTerminates(t *testing.T) {
 	if d, ok := err.(diag.Diagnostic); !ok || d.Code != diag.CodeRecursionExceeded {
 		t.Errorf("error = %v, want a VERDICT_EVAL_012 diagnostic", err)
 	}
+}
+
+// TestIterationBudgetBoundsAnEvaluation checks that one expression evaluation
+// cannot iterate without bound: its iteration contexts together — nested and
+// multi-context products counted in full — fail with VERDICT_EVAL_005 once they
+// exceed the budget, an expression within it evaluates, the configured budget
+// rather than the default is the one enforced, and sibling decisions evaluating
+// in parallel each get the whole budget.
+func TestIterationBudgetBoundsAnEvaluation(t *testing.T) {
+	model := func(texts ...string) string {
+		var ds []string
+		for k, text := range texts {
+			ds = append(ds, fmt.Sprintf(`{"id":"d%d","name":"D%d","required_inputs":["n"],
+			  "variable":{"name":"D%d","type_ref":"number"},
+			  "logic":{"kind":"literalExpression","text":%q}}`, k, k, k, text))
+		}
+		return `{"vdj":"1.0","id":"iterations","conformance_level":"feel",
+		  "input_data":[{"id":"n","name":"N","variable":{"name":"N","type_ref":"number"}}],
+		  "decisions":[` + strings.Join(ds, ",") + `]}`
+	}
+	// run evaluates every decision of doc and returns their outputs, or the
+	// first VERDICT_EVAL_005 diagnostic.
+	run := func(t *testing.T, e *verdict.Engine, doc string, n int) (map[string]any, error) {
+		t.Helper()
+		m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+		if err != nil {
+			t.Fatalf("LoadModel: %v", err)
+		}
+		res, err := e.Evaluate(context.Background(), m.ID, verdict.Inputs{"N": n})
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range res.Diagnostics {
+			if d.Code == diag.CodeExpressionError {
+				return nil, d
+			}
+		}
+		return res.Outputs, nil
+	}
+	isBudgetFailure := func(err error) bool {
+		var d diag.Diagnostic
+		return errors.As(err, &d) && d.Code == diag.CodeExpressionError &&
+			strings.Contains(d.Message, "exceeds the limit")
+	}
+	flat := model("count(for i in 1..N return i)")
+	nested := model("count(for i in 1..N, j in 1..N return j)")
+
+	t.Run("default budget", func(t *testing.T) {
+		e := verdict.MustNewEngine()
+		if got, err := run(t, e, flat, 1000); err != nil || got["D0"] != 1000.0 {
+			t.Errorf("1..1000 = %#v, %v; want 1000", got, err)
+		}
+		if _, err := run(t, e, flat, 1_000_000_000); !isBudgetFailure(err) {
+			t.Errorf("1..1e9 under the default budget: err = %v, want a VERDICT_EVAL_005 budget failure", err)
+		}
+		// 1..1000 twice is 1000 + 1000*1000 elements: each range alone is
+		// well inside the budget, their product is not.
+		if _, err := run(t, e, nested, 1000); !isBudgetFailure(err) {
+			t.Errorf("1..1000 × 1..1000 under the default budget: err = %v, want a VERDICT_EVAL_005 budget failure", err)
+		}
+	})
+
+	t.Run("configured budget", func(t *testing.T) {
+		e := verdict.MustNewEngine(verdict.WithMaxIterations(12))
+		if got, err := run(t, e, flat, 12); err != nil || got["D0"] != 12.0 {
+			t.Errorf("1..12 under a budget of 12 = %#v, %v; want 12", got, err)
+		}
+		if _, err := run(t, e, flat, 13); !isBudgetFailure(err) {
+			t.Errorf("1..13 under a budget of 12: err = %v, want a VERDICT_EVAL_005 budget failure", err)
+		}
+		// 3 + 3*3 = 12 fits; 4 + 4*4 = 20 does not.
+		if got, err := run(t, e, nested, 3); err != nil || got["D0"] != 9.0 {
+			t.Errorf("1..3 × 1..3 under a budget of 12 = %#v, %v; want 9", got, err)
+		}
+		if _, err := run(t, e, nested, 4); !isBudgetFailure(err) {
+			t.Errorf("1..4 × 1..4 under a budget of 12: err = %v, want a VERDICT_EVAL_005 budget failure", err)
+		}
+	})
+
+	t.Run("parallel siblings each get the whole budget", func(t *testing.T) {
+		// Eight independent decisions, each spending 3 + 3*3 = 12 of a budget
+		// of 12, in one parallel layer. A counter shared between them would
+		// fail all but the first.
+		texts := make([]string, 8)
+		for k := range texts {
+			texts[k] = "count(for i in 1..N, j in 1..N return j)"
+		}
+		e := verdict.MustNewEngine(verdict.WithMaxIterations(12), verdict.WithParallelDecisions(true))
+		got, err := run(t, e, model(texts...), 3)
+		if err != nil {
+			t.Fatalf("parallel siblings within budget: %v", err)
+		}
+		for k := range texts {
+			if v := got[fmt.Sprintf("D%d", k)]; v != 9.0 {
+				t.Errorf("D%d = %#v, want 9", k, v)
+			}
+		}
+	})
+
+	t.Run("negative budget is rejected", func(t *testing.T) {
+		if _, err := verdict.NewEngine(verdict.WithMaxIterations(-1)); err == nil {
+			t.Error("NewEngine accepted a negative iteration budget")
+		}
+	})
 }

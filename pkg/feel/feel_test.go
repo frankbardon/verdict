@@ -83,13 +83,14 @@ func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 		"some x in [1,2] satisfies x > 1",
 		"every x in [1,2] satisfies x > 0",
 		"function(a) a + 1",
+		"-(if 1 > 0 then 1 else 2)",
 	}
 	for _, src := range rejected {
 		if _, err := e.Compile(src); err == nil {
 			t.Errorf("S-FEEL accepted FEEL-only construct %q", src)
 		}
 	}
-	accepted := []string{"1 + 2", `"a" = "b"`, "[1..10]", "x > 3 and x < 9"}
+	accepted := []string{"1 + 2", `"a" = "b"`, "[1..10]", "x > 3 and x < 9", "-x ** 2"}
 	for _, src := range accepted {
 		if _, err := e.Compile(src); err != nil {
 			t.Errorf("S-FEEL rejected valid simple expression %q: %v", src, err)
@@ -148,6 +149,17 @@ func TestYearsAndMonthsDuration(t *testing.T) {
 	got := mustEval(t, e, `years and months duration(date("2020-01-15"), date("2023-03-14"))`, nil)
 	if got != "P3Y1M" {
 		t.Errorf("years and months duration = %v, want P3Y1M", got)
+	}
+	// DMN 1.5 §10.3.4: an argument outside the domain (not a date or date and
+	// time, null included) is null, not an evaluation error.
+	for _, expr := range []string{
+		`years and months duration(1, date("2023-03-14"))`,
+		`years and months duration(date("2020-01-15"), null)`,
+		`years and months duration("2020-01-15", "2023-03-14")`,
+	} {
+		if got := mustEval(t, e, expr, nil); got != nil {
+			t.Errorf("%s = %#v, want null", expr, got)
+		}
 	}
 }
 

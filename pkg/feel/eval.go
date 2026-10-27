@@ -42,16 +42,31 @@ var ErrNamespaceRequired = errors.New("feel: a function library must declare a n
 // concurrent use: each evaluation gets its own interpreter and the shared state
 // (compile cache, global scope) is read-only after construction.
 type Evaluator struct {
-	compiler *Compiler
-	globals  pfeel.Scope
+	compiler      *Compiler
+	globals       pfeel.Scope
+	maxIterations int64
 }
+
+// DefaultMaxIterations is the iteration budget of one expression evaluation
+// when no other is configured: the total number of elements every iteration
+// context of every `for`, `some` and `every` in the expression may produce —
+// integer ranges (`a..b`) and list domains alike, with nested and
+// multi-context products (`for i in 1..n, j in 1..n`) counted in full.
+//
+// A million is far beyond what a decision model iterates on purpose — a
+// day-by-day loop over a century is under 40,000 — while bounding the work and
+// the lists a single expression can build to roughly a hundred megabytes.
+// Without a budget one expression in a model loaded through `verdict serve`
+// could ask for a billion elements and exhaust the server's memory.
+const DefaultMaxIterations = 1_000_000
 
 // Option configures an Evaluator.
 type Option func(*evaluatorOptions)
 
 type evaluatorOptions struct {
-	libs  []FunctionLibrary
-	clock func() time.Time
+	libs          []FunctionLibrary
+	clock         func() time.Time
+	maxIterations int64
 }
 
 // WithLibraries registers namespaced application function libraries.
@@ -69,6 +84,19 @@ func WithClock(clock func() time.Time) Option {
 	return func(o *evaluatorOptions) { o.clock = clock }
 }
 
+// WithMaxIterations sets the iteration budget of one expression evaluation:
+// the total number of elements its `for`, `some` and `every` iteration
+// contexts may produce together (see DefaultMaxIterations). An evaluation that
+// would exceed it fails; an integer range that would is refused before any of
+// its elements is built. Each evaluation starts with the whole budget, so
+// concurrent evaluations never draw on each other's. Zero or a negative value
+// means DefaultMaxIterations: there is deliberately no "unlimited" setting,
+// since unbounded iteration is a memory-exhaustion vector; pass a larger
+// budget instead.
+func WithMaxIterations(n int64) Option {
+	return func(o *evaluatorOptions) { o.maxIterations = n }
+}
+
 // NewEvaluator builds an evaluator for a dialect, layering the DMN 1.5 standard
 // library supplement beneath any application function libraries.
 func NewEvaluator(d Dialect, opts ...Option) (*Evaluator, error) {
@@ -77,7 +105,10 @@ func NewEvaluator(d Dialect, opts ...Option) (*Evaluator, error) {
 		o(&cfg)
 	}
 
-	e := &Evaluator{compiler: NewCompiler(d), globals: pfeel.Scope{}}
+	e := &Evaluator{compiler: NewCompiler(d), globals: pfeel.Scope{}, maxIterations: cfg.maxIterations}
+	if e.maxIterations <= 0 {
+		e.maxIterations = DefaultMaxIterations
+	}
 	for name, fn := range standardSupplement() {
 		e.globals[name] = fn
 	}
@@ -157,6 +188,9 @@ func nativeFunc(f Function) *pfeel.NativeFun {
 // validate expressions at model-load time.
 func (e *Evaluator) Compiler() *Compiler { return e.compiler }
 
+// MaxIterations reports the iteration budget of one expression evaluation.
+func (e *Evaluator) MaxIterations() int64 { return e.maxIterations }
+
 // Dialect reports the evaluator's dialect.
 func (e *Evaluator) Dialect() Dialect { return e.compiler.dialect }
 
@@ -168,6 +202,11 @@ func (e *Evaluator) CompileUnaryTest(text string) (*UnaryTest, error) {
 	return e.compiler.CompileUnaryTest(text)
 }
 
+// ErrIterationBudgetExceeded is matched by errors.Is when an evaluation's
+// iteration contexts would together produce more elements than the configured
+// budget (WithMaxIterations).
+var ErrIterationBudgetExceeded = errors.New("feel: iteration exceeds the configured budget")
+
 // EvalError wraps a runtime failure with the expression that produced it.
 type EvalError struct {
 	Text string
@@ -176,6 +215,13 @@ type EvalError struct {
 
 func (e *EvalError) Error() string { return fmt.Sprintf("feel: evaluating %q: %v", e.Text, e.Err) }
 func (e *EvalError) Unwrap() error { return e.Err }
+
+// Is lets errors.Is match ErrIterationBudgetExceeded without exposing the
+// vendored evaluator's own error type.
+func (e *EvalError) Is(target error) bool {
+	var exceeded *pfeel.IterationBudgetExceededError
+	return target == ErrIterationBudgetExceeded && errors.As(e.Err, &exceeded)
+}
 
 // Eval evaluates a compiled expression against vars. A nil expression yields
 // null, which is what an omitted decision-table output entry means.
@@ -206,6 +252,8 @@ func (e *Evaluator) EvalText(text string, vars map[string]any) (any, error) {
 // rule that a variable in scope wins over an outer binding.
 func (e *Evaluator) interpreter(vars map[string]any) *pfeel.Interpreter {
 	intp := pfeel.NewIntepreter()
+	// A fresh interpreter per evaluation is also a fresh iteration budget.
+	intp.MaxIterations = e.maxIterations
 	intp.Push(pfeel.Scope(e.globals))
 	if len(vars) > 0 {
 		intp.Push(pfeel.Scope(vars))

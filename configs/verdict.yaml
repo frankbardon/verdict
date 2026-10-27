@@ -21,6 +21,21 @@ verdict:
     # ran is not auditable.
     timezone: UTC
 
+    # The iteration budget of one expression evaluation: the total number of
+    # elements every `for`, `some` and `every` iteration context in it may
+    # produce — integer ranges (`1..n`) and list domains alike, with nested
+    # and multi-context products (`for i in 1..n, j in 1..n`) counted in full,
+    # so n×n is charged n². Exceeding it fails the evaluation
+    # (VERDICT_EVAL_005); an integer range is refused before any element is
+    # built. A million is far beyond what a decision iterates on purpose — a
+    # day-by-day loop over a century is under 40,000 — and bounds one
+    # expression's lists to roughly a hundred megabytes, so a model loaded
+    # through `verdict serve` cannot exhaust the server's memory. Each
+    # evaluation gets the whole budget; parallel evaluations do not share it.
+    # 0 means this default; negative is rejected. There is no unlimited
+    # setting: raise the budget instead.
+    max_iterations: 1000000
+
   evaluation:
     # Refuse to load a model whose static analysis reports an error — an
     # overlap under UNIQUE, a gap under a non-defaulted policy, an expression

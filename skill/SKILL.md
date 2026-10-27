@@ -155,11 +155,13 @@ FEEL is the expression language for every cell, literal expression and binding.
 ```feel
 Applicant.credit_score >= 740                     // comparison
 (Repayment + Applicant.existing_debt) / income    // arithmetic, decimal not integer
+-balance   rate ** years                          // negation, exponentiation
 if x then "a" else "b"                            // conditional
 value in ["low", "medium", "high"]                // membership
 decimal(amount * 1.2, 2)                          // round to 2 places
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
-date("2024-03-01")   date and time("2024-03-01T09:00:00")
+date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
+number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
 [1..10]  [1..10)  [1..10[  (1..10]  ]1..10]           // both bracket spellings
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
 ```
@@ -261,6 +263,83 @@ opens as an empty canvas.
   `<defaultOutputEntry>0</defaultOutputEntry>` unless null is what you mean.
 - **`/` is decimal division.** `1 / 3` is `0.333…`, not `0`. Dividing by zero is
   null, not an error.
+- **Arithmetic on a null is null.** `a + b` with `b` missing, `null * 2` and
+  `-null` all yield null, not an error — so a missing input surfaces as a null
+  output (with `VERDICT_EVAL_004`), not a `VERDICT_EVAL_005` failure. Mismatched
+  types are null too: `1 + "a"` is null, not `"1a"`; use `string(1) + "a"`.
+- **Ordering a null is null.** `2 < null`, `null >= null` and
+  `x > 5` with `x` missing all yield null, not true or false — and a `> 5`
+  cell does not match a null input. Ranges too: `null in [1..10]` is null, and
+  neither `[1..10]` nor `not([1..10])` matches a null input. A null *endpoint*
+  is no bound, not "unbounded": `5 in [null..10]` and range built-ins over it
+  (`before`, `overlaps`, `includes`, …) are null, and a `[null..10]` cell
+  never matches — write `<= 10`. A null point is the same: every range
+  built-in given a null `a` or `b` (`before(null, [1..10])`,
+  `includes([1..10], null)`, `coincides(null, null)`) is null. Equality is
+  different: `null = null` is true. Guard with `x != null and x > 5` or an
+  explicit `null` rule.
+- **Comparing different kinds is null, not an error.** `1 = "a"`, `1 != "a"`,
+  `1 < "a"`, `duration("P1Y") < duration("P1D")`, `5 in ["a".."z"]` and range
+  built-ins over mixed kinds (`before(1, "a")`, `coincides(1, "a")`) all yield
+  null. In a table, a `< 5` cell against a string input simply does not match,
+  and neither does `not(< 5)`; an equality cell such as `"gold"` against a
+  number does not match, so `not("gold")` does.
+- **Lists and contexts compare element by element; they have no order.**
+  `[1, 2] = [1, 2]` and `{a: 1, b: 2} = {b: 2, a: 1}` are true, `[1, 2] =
+  [2, 1]` and `{a: 1} = {b: 1}` false; a mixed-kind element pair makes it null
+  (`[1, "a"] = [1, 2]`) unless another pair is false. `[1, 2] < [1, 3]` is
+  null. `list contains`, `index of`, `union`, `distinct values`,
+  `duplicate values` and `in` find list and context elements by value, and a
+  `[1, 2]` cell matches a list input equal to it as well as `1` or `2`.
+- **A malformed conversion is null; a malformed `@"..."` does not load.**
+  `date("nope")`, `time("25:00")`, `date and time("x")`, `number("abc")`,
+  `duration("P1Y2D")` (mixes the two duration kinds), `date(null)` and
+  `string(null)` are null, not an error — so a bad string input surfaces as a
+  null output, and `number("1,000")` is null (the grouping form is not
+  supported). The literal `@"P1Y2D"` is a syntax error instead:
+  `VERDICT_LOAD_013` when the model loads. A string the spec allows but Verdict
+  cannot hold still fails the evaluation (`VERDICT_EVAL_005`) rather than
+  reading as malformed: an IANA zone (`"10:00:00@Europe/Paris"` — use `Z` or
+  `+01:00`), a duration finer than a nanosecond (`PT0.0000000001S`) or longer
+  than about 292 years of days and time (`P200000D`), and `date(<date and
+  time>)` / `time(<time or date and time>)`.
+- **Durations are normalised.** `duration("P26M")` is `P2Y2M` and
+  `duration("PT36H")` is `P1DT12H` — `string()` and `.days`/`.hours`/... read
+  the canonical form, and `PT36H = P1DT12H`. Seconds may be fractional
+  (`PT1.5S`, kept to the nanosecond; `.seconds` is `1.5`). Two durations of
+  the same kind add and subtract (`PT1.5S + PT0.5S = PT2S`); a years and months
+  duration plus a days and time one is null.
+- **Temporal arithmetic follows DMN Table 57.** `date - date` is a days and time
+  duration (`date("2026-01-02") - date("2026-01-01")` is `P1D`; a date counts as
+  UTC midnight against a date and time), as is `time - time`. A duration added
+  to a date, date and time or time commutes (`@"P1D" + d`); subtracting one
+  *from* a duration is null. `time ± days and time duration` wraps within the
+  day (`23:00 + PT2H` is `01:00`); a time with a years and months duration is
+  null. Adding months pins the day to the end of a shorter month
+  (`date("2026-01-31") + @"P1M"` is `2026-02-28`; time and offset are kept).
+  Whole years and months between dates is `years and months duration(a, b)`,
+  not `b - a` — and it counts by day of month, so Jan 31 to Feb 28 is `P0M`.
+- **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
+  false or null — null when no element decides it and some condition was null.
+  `some` over `[]` is false, `every` over `[]` is true. Several iteration
+  contexts range over the cartesian product, and a later one may use an earlier
+  name: `some o in orders, l in o.lines satisfies l.qty > 10`.
+  A non-list domain is a one-element list: `some x in 5 satisfies x > 1` is
+  true, and `some x in null satisfies x > 1` is null (the condition sees null).
+  A range *value* is not iterated: `some x in [1..3] …` binds `x` to the range.
+- **`for` iterates lists or integer ranges.** `for i in 1..3 return i` is
+  `[1,2,3]` and `3..1` counts down; both endpoints are included and must be
+  integers, or the whole expression is null. `some`/`every` accept `a..b` too.
+  Several contexts yield one flat list: `for x in [1,2], y in 1..x return y` is
+  `[1,1,2]`. A non-list domain is a one-element list, as for `some`/`every`:
+  `for x in 5 return x * 2` is `[10]`, `for x in null return x` is `[null]`.
+  Write `1..3`, not `[1..3]` — the bracketed form is a range value, so
+  `for x in [1..3] return x` is `[[1..3]]`, one element, not three.
+  One expression's iteration contexts may produce at most 1,000,000 elements
+  in total — ranges and lists alike, nested contexts multiplying
+  (`for i in 1..n, j in 1..n` costs n²) — configurable as
+  `feel.max_iterations`; exceeding it fails the evaluation with
+  `VERDICT_EVAL_005`, an over-long range before building anything.
 - **Input names come from the input-data variable**, not the file. `verdict
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated

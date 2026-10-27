@@ -222,3 +222,90 @@ func TestAgreeingOverlapUnderAnyIsNotAnError(t *testing.T) {
 		}
 	}
 }
+
+// TestMixedKindEntriesDoNotFailTheTable checks DMN 1.5 §10.3.2.15 at the engine
+// level: a rule whose input entry is of another kind than the input (`< 5`
+// against a string, `"gold"` against a number) is simply not matched. Upstream
+// raised a type mismatch from the comparison, which surfaced as a
+// VERDICT_EVAL_005 and failed the whole decision.
+func TestMixedKindEntriesDoNotFailTheTable(t *testing.T) {
+	doc := `{"vdj":"1.0","id":"mixed","conformance_level":"feel",
+	  "input_data":[{"id":"tier","name":"Tier","variable":{"name":"Tier","type_ref":"Any"}}],
+	  "decisions":[{"id":"band","name":"Band","required_inputs":["tier"],
+	    "variable":{"name":"Band","type_ref":"string"},
+	    "logic":{"kind":"decisionTable","hit_policy":"FIRST",
+	      "inputs":[{"expression":"Tier"}],
+	      "outputs":[{"name":"band","type_ref":"string"}],
+	      "rules":[
+	        {"id":"r1","when":["< 5"],"then":["\"low\""]},
+	        {"id":"r2","when":["not(< 5)"],"then":["\"not low\""]},
+	        {"id":"r3","when":["\"gold\""],"then":["\"gold\""]},
+	        {"id":"r4","when":["-"],"then":["\"other\""]}]}}]}`
+
+	e, err := verdict.NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	for in, want := range map[any]string{3: "low", 7: "not low", "gold": "gold", "silver": "other"} {
+		res, err := e.EvaluateDecision(context.Background(), m.ID, "Band", verdict.Inputs{"Tier": in})
+		if err != nil {
+			t.Errorf("Tier %v: %v", in, err)
+			continue
+		}
+		for _, d := range res.Diagnostics {
+			if d.Code == diag.CodeExpressionError {
+				t.Errorf("Tier %v: a mismatched entry failed the table: %s", in, d)
+			}
+		}
+		if got := res.Outputs["Band"]; got != want {
+			t.Errorf("Tier %v: Band = %#v, want %q", in, got, want)
+		}
+	}
+}
+
+// TestListInputMatchesAnEqualListCell checks DMN 1.5 §7.3.2 alternative (a) at
+// the engine level: a list-valued input satisfies a list literal entry it is
+// equal to, element by element (§10.3.2.15, Table 53). Upstream's list
+// comparison never found two equal lists equal.
+func TestListInputMatchesAnEqualListCell(t *testing.T) {
+	doc := `{"vdj":"1.0","id":"lists","conformance_level":"feel",
+	  "input_data":[{"id":"codes","name":"Codes","variable":{"name":"Codes","type_ref":"Any"}}],
+	  "decisions":[{"id":"pick","name":"Pick","required_inputs":["codes"],
+	    "variable":{"name":"Pick","type_ref":"string"},
+	    "logic":{"kind":"decisionTable","hit_policy":"FIRST",
+	      "inputs":[{"expression":"Codes"}],
+	      "outputs":[{"name":"pick","type_ref":"string"}],
+	      "rules":[
+	        {"id":"r1","when":["[1, 2]"],"then":["\"one-two\""]},
+	        {"id":"r2","when":["? = [3]"],"then":["\"three\""]},
+	        {"id":"r3","when":["-"],"then":["\"other\""]}]}}]}`
+
+	e, err := verdict.NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	cases := []struct {
+		in   []any
+		want string
+	}{
+		{[]any{1, 2}, "one-two"}, {[]any{2, 1}, "other"}, {[]any{3}, "three"}, {[]any{1}, "other"},
+	}
+	for _, tc := range cases {
+		res, err := e.EvaluateDecision(context.Background(), m.ID, "Pick", verdict.Inputs{"Codes": tc.in})
+		if err != nil {
+			t.Errorf("Codes %v: %v", tc.in, err)
+			continue
+		}
+		if got := res.Outputs["Pick"]; got != tc.want {
+			t.Errorf("Codes %v: Pick = %#v, want %q", tc.in, got, tc.want)
+		}
+	}
+}
