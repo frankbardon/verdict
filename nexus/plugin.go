@@ -80,9 +80,10 @@ type pluginConfig struct {
 	Posture string
 	// DefaultMaxLatency bounds an agent decision that declares no policy.
 	DefaultMaxLatency time.Duration
-	// MaxIterations is the per-evaluation iteration budget: the elements
-	// every `for`/`some`/`every` context of one expression may produce in
-	// total. Zero means the engine default.
+	// MaxIterations is the per-request iteration budget: the elements every
+	// `for`/`some`/`every` context may produce in total across one request —
+	// every decision, BKM/function and decision-service invocation and unary
+	// test it evaluates. Zero means the engine default.
 	MaxIterations int64
 }
 

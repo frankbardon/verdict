@@ -35,11 +35,12 @@ func (f NodeEvaluatorFunc) Evaluate(ec *Context, expr model.Expression) (any, er
 
 // Config is everything the evaluator needs that is not the model itself.
 type Config struct {
-	// FEEL is the expression evaluator. Required. It carries the limits that
-	// bound a single expression — the per-evaluation iteration budget among
-	// them (feel.WithMaxIterations) — so they reach every expression the
-	// program evaluates, decision tables and boxed expressions alike, without
-	// a second copy here that could disagree with it.
+	// FEEL is the expression evaluator. Required. It carries the evaluation
+	// limits — the iteration budget among them (feel.WithMaxIterations) — so
+	// there is no second copy here that could disagree with it. Evaluate
+	// draws one shared budget of that size per request (FEEL.NewBudget), and
+	// every expression and unary test the request evaluates, decision tables
+	// and boxed expressions alike, charges it.
 	FEEL *feel.Evaluator
 	// Bridge answers agentDecision nodes. Nil means agent decisions fail, which
 	// their failure policy then handles.

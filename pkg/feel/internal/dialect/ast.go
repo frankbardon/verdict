@@ -13,16 +13,22 @@ type Interpreter struct {
 	// number of elements every iteration context of every for, some and
 	// every may produce, nested and multi-context products included. Zero
 	// means no budget, which is upstream's behaviour; the façade always sets
-	// one.
+	// one. It is ignored when Budget is set.
 	//
 	// VERDICT DIVERGENCE: see NOTICE.md. The fork takes the budget as a
 	// plain field rather than importing any Verdict configuration.
 	MaxIterations int64
 	// iterations counts the elements charged against MaxIterations so far.
 	// It lives on the interpreter, which is built afresh for every
-	// evaluation and never shared between goroutines, so the budget is per
-	// evaluation and needs no lock.
+	// evaluation and never shared between goroutines, so it needs no lock.
 	iterations uint64
+	// Budget, when set, is an iteration budget shared with other
+	// evaluations — every expression of one Verdict request, including those
+	// running concurrently on other goroutines. Charges go to it instead of
+	// MaxIterations/iterations.
+	//
+	// VERDICT DIVERGENCE: see NOTICE.md.
+	Budget *IterationBudget
 }
 
 type Node interface {

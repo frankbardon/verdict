@@ -151,6 +151,13 @@ func isOrderingComparison(x *Expr) bool {
 //
 // A nil test is the irrelevance marker and matches unconditionally.
 func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) (bool, error) {
+	return e.EvalUnaryTestBudget(u, input, vars, nil)
+}
+
+// EvalUnaryTestBudget is EvalUnaryTest drawing on a shared iteration budget:
+// every alternative charges the same one. A nil budget gives each alternative
+// a whole budget of its own, as EvalUnaryTest does.
+func (e *Evaluator) EvalUnaryTestBudget(u *UnaryTest, input any, vars map[string]any, budget *Budget) (bool, error) {
 	if u.MatchesAnything() {
 		if u != nil && u.negate {
 			return false, nil
@@ -169,7 +176,7 @@ func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) 
 	// not a match — unless some alternative matched outright.
 	matched, unknown := false, false
 	for _, alt := range u.alts {
-		v, err := e.Eval(alt.expr, scope)
+		v, err := e.EvalBudget(alt.expr, scope, budget)
 		if err != nil {
 			return false, err
 		}

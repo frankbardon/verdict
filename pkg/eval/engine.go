@@ -60,7 +60,9 @@ func (p *Program) Evaluate(ctx context.Context, req Request) (*Result, error) {
 	rec := trace.NewRecorder(p.cfg.TraceMode, p.cfg.RedactPaths, p.cfg.Clock)
 	rootWriter, finishRoot := rec.Begin(pl.entry, pl.entry, "evaluation")
 
-	state := &evalState{}
+	// One iteration budget for the whole request: every decision, function
+	// invocation and unary test below draws on it.
+	state := &evalState{budget: p.cfg.FEEL.NewBudget()}
 	if p.cfg.Memoize {
 		state.memo = map[string]any{}
 	}
@@ -273,10 +275,25 @@ func (p *Program) runLayer(ec *Context, work []*model.Decision) ([]any, error) {
 		}(i, d)
 	}
 	wg.Wait()
+	// Report the failure that cancelled the layer, not a sibling's
+	// cancellation it caused: a sibling earlier in work order may well have
+	// been cut short by it — now that siblings share the request's iteration
+	// budget, the one that exhausts it routinely does that to the others.
+	var cancelled error
 	for _, err := range errs {
-		if err != nil {
-			return nil, err
+		if err == nil {
+			continue
 		}
+		if ec.ctx.Err() == nil && errors.Is(err, context.Canceled) {
+			if cancelled == nil {
+				cancelled = err
+			}
+			continue
+		}
+		return nil, err
+	}
+	if cancelled != nil {
+		return nil, cancelled
 	}
 	return results, nil
 }

@@ -47,11 +47,14 @@ type FEEL struct {
 	// against. Defaults to UTC, because a decision that means something
 	// different depending on where it ran is not auditable.
 	Timezone string `yaml:"timezone"`
-	// MaxIterations is the iteration budget of one expression evaluation:
-	// the total number of elements every `for`, `some` and `every` iteration
-	// context in it may produce, ranges and lists alike, nested products
-	// counted in full. Exceeding it fails the evaluation, an integer range
-	// before anything is allocated. Defaults to 1,000,000. Zero (or omitting
+	// MaxIterations is the iteration budget of one request: the total
+	// number of elements every `for`, `some` and `every` iteration context
+	// of every expression the request evaluates may produce — every decision
+	// in the slice, every business knowledge model, boxed function and
+	// decision service invocation, every unary test — ranges and lists alike,
+	// nested products counted in full. Exceeding it fails the evaluation
+	// (VERDICT_EVAL_005), an integer range before anything is allocated.
+	// Defaults to 1,000,000. Zero (or omitting
 	// the key) means the default; negative is rejected.
 	MaxIterations int64 `yaml:"max_iterations"`
 }

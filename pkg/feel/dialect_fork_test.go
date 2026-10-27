@@ -599,8 +599,8 @@ func TestForkedDefects(t *testing.T) {
 				t.Errorf("%s under a budget of 6: err = %v, want ErrIterationBudgetExceeded", expr, err)
 			}
 		}
-		// The budget is per evaluation: a second evaluation of the same
-		// compiled expression starts from zero again.
+		// Without a shared Budget the budget is per evaluation: a second
+		// evaluation of the same compiled expression starts from zero again.
 		x, err := capped.Compile("for i in 1..6 return i")
 		if err != nil {
 			t.Fatal(err)
@@ -653,6 +653,90 @@ func TestForkedDefects(t *testing.T) {
 		close(errs)
 		for err := range errs {
 			t.Errorf("a within-budget evaluation failed alongside others: %v", err)
+		}
+	})
+
+	t.Run("evaluations sharing a budget draw on one counter", func(t *testing.T) {
+		// The fork's first budget lived on the interpreter alone, so every
+		// evaluation — every business knowledge model call, every unary-test
+		// alternative — started with the whole budget, and a loop of calls
+		// multiplied it. An IterationBudget is shared: every evaluation
+		// passed it charges one atomic counter, on any goroutine.
+		capped, err := NewEvaluator(FEEL, WithMaxIterations(10))
+		if err != nil {
+			t.Fatal(err)
+		}
+		x, err := capped.Compile("for i in 1..4 return i")
+		if err != nil {
+			t.Fatal(err)
+		}
+		budget := capped.NewBudget()
+		if budget.Limit() != 10 {
+			t.Errorf("budget limit = %d, want 10", budget.Limit())
+		}
+		// 4 + 4 fits; the third evaluation would make 12.
+		for n := 0; n < 2; n++ {
+			if _, err := capped.EvalBudget(x, nil, budget); err != nil {
+				t.Fatalf("evaluation %d within the shared budget: %v", n+1, err)
+			}
+		}
+		if _, err := capped.EvalBudget(x, nil, budget); !errors.Is(err, ErrIterationBudgetExceeded) {
+			t.Errorf("third evaluation of 4 under a shared budget of 10: err = %v, want ErrIterationBudgetExceeded", err)
+		}
+		// A refused charge spends nothing: 2 still fits.
+		if budget.Used() != 8 {
+			t.Errorf("used = %d after a refused charge, want 8", budget.Used())
+		}
+		if _, err := capped.EvalText("for i in 1..2 return i", nil); err != nil {
+			t.Errorf("an unshared evaluation alongside: %v", err)
+		}
+		if _, err := capped.EvalBudget(mustCompile(t, capped, "for i in 1..2 return i"), nil, budget); err != nil {
+			t.Errorf("2 more under a shared budget with 2 left: %v", err)
+		}
+
+		// Unary-test alternatives charge the same budget.
+		ut, err := capped.CompileUnaryTest("count(for i in 1..3 return i) > 5, count(for j in 1..3 return j) > 5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		shared := capped.NewBudget()
+		if ok, err := capped.EvalUnaryTestBudget(ut, 1, nil, shared); err != nil || ok {
+			t.Fatalf("unary test = %v, %v; want false, nil", ok, err)
+		}
+		if shared.Used() != 6 {
+			t.Errorf("used after two alternatives of 3 = %d, want 6", shared.Used())
+		}
+
+		// Concurrent charges are exact: 16 goroutines × 10 evaluations of 4
+		// under a budget of 640 all fit, and one more element does not.
+		wide, err := NewEvaluator(FEEL, WithMaxIterations(640))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wb := wide.NewBudget()
+		var wg sync.WaitGroup
+		errs := make(chan error, 160)
+		for w := 0; w < 16; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for n := 0; n < 10; n++ {
+					if _, err := wide.EvalBudget(x, nil, wb); err != nil {
+						errs <- err
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("a within-budget concurrent evaluation failed: %v", err)
+		}
+		if wb.Used() != 640 {
+			t.Errorf("used after 160 concurrent evaluations of 4 = %d, want 640", wb.Used())
+		}
+		if _, err := wide.EvalBudget(mustCompile(t, wide, "for i in 1..1 return i"), nil, wb); !errors.Is(err, ErrIterationBudgetExceeded) {
+			t.Errorf("one element past an exhausted shared budget: err = %v, want ErrIterationBudgetExceeded", err)
 		}
 	})
 
@@ -2159,4 +2243,13 @@ func approx(a, b float64) bool {
 		d = -d
 	}
 	return d < 1e-9
+}
+
+func mustCompile(t *testing.T, e *Evaluator, text string) *Expr {
+	t.Helper()
+	x, err := e.Compile(text)
+	if err != nil {
+		t.Fatalf("compile %q: %v", text, err)
+	}
+	return x
 }
