@@ -259,6 +259,53 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("range membership with null is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2: membership is the endpoint comparisons, each null
+		// for a null operand. Upstream ordered null below the start, so
+		// `null in [1..10]` was false and its negation true.
+		for _, expr := range []string{"null in [1..10]", "null in (1..10)", "null in ]1..10["} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		for expr, want := range map[string]any{
+			"5 in [1..10]": true, "11 in [1..10]": false, "null in [1, null]": true,
+		} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("a range unary test does not match a null input", func(t *testing.T) {
+		c := NewCompiler(FEEL)
+		cases := []struct {
+			src   string
+			input any
+			want  bool
+		}{
+			{"[1..10]", nil, false}, {"(1..10)", nil, false}, {"]1..10[", nil, false},
+			{"? in [1..10]", nil, false}, {"[1..10], null", nil, true},
+			{"not([1..10])", nil, false}, {"not(? in [1..10])", nil, false},
+			{"not([1..10])", 11, true}, {"not([1..10])", 5, false},
+		}
+		for _, tc := range cases {
+			ut, err := c.CompileUnaryTest(tc.src)
+			if err != nil {
+				t.Errorf("%s does not compile: %v", tc.src, err)
+				continue
+			}
+			got, err := e.EvalUnaryTest(ut, FromGo(tc.input), nil)
+			if err != nil {
+				t.Errorf("%s against %v: %v", tc.src, tc.input, err)
+				continue
+			}
+			if got != tc.want {
+				t.Errorf("%s matched %v = %v, want %v", tc.src, tc.input, got, tc.want)
+			}
+		}
+	})
+
 	t.Run("multi-word names without keywords still resolve", func(t *testing.T) {
 		vars := map[string]any{"Credit Rating": "good"}
 		if got := mustEval(t, e, `Credit Rating = "good"`, vars); got != true {

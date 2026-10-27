@@ -263,8 +263,10 @@ opens as an empty canvas.
   null, not an error.
 - **Ordering a null is null.** `2 < null`, `null >= null` and
   `x > 5` with `x` missing all yield null, not true or false — and a `> 5`
-  cell does not match a null input. Equality is different: `null = null` is
-  true. Guard with `x != null and x > 5` or an explicit `null` rule.
+  cell does not match a null input. Ranges too: `null in [1..10]` is null, and
+  neither `[1..10]` nor `not([1..10])` matches a null input. Equality is
+  different: `null = null` is true. Guard with `x != null and x > 5` or an
+  explicit `null` rule.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. One iteration context

@@ -39,10 +39,10 @@ type unaryAlt struct {
 	// the result interpreter.
 	literalBool bool
 	// comparison marks an alternative whose top-level node is an ordering
-	// comparison (`< 10`, `? >= 5`). Such a test yields null when the input is
-	// null (DMN 1.5 §10.3.2), and a null outcome is "not satisfied" — it must
-	// not fall through to the equality branch, where null would equal a null
-	// input.
+	// comparison or a membership test (`< 10`, `? >= 5`, `? in [1..10]`). Such
+	// a test yields null when the input is null (DMN 1.5 §10.3.2), and a null
+	// outcome is "not satisfied" — it must not fall through to the equality
+	// branch, where null would equal a null input.
 	comparison bool
 }
 
@@ -141,7 +141,7 @@ func isOrderingComparison(x *Expr) bool {
 		return false
 	}
 	switch b.Op {
-	case "<", "<=", ">", ">=":
+	case "<", "<=", ">", ">=", "in":
 		return true
 	}
 	return false
@@ -174,6 +174,12 @@ func (e *Evaluator) EvalUnaryTest(u *UnaryTest, input any, vars map[string]any) 
 			return false, err
 		}
 		if alt.comparison && IsNull(v) {
+			unknown = true
+			continue
+		}
+		if _, isRange := v.(*pfeel.RangeValue); isRange && IsNull(input) {
+			// `[1..10]` against null: membership is the endpoint comparisons,
+			// and each is null for a null operand, so the test is null too.
 			unknown = true
 			continue
 		}

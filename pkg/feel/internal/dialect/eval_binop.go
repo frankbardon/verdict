@@ -461,6 +461,13 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	}
 	switch rv := rightVal.(type) {
 	case *RangeValue:
+		// Range membership is the conjunction of the endpoint comparisons, and
+		// DMN 1.5 §10.3.2 makes an ordering comparison with a null operand
+		// null. Upstream ordered null below every value, so `null in [1..10]`
+		// was false and `not(null in [1..10])` was true.
+		if isNullValue(leftVal) {
+			return null, nil
+		}
 		return rv.Contains(leftVal), nil
 	case []any:
 		for _, kv := range rv {
