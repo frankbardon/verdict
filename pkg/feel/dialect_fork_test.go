@@ -1522,12 +1522,19 @@ func TestForkedDefects(t *testing.T) {
 				t.Errorf("%s = %#v, want null", expr, ToGo(got))
 			}
 		}
-		// A call that fits no signature still fails, as for any built-in, and
-		// so does a second finer than the fork can hold.
-		for _, expr := range []string{`date()`, `date(2026, 2)`, `time(10, 0)`, `date(year: 2026, month: 2)`, `date(foo: 1)`, `time(10, 0, 0.0000000001)`} {
-			if v, err := e.EvalText(expr, nil); err == nil {
-				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
+		// A call that fits no signature is null, as for any standard
+		// built-in (DMN 1.5 §10.3.4; TCK 1145, 1155).
+		for _, expr := range []string{`date()`, `date(2026, 2)`, `time(10, 0)`, `date(year: 2026, month: 2)`, `date(foo: 1)`} {
+			got, err := e.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(got) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(got))
 			}
+		}
+		// A second finer than the fork can hold still fails.
+		if v, err := e.EvalText(`time(10, 0, 0.0000000001)`, nil); err == nil {
+			t.Errorf("time(10, 0, 0.0000000001) = %#v, want an evaluation error", ToGo(v))
 		}
 	})
 
@@ -2233,6 +2240,241 @@ func TestForkedDefects(t *testing.T) {
 			if got := mustEval(t, e, fmt.Sprintf(`today() = date(%q) or today() = date(%q)`, before, after), nil); got != true {
 				t.Errorf("with time.Local = %s, today() is not the UTC date: %v", zone, got)
 			}
+		}
+	})
+
+	// evalCases evaluates each expression and compares it, through ToGo,
+	// with its expected value; an evaluation error fails the case.
+	evalCases := func(t *testing.T, cases []struct {
+		expr string
+		want any
+	}) {
+		t.Helper()
+		for _, c := range cases {
+			v, err := e.EvalText(c.expr, nil)
+			if err != nil {
+				t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+				continue
+			}
+			if got := ToGo(v); !deepEqualNum(got, c.want) {
+				t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+			}
+		}
+	}
+
+	t.Run("string() renders FEEL form", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.1 Table 72; upstream used fmt's %s, so
+		// string(true) was "%!s(bool=true)" and string([1,2]) "[1 2]".
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`string(true)`, "true"},
+			{`string(false)`, "false"},
+			{`string([1,2])`, "[1, 2]"},
+			{`string({a: 1, b: "x"})`, `{a: 1, b: "x"}`},
+			{`string([1, "a", null, [true], {c: {d: "e"}}])`, `[1, "a", null, [true], {c: {d: "e"}}]`},
+			{`string(["say \"hi\""])`, `["say \"hi\""]`},
+			{`string({"a b": 1, "1x": 2, "": 3})`, `{"": 3, "1x": 2, a b: 1}`},
+			{`string([])`, "[]"},
+			{`string({})`, "{}"},
+			{`string([1..2])`, "[1..2]"},
+			{`string([date("2020-01-01")])`, "[2020-01-01]"},
+			{`string("abc")`, "abc"},
+			{`string(1.5)`, "1.5"},
+			{`string(date("2020-01-01"))`, "2020-01-01"},
+			{`string(null)`, nil},
+		})
+	})
+
+	t.Run("context merge and list contains convert a singleton instead of raising", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.9.4 and §10.3.2.15: a non-list argument to a list
+		// parameter is a singleton list; null is outside the domain. Upstream
+		// raised "source data must be an array or slice", and bound context
+		// merge's parameter as "contextx".
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`context merge({a: 1})`, map[string]any{"a": 1.0}},
+			{`context merge([{a: 1}, {b: 2}])`, map[string]any{"a": 1.0, "b": 2.0}},
+			{`context merge(contexts: [{a: 1}, {a: 2}])`, map[string]any{"a": 2.0}},
+			{`context merge(null)`, nil},
+			{`context merge([{a: 1}, 5])`, nil},
+			{`context merge([{a: 1}, null])`, nil},
+			{`context merge(5)`, nil},
+			{`list contains(5, 5)`, true},
+			{`list contains(5, 6)`, false},
+			{`list contains(null, 5)`, nil},
+			{`list contains([1, null], null)`, true},
+		})
+	})
+
+	t.Run("typed built-ins are null outside their domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4: "Whenever a parameter is outside its domain, the
+		// result of the built-in is null." Upstream decoded through
+		// mapstructure: a mismatch raised, and null became an empty
+		// context. The "including null" parameters keep taking null.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`contains(null, null)`, nil},
+			{`contains(null, "bar")`, nil},
+			{`contains("bar", null)`, nil},
+			{`string length(null)`, nil},
+			{`string length(1)`, nil},
+			{`upper case(1)`, nil},
+			{`lower case(null)`, nil},
+			{`starts with(null, "a")`, nil},
+			{`ends with("a", 1)`, nil},
+			{`get entries(null)`, nil},
+			{`get entries(1)`, nil},
+			{`reverse(null)`, nil},
+			{`distinct values(null)`, nil},
+			{`flatten(null)`, nil},
+			{`index of(null, 1)`, nil},
+			{`index of([1, null], null)`, []any{2.0}},
+			{`insert before(null, 1, 2)`, nil},
+			{`insert before([1, 2], 1, null)`, []any{nil, 1.0, 2.0}},
+			{`append(null, 1)`, nil},
+			{`append([1], null)`, []any{1.0, nil}},
+			{`append([1], 2, 3)`, []any{1.0, 2.0, 3.0}},
+			{`append(1, 2)`, []any{1.0, 2.0}},
+			{`get value(null, "a")`, nil},
+			{`get value({a: 1}, null)`, nil},
+			{`get value({a: 1}, [])`, nil},
+			{`get value({a: {b: 1}}, ["a", "b"])`, 1.0},
+		})
+	})
+
+	t.Run("a standard built-in called with the wrong arguments is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.4; TCK 1140, 1145, 1155 pin a wrong argument count
+		// and an unknown parameter name as null. Upstream raised on the
+		// first and ignored the second; it also dropped a named variadic
+		// argument.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`string length()`, nil},
+			{`string length("a", "b")`, nil},
+			{`contains("a")`, nil},
+			{`list contains([1])`, nil},
+			{`substring("abc")`, nil},
+			{`string join()`, nil},
+			{`string join(["a"], "x", "y")`, nil},
+			{`string length(strin: "a")`, nil},
+			{`string length(string: "ab", foo: 1)`, nil},
+			{`string join(list: ["a"], delimeter: "-")`, nil},
+			{`substring before("abc")`, nil},
+			{`string length(string: "ab")`, 2.0},
+			{`count(list: [1, 2])`, 2.0},
+		})
+		// A function that is not a standard built-in still raises.
+		lib := FunctionLibrary{Namespace: "acme", Functions: map[string]Function{
+			"twice": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) { return a["n"], nil }},
+		}}
+		le, err := NewEvaluator(FEEL, WithLibraries(lib))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, expr := range []string{`acme.twice()`, `acme.twice(1, 2)`, `acme.twice(n: 1, m: 2)`} {
+			if v, err := le.EvalText(expr, nil); err == nil {
+				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
+			}
+		}
+	})
+
+	t.Run("positions count characters and items, from the end when negative, and are null outside", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.3 Table 73 footnote 1 and §10.3.4.4. Upstream
+		// sliced bytes, read a negative position as a byte index, and
+		// panicked for insert before and remove at position 0 or a negative
+		// one; sublist returned "" past the end.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`substring("foobar", 3)`, "obar"},
+			{`substring("foobar", 3, 3)`, "oba"},
+			{`substring("foobar", -2, 1)`, "a"},
+			{`substring("🐎ab", 2)`, "ab"},
+			{`substring(null, 1)`, nil},
+			{`substring("abc", null)`, nil},
+			{`substring("abc", 0)`, nil},
+			{`substring("abc", 4)`, nil},
+			{`substring("abc", -4)`, nil},
+			{`substring("abc", 1.5)`, nil},
+			{`substring("abc", 1, 0)`, nil},
+			{`substring("abc", 1, 4)`, nil},
+			{`sublist([1, 2, 3], 2)`, []any{2.0, 3.0}},
+			{`sublist([1, 2, 3], 1, 2)`, []any{1.0, 2.0}},
+			{`sublist([1, 2, 3], -2)`, []any{2.0, 3.0}},
+			{`sublist(null, 1)`, nil},
+			{`sublist([1, 2, 3], 0)`, nil},
+			{`sublist([1, 2, 3], 4)`, nil},
+			{`sublist([1, 2, 3], 2, 3)`, nil},
+			{`insert before([1, 3], 1, 2)`, []any{2.0, 1.0, 3.0}},
+			{`insert before([1, 3], -1, 2)`, []any{1.0, 2.0, 3.0}},
+			{`insert before([1, 2], 0, 9)`, nil},
+			{`insert before([1, 2], 3, 9)`, nil},
+			{`insert before([1, 2], -3, 9)`, nil},
+			{`remove([1, 2, 3], 2)`, []any{1.0, 3.0}},
+			{`remove([1, 2, 3], -1)`, []any{1.0, 2.0}},
+			{`remove([1, 2, 3], 0)`, nil},
+			{`remove([1, 2, 3], 4)`, nil},
+		})
+	})
+
+	t.Run("concatenate, union and string join honour their domains", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.3, §10.3.4.4; TCK 1140. Upstream raised on a null
+		// list or delimiter and took a prefix and suffix DMN does not define.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`concatenate([1], [2])`, []any{1.0, 2.0}},
+			{`concatenate([1], 2)`, []any{1.0, 2.0}},
+			{`concatenate([1], null)`, nil},
+			{`union([1, 2], [2, 3])`, []any{1.0, 2.0, 3.0}},
+			{`union([1], null)`, nil},
+			{`string join(["a", "b", "c"], null)`, "abc"},
+			{`string join(["a", null, "c"])`, "ac"},
+			{`string join([])`, ""},
+			{`string join(["a", "b"], "-")`, "a-b"},
+			{`string join(list: ["a", "b"], delimiter: "-")`, "a-b"},
+			{`string join(["a", 1])`, nil},
+			{`string join(null)`, nil},
+			{`string join(["a"], 1)`, nil},
+		})
+	})
+
+	t.Run("context put returns a new context and is null outside its domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.10 Table 81; TCK 1146, 1147. Upstream raised on a
+		// null context or key and wrote a nested put into the argument's own
+		// nested context.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`context put({}, null, 1)`, nil},
+			{`context put(null, "a", 1)`, nil},
+			{`context put([], "a", 1)`, nil},
+			{`context put({}, 1, 1)`, nil},
+			{`context put({}, "a", null)`, map[string]any{"a": nil}},
+			{`context put({x: 1}, ["y", null], 2)`, nil},
+			{`context put({x: 1}, [], 2)`, nil},
+			{`context put({x: 1}, ["x", "a"], 2)`, nil},
+			{`context put({x: 1, y: {a: 0}}, ["y", "a"], 2)`, map[string]any{"x": 1.0, "y": map[string]any{"a": 2.0}}},
+			{`context put({x: 1}, ["y", "a"], 2)`, map[string]any{"x": 1.0, "y": map[string]any{"a": 2.0}}},
+		})
+		// The argument is not written: its nested context still holds 0.
+		vars := map[string]any{"c": FromGo(map[string]any{"y": map[string]any{"a": 0}})}
+		if _, err := e.EvalText(`context put(c, ["y", "a"], 2)`, vars); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustEval(t, e, `c.y.a`, vars); got != 0.0 {
+			t.Errorf("after context put(c, [\"y\", \"a\"], 2), c.y.a = %#v, want 0", got)
 		}
 	})
 }

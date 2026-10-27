@@ -46,6 +46,11 @@ func NewErrTooFewArguments(required []string) *EvalError {
 	return NewEvalError(-4011, "too few argument", "require arguments:", reqArgs)
 }
 
+// NewErrUnknownArgument is a named argument no parameter of the function has.
+func NewErrUnknownArgument(argName string) *EvalError {
+	return NewEvalError(-4013, "unknown keyword argument", "no parameter named", argName)
+}
+
 func NewErrTooManyArguments() *EvalError {
 	return NewEvalError(-4012, "too many arguments")
 }

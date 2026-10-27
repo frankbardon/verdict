@@ -167,7 +167,20 @@ date(2026, 2, 28)   time(10, 30, 0)   time(10, 30, 0, duration("PT2H"))   // com
 date(dt)   time(dt)   date and time(d, t)   number("1.000,5", ".", ",")   // Table 72 overloads
 [1..10]  [1..10)  [1..10[  (1..10]  ]1..10]           // both bracket spellings
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
+string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; strings nested in lists/contexts quoted
+context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key; context put/merge override instead
+context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list
+list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, negative from the end
 ```
+
+String, list and context built-ins return **null**, never an error, outside
+their domain (DMN §10.3.4): a null or wrong-typed argument, a position outside
+the list or string, an invalid regex, replacement or flags, the wrong number of
+arguments, an unknown parameter name. The parameters the spec says take "any
+element including null" still do — `append`, `insert before` and `list replace`
+items, `index of` match, the `context put` value — and `string join` skips null
+elements and treats a null delimiter as none. A non-matching `substring before`
+/ `after` is `""`, not null.
 
 Names may contain spaces (`Credit Rating`) but **not reserved words** — `and`,
 `or`, `in`, `if`, `then`, `else`, `for`, `some`, `every`, `return`, `satisfies`.

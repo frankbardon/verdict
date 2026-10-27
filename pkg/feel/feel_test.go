@@ -1,6 +1,7 @@
 package feel
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -246,6 +247,129 @@ func TestContextBuiltinDomain(t *testing.T) {
 	}
 }
 
+// TestContextEntriesHaveDistinctKeys pins DMN 1.5 §10.3.4.10 Table 81 with
+// §10.3.2.6 ("These strings are distinct within a context") against TCK 1145:
+// context(entries) with a repeated key is null, where context put and context
+// merge override.
+func TestContextEntriesHaveDistinctKeys(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`context([{key: "a", value: 1}, {key: "a", value: 2}])`, nil},
+		{`context([{key: "a", value: 1}, {key: "b", value: 2}, {key: "a", value: 1}])`, nil},
+		{`context([{key: "a", value: 1}, {key: "b", value: 2}])`, map[string]any{"a": 1.0, "b": 2.0}},
+		{`context([{key: "a", value: 1}, {key: "b", value: 2, something: "else"}])`, map[string]any{"a": 1.0, "b": 2.0}},
+		{`context({key: "a", value: null})`, map[string]any{"a": nil}},
+		{`context({key: "", value: 1})`, map[string]any{"": 1.0}},
+		{`context([])`, map[string]any{}},
+		{`context(entries: [{key: "a", value: 1}])`, map[string]any{"a": 1.0}},
+		{`context({value: 1})`, nil},
+		{`context({key: null, value: 1})`, nil},
+		{`context("foo")`, nil},
+		{`context()`, nil},
+		{`context(entris: [{key: "a", value: 1}])`, nil},
+		// context put and context merge keep their override rule.
+		{`context put({a: 1}, "a", 2)`, map[string]any{"a": 2.0}},
+		{`context merge([{a: 1}, {a: 2}])`, map[string]any{"a": 2.0}},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestStringAndListSupplementDomain pins the §10.3.4 domain rule for the
+// supplement's string and list built-ins: a null or wrong-typed argument, an
+// invalid regular expression, replacement or flags (footnote 2), a position
+// outside the list, the wrong number of arguments and an unknown parameter
+// name are all null, never an evaluation error. The "including null"
+// parameters keep accepting null.
+func TestStringAndListSupplementDomain(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Null and wrong-typed arguments.
+		{`substring before(null, "a")`, nil},
+		{`substring before("abc", null)`, nil},
+		{`substring before(1, "a")`, nil},
+		{`substring after(null, "a")`, nil},
+		{`substring after("abc", 1)`, nil},
+		{`replace(null, "a", "b")`, nil},
+		{`replace("abc", null, "b")`, nil},
+		{`replace("abc", "a", null)`, nil},
+		{`matches(null, "a")`, nil},
+		{`matches("abc", null)`, nil},
+		{`matches("abc", ["a"])`, nil},
+		{`matches("abc", "a", ["i"])`, nil},
+		{`split(null, ",")`, nil},
+		{`split("a,b", null)`, nil},
+		{`list replace(null, 1, 2)`, nil},
+		{`list replace([1,2,3], null, 2)`, nil},
+		{`list replace([1,2,3], "2", 9)`, nil},
+		{`list replace([1,2,3], 1.5, 9)`, nil},
+		{`duplicate values(null)`, nil},
+		// Invalid patterns, flags and replacements.
+		{`matches("abc", "(")`, nil},
+		{`matches("abc", "(.)\3")`, nil},
+		{`matches("abc", "\3")`, nil},
+		{`matches("abc", "\p{ IsBasicLatin}")`, nil},
+		{`matches("abc", "a", "p")`, nil},
+		{`matches("abc", "a", "X")`, nil},
+		{`matches("abc", "a", " ")`, nil},
+		{`replace("abc", "(", "x")`, nil},
+		{`replace("abc", "", "x")`, nil},
+		{`replace("abc", "b", "$")`, nil},
+		{`replace("abc", "b", "x\y")`, nil},
+		{`replace("abc", "b", "x", "p")`, nil},
+		{`split("abc", "(")`, nil},
+		// Arity and parameter names.
+		{`matches("abc")`, nil},
+		{`matches("abc", "a", "i", 1)`, nil},
+		{`split("a,b")`, nil},
+		{`split(string: "a,b", delimitr: ",")`, nil},
+		{`list replace(list: [1,2,3], position: 2, newItem: 9, foo: 1)`, nil},
+		{`substring before("abc")`, nil},
+		// Positions outside the list.
+		{`list replace([1,2,3], 0, 9)`, nil},
+		{`list replace([1,2,3], 4, 9)`, nil},
+		{`list replace([1,2,3], -4, 9)`, nil},
+		// What stays defined.
+		{`substring before("foobar", "xyz")`, ""},
+		{`substring after("foobar", "xyz")`, ""},
+		{`substring after("", "a")`, ""},
+		{`substring after("abc", "")`, "abc"},
+		{`substring before("abc", "")`, ""},
+		{`matches("abracadabra", "bra", null)`, true},
+		{`replace("abc", "b", "x", null)`, "axc"},
+		{`replace("abc", "b", "\$")`, "a$c"},
+		{`split("a;b;c;;", ";")`, []any{"a", "b", "c", "", ""}},
+		{`list replace([1,2,3], 3, null)`, []any{1.0, 2.0, nil}},
+		{`list replace([1,2,3], -1, 9)`, []any{1.0, 2.0, 9.0}},
+		{`list replace(list: [1,2,3], position: 2, newItem: 9)`, []any{1.0, 9.0, 3.0}},
+		{`list replace(1, 1, 9)`, []any{9.0}},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 func TestConversionOverloadsTakeModelValues(t *testing.T) {
 	// DMN 1.5 §10.3.4.1 Table 72: the component overloads of date and time,
 	// fed from model inputs as a decision would feed them.
@@ -270,8 +394,11 @@ func TestFunctionLibraryIsNamespaced(t *testing.T) {
 		Namespace: "acme",
 		Functions: map[string]Function{
 			"double": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) {
-				f, err := asFloat(a["n"], "n")
-				return f * 2, err
+				n, ok := numberArg(a["n"])
+				if !ok {
+					return nil, fmt.Errorf("n must be a number")
+				}
+				return n.Float64() * 2, nil
 			}},
 		},
 	}
@@ -419,6 +546,18 @@ func deepEqualNum(got, want any) bool {
 		}
 		for i := range w {
 			if !deepEqualNum(g[i], w[i]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		g, ok := got.(map[string]any)
+		if !ok || len(g) != len(w) {
+			return false
+		}
+		for k, v := range w {
+			gv, present := g[k]
+			if !present || !deepEqualNum(gv, v) {
 				return false
 			}
 		}

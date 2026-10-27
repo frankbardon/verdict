@@ -640,63 +640,108 @@ func (fc FunCall) Eval(intp *Interpreter) (any, error) {
 	}
 }
 
+// EvalNativeFun binds a call's arguments to a native function's parameters
+// and calls it.
+//
+// VERDICT DIVERGENCE: upstream raised on a call whose arguments did not fit
+// the parameters — too few, too many, a missing keyword — and ignored a named
+// argument no parameter had, so `list replace(..., foo: 1)` ran as if foo were
+// absent; a named variadic parameter (`count(list: [1, 2])`) was dropped. DMN
+// 1.5 §10.3.4 makes a standard built-in invoked outside its domain null, and
+// TCK 1140, 1145 and 1155 pin a wrong argument count and an unknown parameter
+// name as null: so a standard built-in (see NativeFun.standard) yields null
+// for any of them, and every other native function raises, unknown names
+// included. A named variadic parameter is passed through as its value.
 func (fc FunCall) EvalNativeFun(intp *Interpreter, funDef *NativeFun) (any, error) {
 	if len(funDef.overloads) > 0 {
 		return fc.evalOverloaded(intp, funDef)
 	}
+	argVals, err := fc.bindNativeArgs(intp, funDef)
+	if err != nil {
+		var bad *argBindingError
+		if errors.As(err, &bad) {
+			if funDef.standard {
+				return null, nil
+			}
+			return nil, bad.err
+		}
+		return nil, err
+	}
+	return funDef.Call(intp, argVals)
+}
+
+// argBindingError marks a failure to fit a call's arguments to a native
+// function's parameters, as distinct from a failure evaluating an argument.
+type argBindingError struct{ err error }
+
+func (e *argBindingError) Error() string { return e.err.Error() }
+func (e *argBindingError) Unwrap() error { return e.err }
+
+func (fc FunCall) bindNativeArgs(intp *Interpreter, funDef *NativeFun) (map[string]any, error) {
 	argVals := make(map[string]any)
 	if fc.keywordArgs {
 		kwArgMap, err := fc.evalArgsToMap(intp)
 		if err != nil {
 			return nil, err
 		}
-
+		known := map[string]bool{}
 		for _, argName := range funDef.requiredArgNames {
+			known[argName] = true
 			if v, ok := kwArgMap[argName]; ok {
 				argVals[argName] = v
 			} else {
-				//return nil, NewEvalError(-5001, "no keyword argument", fmt.Sprintf("no keyword argument %s", argName))
-				return nil, NewErrKeywordArgument(argName)
+				return nil, &argBindingError{NewErrKeywordArgument(argName)}
 			}
 		}
-
 		for _, argName := range funDef.optionalArgNames {
+			known[argName] = true
 			if v, ok := kwArgMap[argName]; ok {
 				argVals[argName] = v
 			}
 		}
-	} else {
-		if len(fc.Args) < len(funDef.requiredArgNames) {
-			required := funDef.requiredArgNames[len(fc.Args):len(funDef.requiredArgNames)]
-			return nil, NewErrTooFewArguments(required)
+		if funDef.varArgName != "" {
+			known[funDef.varArgName] = true
+			if v, ok := kwArgMap[funDef.varArgName]; ok {
+				argVals[funDef.varArgName] = v
+			}
 		}
-		for i, argNode := range fc.Args {
-			a, err := argNode.arg.Eval(intp)
-			if err != nil {
-				return nil, err
+		for name := range kwArgMap {
+			if !known[name] {
+				return nil, &argBindingError{NewErrUnknownArgument(name)}
 			}
-			if i < len(funDef.requiredArgNames) {
-				argVals[funDef.requiredArgNames[i]] = a
-			} else if i < len(funDef.requiredArgNames)+len(funDef.optionalArgNames) {
-				argVals[funDef.optionalArgNames[i-len(funDef.requiredArgNames)]] = a
-			} else if funDef.varArgName != "" {
-				if vars, ok := argVals[funDef.varArgName]; ok {
-					varargs := vars.([]any)
-					varargs = append(varargs, a)
-					argVals[funDef.varArgName] = varargs
-				} else {
-					argVals[funDef.varArgName] = []any{a}
-				}
+		}
+		return argVals, nil
+	}
+	if len(fc.Args) < len(funDef.requiredArgNames) {
+		required := funDef.requiredArgNames[len(fc.Args):len(funDef.requiredArgNames)]
+		return nil, &argBindingError{NewErrTooFewArguments(required)}
+	}
+	for i, argNode := range fc.Args {
+		a, err := argNode.arg.Eval(intp)
+		if err != nil {
+			return nil, err
+		}
+		if i < len(funDef.requiredArgNames) {
+			argVals[funDef.requiredArgNames[i]] = a
+		} else if i < len(funDef.requiredArgNames)+len(funDef.optionalArgNames) {
+			argVals[funDef.optionalArgNames[i-len(funDef.requiredArgNames)]] = a
+		} else if funDef.varArgName != "" {
+			if vars, ok := argVals[funDef.varArgName]; ok {
+				varargs := vars.([]any)
+				varargs = append(varargs, a)
+				argVals[funDef.varArgName] = varargs
 			} else {
-				//return nil, NewEvalError(-5002, "too many arguments")
-				return nil, NewErrTooManyArguments()
+				argVals[funDef.varArgName] = []any{a}
 			}
+		} else {
+			return nil, &argBindingError{NewErrTooManyArguments()}
 		}
 	}
-	return funDef.Call(intp, argVals)
+	return argVals, nil
 }
 
-// evalOverloaded calls a built-in declared with NativeFun.Overloads.
+// evalOverloaded calls a built-in declared with NativeFun.Overloads. A call
+// that fits no overload is null for a standard built-in (see EvalNativeFun).
 func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, error) {
 	var args map[string]any
 	var err error
@@ -707,7 +752,7 @@ func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, err
 		}
 		args, err = funDef.bindOverload(nil, named)
 		if err != nil {
-			return nil, err
+			return funDef.bindFailure(err)
 		}
 	} else {
 		positional := make([]any, len(fc.Args))
@@ -717,7 +762,7 @@ func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, err
 			}
 		}
 		if args, err = funDef.bindOverload(positional, nil); err != nil {
-			return nil, err
+			return funDef.bindFailure(err)
 		}
 	}
 	return funDef.Call(intp, args)
