@@ -3,6 +3,7 @@ package feel
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestForkedDefects pins the behaviour the vendored evaluator was forked to
@@ -439,6 +440,58 @@ func TestForkedDefects(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("%s matched %v = %v, want %v", tc.src, tc.input, got, tc.want)
 			}
+		}
+	})
+
+	t.Run("arithmetic with null or mismatched operands is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2: arithmetic over a null operand, or over a pair of
+		// types the operator is not defined for, is null. Upstream raised a
+		// type mismatch, and concatenated a string with a number.
+		vars := map[string]any{"x": FromGo(3)}
+		for _, expr := range []string{
+			"1 + null", "null - 1", "null * 2", "2 / null", "null ** 2", "2 ** null",
+			"-null", "null / 0", "x + missing",
+			`1 + "a"`, `"a" + 1`, `"a" - "b"`, `"a" * 2`, "true + 1", "[1] * 2", `-"a"`,
+			`@"2024-01-01T00:00:00" + null`, `null - @"2024-01-01T00:00:00"`,
+		} {
+			if got := mustEval(t, e, expr, vars); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+		// Division by zero is still null, and valid typed arithmetic is intact.
+		for expr, want := range map[string]any{
+			"1 / 0": nil, "0 / 0": nil,
+			"1 + 2": 3.0, "x - 1": 2.0, "x * 2": 6.0, "x / 2": 1.5,
+			`"a" + "b"`: "ab",
+			`@"2024-01-02T00:00:00" - @"2024-01-01T00:00:00"`: 24 * time.Hour,
+		} {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		want := time.Date(2024, time.January, 1, 1, 0, 0, 0, time.UTC)
+		got, ok := mustEval(t, e, `@"2024-01-01T00:00:00" + duration("PT1H")`, nil).(time.Time)
+		if !ok || !got.Equal(want) {
+			t.Errorf("date and time + duration = %#v, want %v", got, want)
+		}
+	})
+
+	t.Run("exponentiation and negation parse and evaluate", func(t *testing.T) {
+		// DMN 1.5 grammar rules 4e and 4f. Upstream parsed neither.
+		vars := map[string]any{"x": FromGo(3)}
+		for expr, want := range map[string]any{
+			"2 ** 3": 8.0, "2 ** -1": 0.5, "2 * 3 ** 2": 18.0, "2 ** 3 ** 2": 64.0,
+			"-x": -3.0, "- x": -3.0, "-(x + 1)": -4.0, "--x": 3.0, "1 - -x": 4.0,
+			"-x ** 2": 9.0, "-2 ** 2": 4.0,
+			"0 ** -1": nil, "(-8) ** 0.5": nil, "10 ** 100000": nil,
+			`-duration("PT1H")`: -time.Hour,
+		} {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		if got, ok := mustEval(t, e, "2 ** 0.5", nil).(float64); !ok || !approx(got, 1.4142135623730951) {
+			t.Errorf("2 ** 0.5 = %#v, want sqrt(2)", got)
 		}
 	})
 

@@ -155,6 +155,7 @@ FEEL is the expression language for every cell, literal expression and binding.
 ```feel
 Applicant.credit_score >= 740                     // comparison
 (Repayment + Applicant.existing_debt) / income    // arithmetic, decimal not integer
+-balance   rate ** years                          // negation, exponentiation
 if x then "a" else "b"                            // conditional
 value in ["low", "medium", "high"]                // membership
 decimal(amount * 1.2, 2)                          // round to 2 places
@@ -261,6 +262,10 @@ opens as an empty canvas.
   `<defaultOutputEntry>0</defaultOutputEntry>` unless null is what you mean.
 - **`/` is decimal division.** `1 / 3` is `0.333…`, not `0`. Dividing by zero is
   null, not an error.
+- **Arithmetic on a null is null.** `a + b` with `b` missing, `null * 2` and
+  `-null` all yield null, not an error — so a missing input surfaces as a null
+  output (with `VERDICT_EVAL_004`), not a `VERDICT_EVAL_005` failure. Mismatched
+  types are null too: `1 + "a"` is null, not `"1a"`; use `string(1) + "a"`.
 - **Ordering a null is null.** `2 < null`, `null >= null` and
   `x > 5` with `x` missing all yield null, not true or false — and a `> 5`
   cell does not match a null input. Ranges too: `null in [1..10]` is null, and

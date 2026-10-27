@@ -203,6 +203,47 @@ func TestSFEELModelRejectsLevel3Constructs(t *testing.T) {
 	}
 }
 
+// TestArithmeticOnAMissingInputIsNull checks DMN 1.5 §10.3.2 at the engine
+// level: `A + B` with B not supplied is null — an absent answer flagged by
+// VERDICT_EVAL_004 — not a VERDICT_EVAL_005 expression failure.
+func TestArithmeticOnAMissingInputIsNull(t *testing.T) {
+	doc := `{"vdj":"1.0","id":"sum","conformance_level":"feel",
+	  "input_data":[
+	    {"id":"a","name":"A","variable":{"name":"A","type_ref":"number"}},
+	    {"id":"b","name":"B","variable":{"name":"B","type_ref":"number"}}],
+	  "decisions":[{"id":"total","name":"Total","required_inputs":["a","b"],
+	    "variable":{"name":"Total","type_ref":"number"},
+	    "logic":{"kind":"literalExpression","text":"A + B"}}]}`
+
+	e, err := verdict.NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	res, err := e.Evaluate(context.Background(), m.ID, verdict.Inputs{"A": 2})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if got, ok := res.Outputs["Total"]; !ok || got != nil {
+		t.Errorf("Total = %#v (present %v), want null", got, ok)
+	}
+	missing := false
+	for _, d := range res.Diagnostics {
+		switch d.Code {
+		case diag.CodeExpressionError:
+			t.Errorf("arithmetic on a missing input failed the expression: %s", d)
+		case diag.CodeMissingInput:
+			missing = true
+		}
+	}
+	if !missing {
+		t.Errorf("no VERDICT_EVAL_004 diagnostic for the missing input: %v", res.Diagnostics)
+	}
+}
+
 // TestRecursiveServiceTerminates checks the one bound the DRG's acyclicity does
 // not supply. Requirement edges cannot loop, but a literal expression invoking
 // a decision service can — and does, in this model. Without a depth cap the

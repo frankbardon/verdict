@@ -23,6 +23,8 @@ func (binop Binop) Eval(intp *Interpreter) (any, error) {
 		return binop.mulOp(intp)
 	case "/":
 		return binop.divOp(intp)
+	case "**":
+		return binop.powOp(intp)
 	case "%":
 		return binop.modOp(intp)
 	case ">":
@@ -63,7 +65,10 @@ func (binop Binop) numberOp(intp *Interpreter, en evalNumbers, op string) (any, 
 			return en(leftNumber, rightNumber), nil
 		}
 	}
-	return nil, NewEvalError(-3101, "invalid types", fmt.Sprintf("bad type in op, %T %s %T", leftVal, op, rightVal))
+	// VERDICT DIVERGENCE: a null operand, or a pair of types the operator is
+	// not defined over, is null rather than an error (DMN 1.5 §10.3.2). See
+	// the comment on typedOp.
+	return null, nil
 }
 
 func CompareValues(leftVal, rightVal any) int {
@@ -208,6 +213,16 @@ func (binop Binop) compareValues(intp *Interpreter) (int, error) {
 	return compareInterfaces(leftVal, rightVal)
 }
 
+// typedOp implements FEEL's `+` and `-`.
+//
+// VERDICT DIVERGENCE: upstream raised a type mismatch when an operand was null
+// or when the operand types had no defined sum or difference, so `1 + null`
+// failed the whole evaluation; and it concatenated a string with a number, so
+// `1 + "a"` was "1a". DMN 1.5 §10.3.2 defines arithmetic only over the type
+// pairs its semantic tables list — numbers, two strings for `+`, and the
+// temporal/duration combinations — and every other combination, a null
+// operand included, is null. A missing input in `a + b` is an absent answer,
+// not a broken model.
 func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op string) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
@@ -224,17 +239,11 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 			if rightString, ok := rightVal.(string); ok {
 				return es(v, rightString), nil
 			}
-			if rightNumber, ok := rightVal.(*Number); ok {
-				return es(v, rightNumber.String()), nil
-			}
 		}
 	case *Number:
 		if en != nil {
 			if rightNumber, ok := rightVal.(*Number); ok {
 				return en(v, rightNumber), nil
-			}
-			if rightString, ok := rightVal.(string); ok {
-				return es(v.String(), rightString), nil
 			}
 		}
 	case *FEELDatetime:
@@ -250,7 +259,7 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 			}
 		}
 	}
-	return nil, NewErrBadOp(typeName(leftVal), op, typeName(rightVal))
+	return null, nil
 }
 
 func (binop Binop) addOp(intp *Interpreter) (any, error) {
@@ -293,6 +302,51 @@ func (binop Binop) divOp(intp *Interpreter) (any, error) {
 			return a.Div(b)
 		},
 		"/")
+}
+
+// powOp implements FEEL's `**`, which upstream did not parse at all.
+//
+// An integer exponent is computed exactly at the evaluator's working precision
+// by repeated squaring; any other exponent goes through float64. A result that
+// is not a finite number — `0 ** -1`, `(-8) ** 0.5`, an overflow — is null, as
+// division by zero is (DMN 1.5 §10.3.2).
+func (binop Binop) powOp(intp *Interpreter) (any, error) {
+	return binop.numberOp(
+		intp,
+		func(a, b *Number) any {
+			if p, ok := a.Pow(b); ok {
+				return p
+			}
+			return null
+		},
+		"**")
+}
+
+// Negation implements FEEL's unary `-`, which upstream did not parse: a
+// leading minus was only ever part of a numeric literal, so `-x` and `-(a + b)`
+// were syntax errors. DMN 1.5 §10.3.2 defines negation over numbers and
+// durations; anything else, null included, is null.
+type Negation struct {
+	Operand Node
+
+	textRange TextRange
+}
+
+func (n Negation) TextRange() TextRange { return n.textRange }
+func (n Negation) Repr() string         { return fmt.Sprintf("(- %s)", n.Operand.Repr()) }
+
+func (n Negation) Eval(intp *Interpreter) (any, error) {
+	v, err := n.Operand.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	switch x := v.(type) {
+	case *Number:
+		return NewNumberFromInt64(0).Sub(x), nil
+	case *FEELDuration:
+		return x.Negative(), nil
+	}
+	return null, nil
 }
 
 // orderingOp implements FEEL's `<`, `<=`, `>` and `>=`.

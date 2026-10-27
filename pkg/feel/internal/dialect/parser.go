@@ -274,8 +274,37 @@ func (p *Parser) addOrSubOp() (Node, error) {
 func (p *Parser) mulOrDivOp() (Node, error) {
 	return p.binop(
 		[]string{"*", "/", "%"},
-		p.parseFuncallOrIndexOrDot,
+		p.powOp,
 	)
+}
+
+// VERDICT DIVERGENCE: exponentiation and arithmetic negation (DMN 1.5 grammar
+// rules 4e and 4f). Upstream parsed neither: a leading `-` was only ever part
+// of a numeric literal. `**` binds tighter than `*` and `/` and associates
+// left, as the fork's other binary operators do; negation binds tighter than
+// `**`, matching a negative numeric literal, so `-x ** 2` is `(-x) ** 2` just
+// as `-2 ** 2` is 4.
+func (p *Parser) powOp() (Node, error) {
+	return p.binop(
+		[]string{"**"},
+		p.negationOp,
+	)
+}
+
+func (p *Parser) negationOp() (Node, error) {
+	if !p.CurrentToken().Expect("-") {
+		return p.parseFuncallOrIndexOrDot()
+	}
+	textRange := p.startTextRange()
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	operand, err := p.negationOp()
+	if err != nil {
+		return nil, err
+	}
+	textRange.End = p.CurrentToken().Pos
+	return &Negation{Operand: operand, textRange: textRange}, nil
 }
 
 func (p *Parser) parseFuncallOrIndexOrDot() (Node, error) {

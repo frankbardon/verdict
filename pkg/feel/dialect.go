@@ -38,6 +38,8 @@ func violatesSFEEL(n pfeel.Node) string {
 		return violatesSFEEL(v.Right)
 	case *pfeel.DotOp:
 		return violatesSFEEL(v.Left)
+	case *pfeel.Negation:
+		return violatesSFEEL(v.Operand)
 	case *pfeel.RangeNode:
 		if r := violatesSFEEL(v.Start); r != "" {
 			return r

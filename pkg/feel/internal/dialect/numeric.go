@@ -4,6 +4,7 @@ package dialect
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"math/big"
 	"strings"
 )
@@ -115,6 +116,51 @@ func (n *Number) Div(other *Number) *Number {
 	newf := new(big.Float).SetPrec(Prec)
 	newf.Quo(n.v, other.v)
 	return &Number{v: newf}
+}
+
+// maxExactExponent bounds the integer exponents Pow computes exactly. Beyond it
+// the result is computed through float64, which is finite only for results a
+// float64 can hold — so `10 ** 1000000000` is null rather than a long stall.
+const maxExactExponent = 1 << 16
+
+// Pow raises n to the power other. It reports false when the result is not a
+// finite number: a zero base with a negative exponent, a negative base with a
+// fractional exponent, or an overflow. (VERDICT DIVERGENCE: upstream had no
+// exponentiation; see NOTICE.md.)
+func (n *Number) Pow(other *Number) (*Number, bool) {
+	if other.v.IsInt() {
+		if e, acc := other.v.Int64(); acc == big.Exact && e >= -maxExactExponent && e <= maxExactExponent {
+			neg := e < 0
+			if neg {
+				e = -e
+				if n.IsZero() {
+					return nil, false
+				}
+			}
+			result := new(big.Float).SetPrec(Prec).SetInt64(1)
+			base := new(big.Float).SetPrec(Prec).Set(n.v)
+			for ; e > 0; e >>= 1 {
+				if e&1 == 1 {
+					result.Mul(result, base)
+				}
+				base.Mul(base, base)
+			}
+			if neg {
+				result.Quo(new(big.Float).SetPrec(Prec).SetInt64(1), result)
+			}
+			if result.IsInf() {
+				return nil, false
+			}
+			return &Number{v: result}, true
+		}
+	}
+	a, _ := n.v.Float64()
+	b, _ := other.v.Float64()
+	f := math.Pow(a, b)
+	if math.IsInf(f, 0) || math.IsNaN(f) {
+		return nil, false
+	}
+	return NewNumberFromFloat(f), true
 }
 
 // IsZero reports whether the number is exactly zero.

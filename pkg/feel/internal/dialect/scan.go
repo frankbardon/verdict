@@ -76,6 +76,8 @@ var tokenMatchers = []tokenMatcher{
 
 	match("+", ""),
 	match("-", ""),
+	// VERDICT DIVERGENCE: `**` (exponentiation) is matched before `*`.
+	match("**", ""),
 	match("*", ""),
 	match("/", ""),
 	match("%", ""),
@@ -97,11 +99,12 @@ type ScannerToken struct {
 }
 
 var opTokens = map[string]bool{
-	"+": true,
-	"-": true,
-	"*": true,
-	"/": true,
-	"%": true,
+	"+":  true,
+	"-":  true,
+	"*":  true,
+	"**": true,
+	"/":  true,
+	"%":  true,
 }
 
 func (token ScannerToken) IsOp() bool {

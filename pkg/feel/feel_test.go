@@ -83,13 +83,14 @@ func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 		"some x in [1,2] satisfies x > 1",
 		"every x in [1,2] satisfies x > 0",
 		"function(a) a + 1",
+		"-(if 1 > 0 then 1 else 2)",
 	}
 	for _, src := range rejected {
 		if _, err := e.Compile(src); err == nil {
 			t.Errorf("S-FEEL accepted FEEL-only construct %q", src)
 		}
 	}
-	accepted := []string{"1 + 2", `"a" = "b"`, "[1..10]", "x > 3 and x < 9"}
+	accepted := []string{"1 + 2", `"a" = "b"`, "[1..10]", "x > 3 and x < 9", "-x ** 2"}
 	for _, src := range accepted {
 		if _, err := e.Compile(src); err != nil {
 			t.Errorf("S-FEEL rejected valid simple expression %q: %v", src, err)
