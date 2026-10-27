@@ -1962,6 +1962,109 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("range built-ins apply the mixed-zone rule to every comparison", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.7 Table 78 defines each range built-in by `<`, `>`,
+		// `=`, `<=` and `>=`, so a zoned against a zoneless endpoint inherits
+		// Tables 53 and 54: `<`/`>` adopt the zoned offset, `=` is null, and
+		// `<=`/`>=` are true only when the strict comparison is. Upstream (and
+		// Verdict before issue #47) ordered every tie by the adopted offset.
+		cases := map[string]any{
+			// strict comparisons still adopt the offset
+			`before(time("10:00:00"), time("11:00:00Z"))`:                                            true,
+			`before(time("10:00:00"), time("10:00:00Z"))`:                                            false,
+			`before([time("09:00:00")..time("10:00:00")], time("10:00:00Z"))`:                        false,
+			`before([time("09:00:00")..time("10:00:00")], time("11:00:00Z"))`:                        true,
+			`overlaps([time("09:00:00")..time("10:30:00")], [time("10:00:00Z")..time("11:00:00Z")])`: true,
+			`includes([time("09:00:00Z")..time("11:00:00Z")], time("10:00:00"))`:                     true,
+			`includes([time("09:00:00Z")..time("11:00:00Z")], [time("09:30:00")..time("10:00:00")])`: true,
+			`after([time("10:00:00Z")..time("11:00:00Z")], (time("09:00:00")..time("10:00:00")])`:    false,
+			// a tie against an open endpoint, or an `=`, is null
+			`before([time("09:00:00")..time("10:00:00")), time("10:00:00Z"))`:                                                                                                     nil,
+			`before([time("09:00:00")..time("10:00:00")), [time("10:00:00Z")..time("11:00:00Z")])`:                                                                                nil,
+			`before(time("10:00:00Z"), (time("10:00:00")..time("11:00:00")])`:                                                                                                     nil,
+			`after(time("10:00:00Z"), [time("09:00:00")..time("10:00:00")))`:                                                                                                      nil,
+			`meets([time("09:00:00")..time("10:00:00")], [time("10:00:00Z")..time("11:00:00Z")])`:                                                                                 nil,
+			`met by([time("10:00:00Z")..time("11:00:00Z")], [time("09:00:00")..time("10:00:00")])`:                                                                                nil,
+			`overlaps([time("09:00:00")..time("10:00:00")], [time("10:00:00Z")..time("11:00:00Z")])`:                                                                              nil,
+			`overlaps before([time("09:00:00")..time("10:00:00")], [time("10:00:00Z")..time("11:00:00Z")])`:                                                                       nil,
+			`overlaps after([time("10:00:00Z")..time("11:00:00Z")], [time("09:00:00")..time("10:00:00")])`:                                                                        nil,
+			`finishes(time("10:00:00"), [time("09:00:00Z")..time("10:00:00Z")])`:                                                                                                  nil,
+			`finishes([time("09:30:00")..time("10:00:00")], [time("09:00:00Z")..time("10:00:00Z")])`:                                                                              nil,
+			`finished by([time("09:00:00Z")..time("10:00:00Z")], time("10:00:00"))`:                                                                                               nil,
+			`starts(time("09:00:00"), [time("09:00:00Z")..time("10:00:00Z")])`:                                                                                                    nil,
+			`started by([time("09:00:00Z")..time("10:00:00Z")], time("09:00:00"))`:                                                                                                nil,
+			`includes([time("09:00:00Z")..time("11:00:00Z")], time("09:00:00"))`:                                                                                                  nil,
+			`includes([time("09:00:00Z")..time("11:00:00Z")], [time("09:00:00")..time("10:00:00")])`:                                                                              nil,
+			`during(time("11:00:00"), [time("09:00:00Z")..time("11:00:00Z")])`:                                                                                                    nil,
+			`during(time("12:00:00"), [time("09:00:00Z")..time("11:00:00Z")])`:                                                                                                    nil,
+			`coincides(time("10:00:00"), time("10:00:00Z"))`:                                                                                                                      nil,
+			`coincides(time("10:00:00"), time("11:00:00Z"))`:                                                                                                                      nil,
+			`coincides([time("09:00:00")..time("10:00:00")], [time("09:00:00Z")..time("10:00:00Z")])`:                                                                             nil,
+			`coincides(date and time("2024-01-01T10:00:00"), date and time("2024-01-01T10:00:00Z"))`:                                                                              nil,
+			`meets([date and time("2024-01-01T09:00:00")..date and time("2024-01-01T10:00:00")], [date and time("2024-01-01T10:00:00Z")..date and time("2024-01-01T11:00:00Z")])`: nil,
+			// an open end needs no comparison, so it is still false
+			`meets([time("09:00:00")..time("10:00:00")), [time("10:00:00Z")..time("11:00:00Z")])`: false,
+			// operands of one zone-ness are unaffected
+			`meets([time("09:00:00")..time("10:00:00")], [time("10:00:00")..time("11:00:00")])`:               true,
+			`meets([time("09:00:00Z")..time("10:00:00Z")], [time("12:00:00+02:00")..time("13:00:00+02:00")])`: true,
+			`coincides(time("10:00:00+02:00"), time("08:00:00Z"))`:                                            true,
+			`starts(time("09:00:00"), [time("09:00:00")..time("10:00:00")])`:                                  true,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("a time is not comparable with a date or a date and time", func(t *testing.T) {
+		// DMN 1.5 Tables 53 and 54 compare a time only with a time, and a date
+		// with a date and time (as its UTC midnight, §10.3.2.3.5); any other
+		// temporal pair is outside the operators' domain and null
+		// (§10.3.2.15). Upstream ordered every temporal pair by instant, so a
+		// time compared as an instant on 0000-01-01 (issue #48).
+		cases := map[string]any{
+			`time("10:00:00") < date and time("2024-01-01T10:00:00")`:                                                  nil,
+			`time("10:00:00") > date and time("2024-01-01T10:00:00")`:                                                  nil,
+			`time("10:00:00") <= date and time("2024-01-01T10:00:00")`:                                                 nil,
+			`time("10:00:00") = date and time("2024-01-01T10:00:00")`:                                                  nil,
+			`time("10:00:00") != date and time("2024-01-01T10:00:00")`:                                                 nil,
+			`time("10:00:00Z") = date and time("2024-01-01T10:00:00Z")`:                                                nil,
+			`date("2024-01-01") < time("10:00:00")`:                                                                    nil,
+			`date("2024-01-01") = time("00:00:00Z")`:                                                                   nil,
+			`time("10:00:00") in [date and time("2024-01-01T09:00:00")..date and time("2024-01-01T11:00:00")]`:         nil,
+			`max(time("10:00:00"), date and time("2024-01-01T11:00:00"))`:                                              nil,
+			`before(time("10:00:00"), date and time("2024-01-01T11:00:00"))`:                                           nil,
+			`coincides(time("10:00:00"), date and time("2024-01-01T10:00:00"))`:                                        nil,
+			`includes([date and time("2024-01-01T09:00:00")..date and time("2024-01-01T11:00:00")], time("10:00:00"))`: nil,
+			// a date against a date and time keeps the #29 adoption rule
+			`date("2024-01-01") < date and time("2024-01-01T10:00:00")`:           true,
+			`date("2024-01-01") < date and time("2024-01-01T10:00:00Z")`:          true,
+			`date("2024-01-01") = date and time("2024-01-01T00:00:00")`:           true,
+			`before(date("2024-01-01"), date and time("2024-01-01T10:00:00Z"))`:   true,
+			`coincides(date("2024-01-01"), date and time("2024-01-01T00:00:00"))`: true,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		tm, err := ParseTemporal("10:00:00", "time")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dt, err := ParseTemporal("2024-01-01T10:00:00", "date and time")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r, ok := Compare(tm, dt); ok {
+			t.Errorf("Compare(time, date and time) = %d, true; want not comparable", r)
+		}
+		if Equal(tm, dt) {
+			t.Errorf("Equal(time, date and time) = true, want false (null)")
+		}
+	})
+
 	t.Run("zoned and zoneless values in the Go-side comparisons and unary tests", func(t *testing.T) {
 		// feel.Equal and the unary-test layer derive from the fork's `=`, and
 		// feel.Compare from its `<`, so decision tables, the ANY hit policy

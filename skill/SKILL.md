@@ -396,8 +396,15 @@ opens as an empty canvas.
   one at the other's offset (`10:00:00 < 11:00:00Z` true, `10:00:00 <
   10:00:00Z` false); `<=`/`>=` are true when `<`/`>` is and otherwise **null**
   (`10:00:00 <= 10:00:00Z` is null), and so is a closed range endpoint;
-  `date and time - date and time` and `time - time` are null. A date takes the
-  zone-ness of the date and time it meets. `+`/`- duration` keeps the operand's
+  `date and time - date and time` and `time - time` are null. The range
+  built-ins (`before`, `meets`, `overlaps`, `starts`, `includes`, `during`,
+  `coincides`, ...) use the same operators, so a mixed tie or non-strict
+  comparison makes them null (`meets([09:00..10:00], [10:00Z..11:00Z])`,
+  `coincides(10:00:00, 11:00:00Z)` are null) while a strict one still adopts
+  the offset (`before(10:00:00, 11:00:00Z)` is true). A date takes the
+  zone-ness of the date and time it meets. A **time never compares with a date
+  or date and time**: `=`, `<`, `in`, `max`, the range built-ins over the pair
+  are null; a date against a date and time compares as its UTC midnight. `+`/`- duration` keeps the operand's
   zone-ness. `.time offset` (a duration) and `.timezone` are null for a zoneless
   value, and `string()` omits the offset (`"10:00:00"`). In a decision table a
   zoneless input never equals a zoned cell — write inputs and cells the same way.
