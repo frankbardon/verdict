@@ -1502,6 +1502,117 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("ranges compare by endpoints and closedness and have no order", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 53: ranges are equal when their endpoints
+		// and closedness are; Table 54 orders no range. Upstream v1.0.6 raised
+		// "bad type in comparation" (-3106) for every one of these.
+		cases := map[string]any{
+			"[1..2] = [1..2]":         true,
+			"[1..2] = [1..3]":         false,
+			"[1..2] = (1..2]":         false,
+			"[1..2] = [1..2)":         false,
+			"[1..2] = ]1..2]":         false,
+			"[1..2] != [1..2]":        false,
+			"[1..2] != (1..2)":        true,
+			`["a".."b"] = ["a".."b"]`: true,
+			`[1..2] = ["a".."b"]`:     nil,
+			"[1..2] = 1":              nil,
+			"[[1..2]] = [[1..2]]":     true,
+			"[1..2] in [[1..2], 3]":   true,
+			"[1..2] < [3..4]":         nil,
+			"[1..2] <= [1..2]":        nil,
+			"[3..4] > [1..2]":         nil,
+			"[1..2] >= [1..2]":        nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("list membership is a three-valued disjunction of equalities", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 49: e in [e1, e2, …] is e = e1 or e = e2
+		// or …, folded by Table 51. Upstream v1.0.6 answered false wherever no
+		// element was equal, so `"a" in [1, 2]` was false and its negation true.
+		cases := map[string]any{
+			`"a" in [1, 2]`:       nil,
+			`1 in [1, "a"]`:       true,
+			`"a" in [1, "a"]`:     true,
+			"3 in [1, 2]":         false,
+			"3 in []":             false,
+			"null in [1, null]":   true,
+			"null in [1, 2]":      false,
+			"[1] in [[1], [2]]":   true,
+			`[1] in [["a"], [2]]`: nil,
+			`not("a" in [1, 2])`:  nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("min and max reject items outside their domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.4 defines min and max over comparable items, and
+		// §10.3.4 makes a built-in given a parameter outside its domain null.
+		// Upstream v1.0.6 skipped items it could not order (`min([1, "a"])`
+		// was 1), ordered null above every value and false below true, and returned the
+		// first of a list of lists or contexts.
+		cases := map[string]any{
+			"min([[1], [2]])":       nil,
+			"max([[1], [2]])":       nil,
+			"min([{a: 1}, {a: 2}])": nil,
+			"max([{a: 1}])":         nil,
+			`min([1, "a"])`:         nil,
+			`max(["a", 1])`:         nil,
+			"min([true, false])":    nil,
+			"max([true, false])":    nil,
+			"max([true])":           nil,
+			"min([1, null])":        nil,
+			"max([1, null])":        nil,
+			"min([[1..2], [3..4]])": nil,
+			"min([])":               nil,
+			"max([])":               nil,
+			`max("a", "c", "b")`:    "c",
+			`min(["b", "a"])`:       "a",
+			"max([duration(\"P1D\"), duration(\"PT1H\")]) = duration(\"P1D\")":         true,
+			"min([date(\"2026-01-02\"), date(\"2026-01-01\")]) = date(\"2026-01-01\")": true,
+			`max([duration("P1D"), duration("P1M")])`:                                  nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		for expr, want := range map[string]float64{"min([3, 1, 2])": 1, "max(3, 1, 2)": 3, "min([5])": 5} {
+			if got, ok := mustEval(t, e, expr, nil).(float64); !ok || got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("booleans are unordered for range membership and range built-ins", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15, Table 54 orders no booleans, so membership in a
+		// boolean range and the §10.3.4.7 range functions over booleans are
+		// outside their domain. Upstream v1.0.6 ordered false below true.
+		for _, expr := range []string{
+			"true in [false..true]",
+			"false in [false..true]",
+			"not(true in [false..true])",
+			"before(false, true)",
+			"after(true, false)",
+			"includes([false..true], true)",
+			"coincides(true, true)",
+			"coincides([false..true], [false..true])",
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {

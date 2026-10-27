@@ -101,14 +101,19 @@ func compareInterfaces(leftVal, rightVal any) (int, error) {
 			return v.Compare(*rightNumber), nil
 		}
 	case bool:
-		if rightBool, ok := rightVal.(bool); ok {
-			if v == rightBool {
-				return 0, nil
-			} else if v == false {
-				return -1, nil
-			} else {
-				return 1, nil
-			}
+		// VERDICT DIVERGENCE: upstream ordered false below true, which min,
+		// max, range membership and the range built-ins inherited. DMN 1.5
+		// Table 54 defines no order over booleans; equality goes through
+		// feelEqual instead.
+		if _, ok := rightVal.(bool); ok {
+			return 0, NewEvalError(codeUnordered, "unordered type", "booleans have no order")
+		}
+	case *RangeValue:
+		// VERDICT DIVERGENCE: upstream raised -3106 for two ranges, so
+		// `[1..2] = [1..2]` failed. Table 54 defines no order over ranges;
+		// equality goes through feelEqual (Table 53).
+		if _, ok := rightVal.(*RangeValue); ok {
+			return 0, NewEvalError(codeUnordered, "unordered type", "ranges have no order")
 		}
 	case []any:
 		if _, ok := rightVal.([]any); ok {
@@ -214,9 +219,10 @@ func instantOf(v any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// codeUnordered is the EvalError code compareInterfaces reports for two lists
-// or two contexts: values of one kind that FEEL defines equality over but no
-// order (DMN 1.5 Table 54 lists no `<` for either).
+// codeUnordered is the EvalError code compareInterfaces reports for two lists,
+// two contexts, two booleans or two ranges: values of one kind that FEEL
+// defines equality over but no order (DMN 1.5 Table 54 lists no `<` for any of
+// them).
 //
 // VERDICT DIVERGENCE: upstream ordered lists lexicographically and contexts by
 // size, and its list comparison answered 1 for two equal lists of the same
@@ -240,6 +246,9 @@ func isUnordered(err error) bool {
 //     e1.k = e2.k for every k. Both are the three-valued conjunction of the
 //     element comparisons, so one false pair makes the result false and,
 //     failing that, one null pair (`[1, "a"] = [1, 2]`) makes it null;
+//   - two booleans are equal when they are the same boolean;
+//   - two ranges are equal when both closednesses are the same and both pairs
+//     of endpoints are `=`, again three-valued over the endpoint pairs;
 //   - operands of different kinds are null (§10.3.2.2: `"1" = 1` is null);
 //   - anything else is compareInterfaces' verdict.
 //
@@ -292,6 +301,36 @@ func feelEqual(a, b any) (any, error) {
 		unknown := false
 		for k, v := range av {
 			r, err := feelEqual(v, bv[k])
+			if err != nil {
+				return nil, err
+			}
+			switch r {
+			case false:
+				return false, nil
+			case true:
+			default:
+				unknown = true
+			}
+		}
+		if unknown {
+			return null, nil
+		}
+		return true, nil
+	case bool:
+		if bv, ok := b.(bool); ok {
+			return av == bv, nil
+		}
+	case *RangeValue:
+		bv, ok := b.(*RangeValue)
+		if !ok {
+			break
+		}
+		if av.StartOpen != bv.StartOpen || av.EndOpen != bv.EndOpen {
+			return false, nil
+		}
+		unknown := false
+		for _, pair := range [][2]any{{av.Start, bv.Start}, {av.End, bv.End}} {
+			r, err := feelEqual(pair[0], pair[1])
 			if err != nil {
 				return nil, err
 			}
@@ -556,15 +595,11 @@ func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool) (any, e
 	if isNullValue(leftVal) || isNullValue(rightVal) {
 		return null, nil
 	}
-	// VERDICT DIVERGENCE: upstream ordered false below true, so `true < false`
-	// was false and `false < true` true. DMN 1.5 §10.3.2.15 Table 54 defines
-	// `<`, `<=`, `>` and `>=` for no boolean pair, and inputs outside an
-	// operator's domain are null. Equality between booleans is unaffected.
-	if _, ok := leftVal.(bool); ok {
-		if _, ok := rightVal.(bool); ok {
-			return null, nil
-		}
-	}
+	// VERDICT DIVERGENCE: two booleans, two ranges, two lists and two contexts
+	// are unordered (compareInterfaces reports codeUnordered), so `true < false`
+	// and `[1..2] < [3..4]` are null. DMN 1.5 §10.3.2.15 Table 54 defines `<`,
+	// `<=`, `>` and `>=` for none of those kinds, and inputs outside an
+	// operator's domain are null. Equality is feelEqual's and is unaffected.
 	r, err := compareInterfaces(leftVal, rightVal)
 	if err != nil {
 		if isIncomparable(err) || isUnordered(err) {
@@ -768,18 +803,39 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 		}
 		// A point of another kind than the endpoints (`5 in ["a".."z"]`)
 		// makes those comparisons null too, where upstream panicked.
+		// So does a point of an unordered kind (`true in [false..true]`):
+		// DMN 1.5 Table 54 orders no booleans.
 		if _, err := rv.Position(leftVal); err != nil {
-			if isIncomparable(err) {
+			if isIncomparable(err) || isUnordered(err) {
 				return null, nil
 			}
 			return nil, err
 		}
 		return rv.Contains(leftVal), nil
 	case []any:
+		// VERDICT DIVERGENCE: `e in [e1, e2, …]` is `e = e1 or e = e2 or …`
+		// (DMN 1.5 §10.3.2.15, Table 49), folded three-valued (Table 51): an
+		// element that is `=` makes it true, failing that an element whose
+		// `=` is null makes it null (`"a" in [1, 2]`), otherwise false.
+		// Upstream answered a boolean from valuesEqual, so `"a" in [1, 2]`
+		// was false and `not("a" in [1, 2])` true. A pair the fork cannot
+		// compare at all (two functions) still counts as not equal.
+		unknown := false
 		for _, kv := range rv {
-			if valuesEqual(leftVal, kv) {
-				return true, nil
+			r, err := feelEqual(leftVal, kv)
+			if err != nil {
+				continue
 			}
+			switch r {
+			case true:
+				return true, nil
+			case false:
+			default:
+				unknown = true
+			}
+		}
+		if unknown {
+			return null, nil
 		}
 		return false, nil
 	default:

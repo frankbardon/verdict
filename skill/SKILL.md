@@ -284,7 +284,9 @@ opens as an empty canvas.
   `true or null` true, `false or null` null; `not(null)`, `not(0)` and
   `not(5 in ["a".."z"])` are null. That is why `x != null and x > 5` is a safe
   guard — a missing `x` makes it false, not null. `true < false` and the other
-  orderings of two booleans are null; `=` and `!=` still work on them.
+  orderings of two booleans are null; `=` and `!=` still work on them. The same
+  goes wherever an order is needed: `true in [false..true]`,
+  `before(false, true)` and `max([true, false])` are null.
 - **Comparing different kinds is null, not an error.** `1 = "a"`, `1 != "a"`,
   `1 < "a"`, `duration("P1Y") < duration("P1D")`, `5 in ["a".."z"]` and range
   built-ins over mixed kinds (`before(1, "a")`, `coincides(1, "a")`) all yield
@@ -298,6 +300,16 @@ opens as an empty canvas.
   null. `list contains`, `index of`, `union`, `distinct values`,
   `duplicate values` and `in` find list and context elements by value, and a
   `[1, 2]` cell matches a list input equal to it as well as `1` or `2`.
+- **Ranges compare by endpoints and closedness; they have no order.**
+  `[1..2] = [1..2]` is true, `[1..2] = (1..2]` and `[1..2] = [1..3]` false;
+  `[1..2] < [3..4]` is null.
+- **`x in [list]` is `x = e1 or x = e2 or …`, three-valued.** `3 in [1, 2]` is
+  false and `1 in [1, "a"]` true, but `"a" in [1, 2]` is null (each `=` is
+  null), so `not("a" in [1, 2])` is null too. `null in [1, null]` is true.
+- **`min` and `max` need comparable items of one kind.** Numbers, strings,
+  temporals or durations of one kind: `max(3, 1, 2)` is `3`. An empty list, a
+  null item, a mixed list (`min([1, "a"])`) or items with no order (booleans,
+  lists, contexts, ranges) give null — `min([1, null])` is null, not `1`.
 - **A malformed conversion is null; a malformed `@"..."` does not load.**
   `date("nope")`, `time("25:00")`, `date and time("x")`, `number("abc")`,
   `duration("P1Y2D")` (mixes the two duration kinds), `date(null)` and

@@ -265,16 +265,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 		if err != nil {
 			return nil, err
 		}
-		var minValue any = nil
-		for _, entry := range list {
-			if minValue == nil {
-				minValue = entry
-			} else if cmp, err := compareInterfaces(minValue, entry); err == nil && cmp == 1 {
-				// minValue > entry
-				minValue = entry
-			}
-		}
-		return minValue, nil
+		return extremum(list, 1), nil
 	}).Vararg("list"))
 
 	prelude.Bind("max", NewNativeFunc(func(args map[string]any) (any, error) {
@@ -282,16 +273,7 @@ func installBuiltinFunctions(prelude *Prelude) {
 		if err != nil {
 			return nil, err
 		}
-		var maxValue any = nil
-		for _, entry := range list {
-			if maxValue == nil {
-				maxValue = entry
-			} else if cmp, err := compareInterfaces(maxValue, entry); err == nil && cmp == -1 {
-				// maxValue < entry
-				maxValue = entry
-			}
-		}
-		return maxValue, nil
+		return extremum(list, -1), nil
 	}).Vararg("list"))
 
 	prelude.Bind("sum", NewNativeFunc(func(args map[string]any) (any, error) {
@@ -675,4 +657,49 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return joined, nil
 	}).Required("list").Optional("delimiter", "prefix", "suffix"))
 
+}
+
+// extremum is min (replaceWhen 1) or max (replaceWhen -1) over list: the item
+// that the current candidate compares as replaceWhen against replaces it.
+//
+// VERDICT DIVERGENCE: upstream skipped any item compareInterfaces could not
+// order against the current candidate, ordered false below true and a null
+// item above everything, so `min([1, "a"])` and `min([1, null])` were 1,
+// `max([1, null])` null and `max([true, false])` true; a list of lists or
+// contexts returned its first item. DMN 1.5 §10.3.4.4 defines min and max over a list of
+// comparable items, and §10.3.4 makes a built-in given a parameter outside its
+// domain null: so an empty list, an item of an unordered kind (null, boolean,
+// list, context, range, function — Table 54), or two items of different
+// kinds, yields null.
+func extremum(list []any, replaceWhen int) any {
+	if len(list) == 0 {
+		return null
+	}
+	for _, item := range list {
+		if !orderedKind(item) {
+			return null
+		}
+	}
+	best := list[0]
+	for _, item := range list[1:] {
+		cmp, err := compareInterfaces(best, item)
+		if err != nil {
+			return null
+		}
+		if cmp == replaceWhen {
+			best = item
+		}
+	}
+	return best
+}
+
+// orderedKind reports whether v is of a kind DMN 1.5 Table 54 orders: a
+// number, a string, a temporal or a duration.
+func orderedKind(v any) bool {
+	switch v.(type) {
+	case *Number, string, *FEELDuration:
+		return true
+	}
+	_, ok := instantOf(v)
+	return ok
 }
