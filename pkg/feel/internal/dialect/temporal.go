@@ -27,21 +27,26 @@ var ErrUnsupportedTimeZone = errors.New("time zone id not supported")
 // lowercase `z` is read as UTC, as in DMN 1.5 Table 72's own examples
 // (`time("23:59:00z")`), and a string whose local part parses but whose `@`
 // zone id does not is ErrUnsupportedTimeZone rather than ErrParseTemporal.
-func parseZoned(s string, layouts []string, local string) (time.Time, error) {
+//
+// zoned reports whether the string carried a time offset or a zone: every
+// layout but the first, which is the zoneless local form. VERDICT DIVERGENCE:
+// upstream discarded the distinction, so `10:00:00` and `10:00:00Z` were one
+// value; see FEELTime.
+func parseZoned(s string, layouts []string, local string) (t time.Time, zoned bool, err error) {
 	if strings.HasSuffix(s, "z") {
 		s = s[:len(s)-1] + "Z"
 	}
-	for _, pat := range layouts {
+	for i, pat := range layouts {
 		if t, err := time.Parse(pat, s); err == nil {
-			return t, nil
+			return t, i > 0, nil
 		}
 	}
 	if i := strings.LastIndex(s, "@"); i > 0 {
 		if _, err := time.Parse(local, s[:i]); err == nil {
-			return time.Time{}, fmt.Errorf("%w: %s", ErrUnsupportedTimeZone, s[i+1:])
+			return time.Time{}, false, fmt.Errorf("%w: %s", ErrUnsupportedTimeZone, s[i+1:])
 		}
 	}
-	return time.Time{}, ErrParseTemporal
+	return time.Time{}, false, ErrParseTemporal
 }
 
 type HasTime interface {
@@ -52,12 +57,29 @@ type HasDate interface {
 	Date() time.Time
 }
 
+// FEELTime is a FEEL time. A zoneless (local) time keeps its wall clock in t
+// with the UTC location; hasOffset tells it apart from the same wall clock
+// written with `Z`.
+//
+// VERDICT DIVERGENCE: upstream had no hasOffset and read a zoneless time as
+// UTC, so `time("10:00:00") = time("10:00:00Z")` was true and the two printed
+// alike. DMN 1.5 §10.3.2.3.4: a time with an offset, 00:00 included, has a UTC
+// form; one without is a local time of day whose relation to UTC is unknown.
+// The operators use the flag as Tables 53, 54 and 57 require; see
+// mixedZones in eval_binop.go.
 type FEELTime struct {
-	t time.Time
+	t         time.Time
+	hasOffset bool
 }
 
 func (t FEELTime) Time() time.Time {
 	return t.t
+}
+
+// HasOffset reports whether the time has a time offset or zone, rather than
+// being a local time of day.
+func (t FEELTime) HasOffset() bool {
+	return t.hasOffset
 }
 
 // VERDICT DIVERGENCE: Z07:00 (upstream -07:00) also admits the UTC
@@ -69,11 +91,11 @@ var timePatterns = []string{
 }
 
 func ParseTime(temporalStr string) (*FEELTime, error) {
-	t, err := parseZoned(temporalStr, timePatterns, "15:04:05")
+	t, zoned, err := parseZoned(temporalStr, timePatterns, "15:04:05")
 	if err != nil {
 		return nil, err
 	}
-	return &FEELTime{t: t}, nil
+	return &FEELTime{t: t, hasOffset: zoned}, nil
 }
 
 func (t FEELTime) GetAttr(name string) (interface{}, bool) {
@@ -84,21 +106,45 @@ func (t FEELTime) GetAttr(name string) (interface{}, bool) {
 		return t.t.Minute(), true
 	case "second":
 		return t.t.Second(), true
-	case "timezone":
-		zoneName, _ := t.t.Zone()
-		return zoneName, true
-	case "timezone offset":
-		_, offset := t.t.Zone()
-		return offset, true
 	}
-	return nil, false
+	return zoneAttr(t.t, t.hasOffset, name)
+}
+
+// zoneAttr answers the zone properties of a time or a date and time (DMN 1.5
+// §10.3.2.3, the temporal property table). `time offset` is the offset as a
+// days and time duration. VERDICT DIVERGENCE: all three are null for a
+// zoneless value — "returns null when the object does not have a time offset
+// set" — where upstream answered "UTC" and 0, which a zoneless value does not
+// have. Upstream had no `time offset` at all.
+func zoneAttr(t time.Time, hasOffset bool, name string) (any, bool) {
+	switch name {
+	case "time offset", "timezone", "timezone offset":
+	default:
+		return nil, false
+	}
+	if !hasOffset {
+		return null, true
+	}
+	zoneName, offset := t.Zone()
+	switch name {
+	case "time offset":
+		return NewFEELDuration(time.Duration(offset) * time.Second), true
+	case "timezone":
+		return zoneName, true
+	}
+	return offset, true
 }
 
 func (t FEELTime) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.String())
 }
 
+// String prints a zoneless time without an offset (`10:00:00`), so that
+// time(string(t)) is t again.
 func (t FEELTime) String() string {
+	if !t.hasOffset {
+		return t.t.Format("15:04:05")
+	}
 	return t.t.Format("15:04:05-07:00")
 }
 
@@ -143,12 +189,24 @@ func ParseDate(timeStr string) (*FEELDate, error) {
 	return nil, ErrParseTemporal
 }
 
+// FEELDatetime is a FEEL date and time. As for FEELTime, a zoneless value
+// keeps its wall clock in t with the UTC location and hasOffset is false.
+//
+// VERDICT DIVERGENCE: upstream read a zoneless date and time as UTC. DMN 1.5
+// §10.3.2.3.6: one without an offset is a local date and time, which has no
+// UTC form; see FEELTime.
 type FEELDatetime struct {
-	t time.Time
+	t         time.Time
+	hasOffset bool
 }
 
 func (dt FEELDatetime) Time() time.Time {
 	return dt.t
+}
+
+// HasOffset reports whether the date and time has a time offset or zone.
+func (dt FEELDatetime) HasOffset() bool {
+	return dt.hasOffset
 }
 
 func (dt FEELDatetime) Date() time.Time {
@@ -183,21 +241,20 @@ func (dt FEELDatetime) GetAttr(name string) (interface{}, bool) {
 		return dt.t.Minute(), true
 	case "second":
 		return dt.t.Second(), true
-	case "timezone":
-		zoneName, _ := dt.t.Zone()
-		return zoneName, true
-	case "timezone offset":
-		_, offset := dt.t.Zone()
-		return offset, true
 	}
-	return nil, false
+	return zoneAttr(dt.t, dt.hasOffset, name)
 }
 
 func (dt FEELDatetime) MarshalJSON() ([]byte, error) {
 	return json.Marshal(dt.String())
 }
 
+// String prints a zoneless date and time without an offset
+// (`2024-01-01T10:00:00`), so that date and time(string(dt)) is dt again.
 func (dt FEELDatetime) String() string {
+	if !dt.hasOffset {
+		return dt.t.Format("2006-01-02T15:04:05")
+	}
 	return dt.t.Format("2006-01-02T15:04:05@MST")
 }
 
@@ -208,7 +265,8 @@ func (dt FEELDatetime) String() string {
 // P1M was 2026-03-03. The day is now pinned to the last day of the resulting
 // month (2026-02-28), as XPath op:add-yearMonthDuration-to-dateTime does by the
 // XSD 1.1 Part 2 Appendix E algorithm §9.4 names; see NOTICE.md. A days and
-// time duration adds its exact length.
+// time duration adds its exact length. Either way the result keeps the
+// operand's offset, or its lack of one (Table 57 builds it from e1).
 func (dt *FEELDatetime) Add(dur *FEELDuration) *FEELDatetime {
 	if dur.isYearsMonths() {
 		months := dur.signedMonths()
@@ -223,9 +281,10 @@ func (dt *FEELDatetime) Add(dur *FEELDuration) *FEELDatetime {
 				int(year), time.Month(month+1), day,
 				dt.t.Hour(), dt.t.Minute(), dt.t.Second(), dt.t.Nanosecond(),
 				dt.t.Location()),
+			hasOffset: dt.hasOffset,
 		}
 	}
-	return &FEELDatetime{t: dt.t.Add(dur.Duration())}
+	return &FEELDatetime{t: dt.t.Add(dur.Duration()), hasOffset: dt.hasOffset}
 }
 
 // floorDiv is a / b rounded towards negative infinity, for b > 0.
@@ -262,11 +321,11 @@ var dateTimePatterns = []string{
 }
 
 func ParseDatetime(temporalStr string) (*FEELDatetime, error) {
-	t, err := parseZoned(temporalStr, dateTimePatterns, "2006-01-02T15:04:05")
+	t, zoned, err := parseZoned(temporalStr, dateTimePatterns, "2006-01-02T15:04:05")
 	if err != nil {
 		return nil, err
 	}
-	return &FEELDatetime{t: t}, nil
+	return &FEELDatetime{t: t, hasOffset: zoned}, nil
 }
 
 func MustParseDatetime(temporalStr string) *FEELDatetime {
@@ -548,7 +607,8 @@ func (d *FEELDate) utcMidnight() time.Time {
 // AddDuration is time ± days and time duration: valuet⁻¹(valuet(t) +
 // valuedtd(dur)) (DMN 1.5 §10.3.2.15, Table 57), where valuet⁻¹ applies its
 // argument modulo 86400 seconds (§10.3.2.3.4), so the result wraps within the
-// day — 23:00:00 + PT2H is 01:00:00 — and keeps the time's offset. The caller
+// day — 23:00:00 + PT2H is 01:00:00 — and keeps the time's offset, or its
+// lack of one. The caller
 // rules out a years and months duration, which Table 57 does not pair with a
 // time.
 func (tm *FEELTime) AddDuration(dur *FEELDuration) *FEELTime {
@@ -561,7 +621,7 @@ func (tm *FEELTime) AddDuration(dur *FEELDuration) *FEELTime {
 		x += day
 	}
 	midnight := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
-	return &FEELTime{t: midnight.Add(time.Duration(x))}
+	return &FEELTime{t: midnight.Add(time.Duration(x)), hasOffset: tm.hasOffset}
 }
 
 var yearmonthDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)Y)?((\d+)M)?$`)
@@ -747,7 +807,7 @@ func installDatetimeFunctions(prelude *Prelude) {
 
 	// temporal functions
 	prelude.Bind("now", wrapTyped(func() (interface{}, error) {
-		return &FEELDatetime{t: time.Now()}, nil
+		return &FEELDatetime{t: time.Now(), hasOffset: true}, nil
 	}))
 
 	prelude.Bind("today", wrapTyped(func() (interface{}, error) {

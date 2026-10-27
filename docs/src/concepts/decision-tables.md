@@ -69,8 +69,15 @@ matches `"c"` but not `5`.
 
 Equality is FEEL's `=` everywhere a table compares values — equality cells,
 list cells, ANY agreement, PRIORITY and OUTPUT ORDER ranking — so `1` equals
-`1.00`, and two temporals denoting the same instant are equal however they are
-written.
+`1.00`, and two zoned temporals denoting the same instant are equal however
+they are written (`10:00:00+02:00` equals `08:00:00Z`).
+
+A time or date and time without an offset (`10:00:00`) is a local value, not
+UTC (DMN 1.5 §10.3.2.3.4). Against a zoned one (`10:00:00Z`) equality is null,
+so a zoneless input never matches a zoned equality cell. `<` and `>` read the
+zoneless value at the zoned one's offset (Table 54), while `<=`, `>=` and a
+closed range endpoint are true only when the strict comparison is, and null
+otherwise. Supply inputs and write cells with the same zone-ness.
 
 A range with a null endpoint, such as `[null..10]` or `(5..null]`, is not
 "unbounded" — its endpoint comparisons are null, so it matches no input, and

@@ -343,6 +343,18 @@ opens as an empty canvas.
   (`date("2026-01-31") + @"P1M"` is `2026-02-28`; time and offset are kept).
   Whole years and months between dates is `years and months duration(a, b)`,
   not `b - a` — and it counts by day of month, so Jan 31 to Feb 28 is `P0M`.
+- **Zoneless and zoned temporals are different values.** `time("10:00:00")`
+  (no offset: a local time) is not `time("10:00:00Z")`. Two zoned values
+  compare by instant (`10:00:00+02:00 = 08:00:00Z` is true); two zoneless ones
+  by wall clock. Mixed: `=` and `!=` are **null**; `<`/`>` read the zoneless
+  one at the other's offset (`10:00:00 < 11:00:00Z` true, `10:00:00 <
+  10:00:00Z` false); `<=`/`>=` are true when `<`/`>` is and otherwise **null**
+  (`10:00:00 <= 10:00:00Z` is null), and so is a closed range endpoint;
+  `date and time - date and time` and `time - time` are null. A date takes the
+  zone-ness of the date and time it meets. `+`/`- duration` keeps the operand's
+  zone-ness. `.time offset` (a duration) and `.timezone` are null for a zoneless
+  value, and `string()` omits the offset (`"10:00:00"`). In a decision table a
+  zoneless input never equals a zoned cell — write inputs and cells the same way.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration

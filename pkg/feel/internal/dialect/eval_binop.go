@@ -141,6 +141,7 @@ func compareInterfaces(leftVal, rightVal any) (int, error) {
 	// without it.
 	if leftTime, ok := instantOf(leftVal); ok {
 		if rightTime, ok := instantOf(rightVal); ok {
+			leftTime, rightTime = adoptOffset(leftVal, rightVal, leftTime, rightTime)
 			switch {
 			case leftTime.Equal(rightTime):
 				return 0, nil
@@ -219,6 +220,70 @@ func instantOf(v any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// zoneness reports whether v is a time or a date and time (ok) and, if so,
+// whether it has a time offset or zone. A date has no zone-ness of its own: it
+// adopts the other operand's (see mixedZones).
+func zoneness(v any) (zoned, ok bool) {
+	switch t := v.(type) {
+	case *FEELTime:
+		return t.hasOffset, true
+	case FEELTime:
+		return t.hasOffset, true
+	case *FEELDatetime:
+		return t.hasOffset, true
+	case FEELDatetime:
+		return t.hasOffset, true
+	}
+	return false, false
+}
+
+// mixedZones reports whether a and b are times or date and times of which
+// exactly one has a time offset: a zoned value against a zoneless (local) one.
+//
+// VERDICT DIVERGENCE: upstream read a zoneless value as UTC, so the case could
+// not arise. DMN 1.5 §10.3.2.3.4 and §10.3.2.3.6 give only a zoned value a UTC
+// form, and the operators treat the mixture specially:
+//
+//   - `=` (Table 53) compares valuedt/valuet, which a local value lacks, so a
+//     mixed `=` is null and so is `!=`;
+//   - `<` and `>` (Table 54): "If one input has a null timezone offset, that
+//     input uses the timezone offset of the other input" (adoptOffset);
+//   - `<=` and `>=` are `e1 < e2 or e1 = e2` (Table 54), so a mixed one is
+//     true when the strict comparison is and null otherwise;
+//   - date and time - date and time (Table 57) "is undefined for the case
+//     where only one of the values has a timezone", so it is null; Verdict
+//     reads time - time the same way, which Table 57 does not state (NOTICE).
+//
+// A date meeting a date and time stands for its UTC midnight (§10.3.2.3.5)
+// but takes the date and time's zone-ness, so it is never mixed; that too is
+// an interpretation recorded in NOTICE.md.
+func mixedZones(a, b any) bool {
+	za, aok := zoneness(a)
+	zb, bok := zoneness(b)
+	return aok && bok && za != zb
+}
+
+// adoptOffset re-reads the wall clock of the zoneless one of two mixed
+// operands at the zoned one's offset (DMN 1.5 Table 54), and returns both
+// instants. For operands that are not mixed it returns them unchanged.
+func adoptOffset(a, b any, at, bt time.Time) (time.Time, time.Time) {
+	if !mixedZones(a, b) {
+		return at, bt
+	}
+	if za, _ := zoneness(a); za {
+		return at, atOffsetOf(bt, at)
+	}
+	return atOffsetOf(at, bt), bt
+}
+
+// atOffsetOf is local's wall clock at zoned's time offset.
+func atOffsetOf(local, zoned time.Time) time.Time {
+	_, offset := zoned.Zone()
+	return time.Date(local.Year(), local.Month(), local.Day(),
+		local.Hour(), local.Minute(), local.Second(), local.Nanosecond(),
+		time.FixedZone("", offset))
+}
+
 // codeUnordered is the EvalError code compareInterfaces reports for two lists,
 // two contexts, two booleans or two ranges: values of one kind that FEEL
 // defines equality over but no order (DMN 1.5 Table 54 lists no `<` for any of
@@ -250,6 +315,9 @@ func isUnordered(err error) bool {
 //   - two ranges are equal when both closednesses are the same and both pairs
 //     of endpoints are `=`, again three-valued over the endpoint pairs;
 //   - operands of different kinds are null (§10.3.2.2: `"1" = 1` is null);
+//   - a zoned and a zoneless time or date and time are null (Table 53; see
+//     mixedZones), while two zoned values are equal when they denote the
+//     same instant, whatever their offsets;
 //   - anything else is compareInterfaces' verdict.
 //
 // VERDICT DIVERGENCE: upstream compared lists through an ordering that never
@@ -347,6 +415,9 @@ func feelEqual(a, b any) (any, error) {
 		}
 		return true, nil
 	}
+	if mixedZones(a, b) {
+		return null, nil
+	}
 	r, err := compareInterfaces(a, b)
 	if err != nil {
 		if isIncomparable(err) {
@@ -427,7 +498,10 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 			}
 			return v.Add(r), nil
 		case *FEELDatetime:
-			if op == "-" {
+			// VERDICT DIVERGENCE: a zoned minus a zoneless value is null
+			// (Table 57: "undefined for the case where only one of the values
+			// has a timezone"). A date takes the other operand's zone-ness.
+			if op == "-" && !mixedZones(v, r) {
 				return subInstants(v.t, r.t)
 			}
 		case *FEELDate:
@@ -497,7 +571,9 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 				return v.AddDuration(r), nil
 			}
 		case *FEELTime:
-			if op == "-" {
+			// VERDICT DIVERGENCE: null when one time is zoned and the other
+			// not, as for date and times; see mixedZones.
+			if op == "-" && !mixedZones(v, r) {
 				return subInstants(v.t, r.t)
 			}
 		}
@@ -600,7 +676,12 @@ func (n Negation) Eval(intp *Interpreter) (any, error) {
 // boolean: there is no answer to whether an absent value is smaller.
 // Equality keeps compareInterfaces' treatment, because `null = null` is true
 // and `2 = null` is false in the spec too.
-func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool) (any, error) {
+//
+// orEqual marks `<=` and `>=`, which Table 54 defines as `e1 < e2 or e1 = e2`.
+// For a zoned and a zoneless operand `=` is null (see mixedZones), so the
+// three-valued `or` is true when the strict comparison holds and null
+// otherwise: `time("10:00:00") <= time("10:00:00Z")` is null.
+func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool, orEqual bool) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
 		return false, err
@@ -624,6 +705,12 @@ func (binop Binop) orderingOp(intp *Interpreter, holds func(r int) bool) (any, e
 		}
 		return false, err
 	}
+	if orEqual && mixedZones(leftVal, rightVal) {
+		if r != 0 && holds(r) {
+			return true, nil
+		}
+		return null, nil
+	}
 	return holds(r), nil
 }
 
@@ -636,19 +723,19 @@ func isNullValue(v any) bool {
 }
 
 func (binop Binop) compareGTOp(intp *Interpreter) (any, error) {
-	return binop.orderingOp(intp, func(r int) bool { return r > 0 })
+	return binop.orderingOp(intp, func(r int) bool { return r > 0 }, false)
 }
 
 func (binop Binop) compareGEOp(intp *Interpreter) (any, error) {
-	return binop.orderingOp(intp, func(r int) bool { return r >= 0 })
+	return binop.orderingOp(intp, func(r int) bool { return r >= 0 }, true)
 }
 
 func (binop Binop) compareLTOp(intp *Interpreter) (any, error) {
-	return binop.orderingOp(intp, func(r int) bool { return r < 0 })
+	return binop.orderingOp(intp, func(r int) bool { return r < 0 }, false)
 }
 
 func (binop Binop) compareLEOp(intp *Interpreter) (any, error) {
-	return binop.orderingOp(intp, func(r int) bool { return r <= 0 })
+	return binop.orderingOp(intp, func(r int) bool { return r <= 0 }, true)
 }
 
 // equalOp implements FEEL's `=` through feelEqual: operands of different kinds
@@ -798,6 +885,33 @@ func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {
 	}
 }
 
+// inZonedRange is `e in range` when e is a zoned time or date and time and an
+// endpoint a zoneless one, or the reverse. Table 49 makes `e in [a..b]` the
+// conjunction `e >= a and e <= b` (`>`/`<` for an open end), so a closed end
+// is the three-valued `>=`/`<=` of orderingOp and an open one the plain `>`/`<`
+// with the other operand's offset adopted; the two fold with `and` (Table 51).
+func inZonedRange(e any, rv *RangeValue) any {
+	bound := func(end any, open bool, sign int) any {
+		r, err := compareInterfaces(e, end)
+		if err != nil {
+			return null
+		}
+		strict := r*sign > 0
+		if open || strict || !mixedZones(e, end) {
+			return strict || (!open && r == 0)
+		}
+		return null
+	}
+	lo, hi := bound(rv.Start, rv.StartOpen, 1), bound(rv.End, rv.EndOpen, -1)
+	if lo == false || hi == false {
+		return false
+	}
+	if lo == true && hi == true {
+		return true
+	}
+	return null
+}
+
 func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
@@ -839,6 +953,9 @@ func In(leftVal, rightVal any) (any, error) {
 				return null, nil
 			}
 			return nil, err
+		}
+		if mixedZones(leftVal, rv.Start) || mixedZones(leftVal, rv.End) {
+			return inZonedRange(leftVal, rv), nil
 		}
 		return rv.Contains(leftVal), nil
 	case []any:

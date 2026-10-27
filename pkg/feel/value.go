@@ -262,6 +262,12 @@ func Compare(a, b any) (int, bool) {
 			return 1, true
 		}
 	}
+	if IsTemporal(a) && IsTemporal(b) {
+		// The fork's ordering, so that a zoneless time or date and time
+		// against a zoned one adopts the zoned one's offset as `<` does
+		// (DMN 1.5 Table 54). Two FEEL temporals always order there.
+		return pfeel.CompareValues(a, b), true
+	}
 	at, aok := timeOf(a)
 	bt, bok := timeOf(b)
 	if aok && bok {

@@ -355,3 +355,22 @@ func TestInjectedClockDrivesTheTemporalBuiltins(t *testing.T) {
 		t.Error("today() did not return a date without an injected clock")
 	}
 }
+
+func TestTemporalZoneProperties(t *testing.T) {
+	// DMN 1.5 §10.3.2.3 temporal properties: `time offset` is a days and
+	// time duration, null for a zoneless value.
+	e := newFEEL(t)
+	cases := map[string]any{
+		`string(time("10:00:00+02:00").time offset)`:                     "PT2H",
+		`string(date and time("2024-01-01T10:00:00Z").time offset)`:      "PT0S",
+		`time("10:00:00").time offset`:                                   nil,
+		`date and time("2024-01-01T10:00:00").time offset`:               nil,
+		`date and time("2024-01-01T10:00:00").timezone offset`:           nil,
+		`string(date and time("2024-01-01T10:00:00-05:30").time offset)`: "-PT5H30M",
+	}
+	for expr, want := range cases {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("%s = %#v, want %#v", expr, got, want)
+		}
+	}
+}

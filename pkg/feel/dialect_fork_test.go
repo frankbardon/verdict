@@ -1055,8 +1055,8 @@ func TestForkedDefects(t *testing.T) {
 			`string(date("2026-01-01") - duration("P1D"))`:                    "2025-12-31",
 			`string(date("2026-01-01") + duration("PT23H"))`:                  "2026-01-01",
 			`string(date("2026-01-15") + duration("P1Y2M"))`:                  "2027-03-15",
-			`string(date and time("2026-01-01T00:00:00") + @"P1DT1H")`:        "2026-01-02T01:00:00@UTC",
-			`string(date and time("2026-01-01T00:00:00") - duration("-P2D"))`: "2026-01-03T00:00:00@UTC",
+			`string(date and time("2026-01-01T00:00:00") + @"P1DT1H")`:        "2026-01-02T01:00:00",
+			`string(date and time("2026-01-01T00:00:00") - duration("-P2D"))`: "2026-01-03T00:00:00",
 		}
 		for expr, want := range strs {
 			if got := mustEval(t, e, expr, nil); got != want {
@@ -1204,11 +1204,11 @@ func TestForkedDefects(t *testing.T) {
 			`string(time("10:00:00") - time("10:00:00"))`:        "PT0S",
 			`string(time("10:00:00+02:00") - time("08:00:00Z"))`: "PT0S",
 			// date and time ± years and months duration, and commuted.
-			`string(date and time("2026-01-15T10:00:00") + duration("P1Y2M"))`: "2027-03-15T10:00:00@UTC",
-			`string(date and time("2026-01-15T10:00:00") - duration("P1M"))`:   "2025-12-15T10:00:00@UTC",
-			`string(duration("P1Y") + date and time("2026-01-01T10:00:00"))`:   "2027-01-01T10:00:00@UTC",
+			`string(date and time("2026-01-15T10:00:00") + duration("P1Y2M"))`: "2027-03-15T10:00:00",
+			`string(date and time("2026-01-15T10:00:00") - duration("P1M"))`:   "2025-12-15T10:00:00",
+			`string(duration("P1Y") + date and time("2026-01-01T10:00:00"))`:   "2027-01-01T10:00:00",
 			// date and time ± days and time duration, and commuted.
-			`string(duration("P1DT1H") + date and time("2026-01-01T00:00:00"))`: "2026-01-02T01:00:00@UTC",
+			`string(duration("P1DT1H") + date and time("2026-01-01T00:00:00"))`: "2026-01-02T01:00:00",
 			// time ± days and time duration wraps within the day, and commutes.
 			`string(time("10:00:00+02:00") + duration("PT1H"))`: "11:00:00+02:00",
 			`string(time("23:00:00Z") + duration("PT2H"))`:      "01:00:00+00:00",
@@ -1297,7 +1297,7 @@ func TestForkedDefects(t *testing.T) {
 			`string(date("2026-08-31") + duration("P1M"))`:   "2026-09-30",
 			`string(date("2026-01-31") - duration("P2M"))`:   "2025-11-30",
 			// A date and time keeps its time of day and its zone or offset.
-			`string(date and time("2026-01-31T10:30:15") + duration("P1M"))`: "2026-02-28T10:30:15@UTC",
+			`string(date and time("2026-01-31T10:30:15") + duration("P1M"))`: "2026-02-28T10:30:15",
 		}
 		for expr, want := range strs {
 			if got := mustEval(t, e, expr, nil); got != want {
@@ -1652,6 +1652,133 @@ func TestForkedDefects(t *testing.T) {
 		} {
 			if got := mustEval(t, e, expr, nil); got != nil {
 				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+	})
+
+	t.Run("zoned and zoneless times and date and times are distinct values", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.3.4 and §10.3.2.3.6: only a value with a time offset
+		// has a UTC form. Table 53 (`=`) is defined on UTC forms, so a zoned
+		// against a zoneless value is null; Table 54 (`<`, `>`) has the
+		// zoneless one adopt the other's offset, and makes `<=` `< or =`;
+		// Table 57 leaves a mixed subtraction undefined. Each case failed on
+		// upstream v1.0.6, which read a zoneless value as UTC.
+		cases := map[string]any{
+			// = and != (rule 2)
+			`time("10:00:00") = time("10:00:00Z")`:                                               nil,
+			`time("10:00:00") != time("10:00:00Z")`:                                              nil,
+			`@"10:00:00" = @"10:00:00Z"`:                                                         nil,
+			`time("10:00:00") = time("10:00:00")`:                                                true,
+			`time("10:00:00+02:00") = time("08:00:00Z")`:                                         true,
+			`time("10:00:00+02:00") != time("08:00:00Z")`:                                        false,
+			`date and time("2024-01-01T10:00:00") = date and time("2024-01-01T10:00:00Z")`:       nil,
+			`date and time("2024-01-01T10:00:00") != date and time("2024-01-01T10:00:00Z")`:      nil,
+			`date and time("2024-01-01T10:00:00+02:00") = date and time("2024-01-01T08:00:00Z")`: true,
+			`date and time("2024-01-01T10:00:00") = date and time("2024-01-01T10:00:00")`:        true,
+			`[time("10:00:00")] = [time("10:00:00Z")]`:                                           nil,
+			`time("10:00:00") in [time("10:00:00Z")]`:                                            nil,
+			// < and > adopt the zoned operand's offset (rule 3)
+			`time("10:00:00") < time("11:00:00Z")`:                                              true,
+			`time("10:00:00") < time("10:00:00Z")`:                                              false,
+			`time("10:00:00") > time("10:00:00Z")`:                                              false,
+			`time("10:00:00") < time("11:00:00+02:00")`:                                         true,
+			`time("11:00:00+02:00") > time("10:00:00")`:                                         true,
+			`date and time("2024-01-01T10:00:00") < date and time("2024-01-01T09:00:00-02:00")`: false,
+			`date and time("2024-01-01T10:00:00") > date and time("2024-01-01T09:00:00-02:00")`: true,
+			// <= and >= are `< or =`, so true or null when mixed (rule 4)
+			`time("10:00:00") <= time("10:00:00Z")`:                                         nil,
+			`time("10:00:00") >= time("10:00:00Z")`:                                         nil,
+			`time("10:00:00") <= time("11:00:00Z")`:                                         true,
+			`time("12:00:00") <= time("11:00:00Z")`:                                         nil,
+			`time("10:00:00") >= time("09:00:00Z")`:                                         true,
+			`date and time("2024-01-01T10:00:00") <= date and time("2024-01-01T10:00:00Z")`: nil,
+			`time("10:00:00") <= time("10:00:00")`:                                          true,
+			`time("10:00:00+02:00") <= time("08:00:00Z")`:                                   true,
+			// Range membership is `>=`/`<=` (Table 49) and inherits them
+			`time("10:00:00") in [time("09:00:00Z")..time("11:00:00Z")]`: true,
+			`time("10:00:00") in [time("10:00:00Z")..time("11:00:00Z")]`: nil,
+			`time("10:00:00") in (time("10:00:00Z")..time("11:00:00Z")]`: false,
+			`time("08:00:00") in [time("09:00:00Z")..time("11:00:00Z")]`: nil,
+			`time("10:00:00Z") in [time("09:00:00")..time("11:00:00")]`:  true,
+			// - between two date and times or two times (rule 5)
+			`date and time("2024-01-01T10:00:00") - date and time("2024-01-01T08:00:00Z")`:               nil,
+			`date and time("2024-01-01T10:00:00Z") - date and time("2024-01-01T08:00:00")`:               nil,
+			`time("10:00:00") - time("08:00:00Z")`:                                                       nil,
+			`time("10:00:00Z") - time("08:00:00")`:                                                       nil,
+			`string(date and time("2024-01-01T10:00:00+02:00") - date and time("2024-01-01T07:00:00Z"))`: "PT1H",
+			`string(date and time("2024-01-01T10:00:00") - date and time("2024-01-01T07:00:00"))`:        "PT3H",
+			`string(time("10:00:00+02:00") - time("07:00:00Z"))`:                                         "PT1H",
+			`string(time("10:00:00") - time("07:00:00"))`:                                                "PT3H",
+			// + and - duration keep zone-ness and offset (rule 6)
+			`string(date and time("2024-01-01T10:00:00") + duration("PT1H"))`:                                 "2024-01-01T11:00:00",
+			`date and time("2024-01-01T10:00:00") + duration("PT1H") = date and time("2024-01-01T11:00:00")`:  true,
+			`date and time("2024-01-01T10:00:00") + duration("PT1H") = date and time("2024-01-01T11:00:00Z")`: nil,
+			`date and time("2024-01-01T10:00:00") + duration("P1M") = date and time("2024-02-01T10:00:00Z")`:  nil,
+			`(date and time("2024-01-01T10:00:00+02:00") + duration("P1M")).time offset = duration("PT2H")`:   true,
+			`string(time("23:00:00") + duration("PT2H"))`:                                                     "01:00:00",
+			`time("23:00:00") + duration("PT2H") = time("01:00:00Z")`:                                         nil,
+			`(time("23:00:00+02:00") - duration("PT2H")).time offset = duration("PT2H")`:                      true,
+			// time offset, timezone and string() (rule 7)
+			`time("10:00:00").time offset`:                                                                         nil,
+			`time("10:00:00").timezone`:                                                                            nil,
+			`date and time("2024-01-01T10:00:00").time offset`:                                                     nil,
+			`date and time("2024-01-01T10:00:00").timezone`:                                                        nil,
+			`time("10:00:00Z").time offset = duration("PT0S")`:                                                     true,
+			`date and time("2024-01-01T10:00:00-05:00").time offset = duration("-PT5H")`:                           true,
+			`string(time("10:00:00"))`:                                                                             "10:00:00",
+			`string(date and time("2024-01-01T10:00:00"))`:                                                         "2024-01-01T10:00:00",
+			`time(string(time("10:00:00"))) = time("10:00:00")`:                                                    true,
+			`date and time(string(date and time("2024-01-01T10:00:00"))) = date and time("2024-01-01T10:00:00")`:   true,
+			`date and time(string(date and time("2024-01-01T10:00:00Z"))) = date and time("2024-01-01T10:00:00Z")`: true,
+			// A date takes the zone-ness of the date and time it meets
+			`date("2024-01-01") = date and time("2024-01-01T00:00:00")`:          true,
+			`date("2024-01-01") = date and time("2024-01-01T00:00:00Z")`:         true,
+			`date("2024-01-01") = date and time("2024-01-01T00:00:00+02:00")`:    false,
+			`string(date and time("2024-01-02T06:00:00Z") - date("2024-01-01"))`: "P1DT6H",
+			`string(date("2024-01-02") - date and time("2024-01-01T18:00:00Z"))`: "PT6H",
+			// min and max order as `<` does
+			`max(time("10:00:00"), time("11:00:00Z")) = time("11:00:00Z")`: true,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("zoned and zoneless values in the Go-side comparisons and unary tests", func(t *testing.T) {
+		// feel.Equal and the unary-test layer derive from the fork's `=`, and
+		// feel.Compare from its `<`, so decision tables, the ANY hit policy
+		// and COLLECT MIN/MAX follow the same zone rules.
+		local, _ := ParseTemporal("10:00:00", "time")
+		utc, _ := ParseTemporal("10:00:00Z", "time")
+		later, _ := ParseTemporal("11:00:00Z", "time")
+		if Equal(local, utc) {
+			t.Errorf("Equal(10:00:00, 10:00:00Z) = true, want false (null)")
+		}
+		if r, ok := Compare(local, later); !ok || r >= 0 {
+			t.Errorf("Compare(10:00:00, 11:00:00Z) = %d, %v; want -1, true", r, ok)
+		}
+		c := NewCompiler(FEEL)
+		for src, want := range map[string]bool{
+			`time("10:00:00Z")`:                      false,
+			`time("10:00:00")`:                       true,
+			`< time("11:00:00Z")`:                    true,
+			`<= time("10:00:00Z")`:                   false,
+			`[time("10:00:00Z")..time("11:00:00Z")]`: false,
+			`(time("09:00:00Z")..time("11:00:00Z"))`: true,
+		} {
+			ut, err := c.CompileUnaryTest(src)
+			if err != nil {
+				t.Fatalf("%s does not compile: %v", src, err)
+			}
+			got, err := e.EvalUnaryTest(ut, local, nil)
+			if err != nil {
+				t.Errorf("%s against 10:00:00: %v", src, err)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s matched 10:00:00 = %v, want %v", src, got, want)
 			}
 		}
 	})
