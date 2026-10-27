@@ -205,7 +205,7 @@ func TestSFEELModelRejectsLevel3Constructs(t *testing.T) {
 	}
 }
 
-// TestArithmeticOnAMissingInputIsNull checks DMN 1.5 §10.3.2 at the engine
+// TestArithmeticOnAMissingInputIsNull checks DMN 1.5 §10.3.2.15 at the engine
 // level: `A + B` with B not supplied is null — an absent answer flagged by
 // VERDICT_EVAL_004 — not a VERDICT_EVAL_005 expression failure.
 func TestArithmeticOnAMissingInputIsNull(t *testing.T) {

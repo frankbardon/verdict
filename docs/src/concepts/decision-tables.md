@@ -45,7 +45,7 @@ people out; it is DMN 1.5 §8.3.
 the shorthand forms.
 
 A null input matches no comparison or range: `< 10` and `[1..10]` against null
-yield null (DMN 1.5 §10.3.2), which is "not satisfied" — and `not(< 10)` and
+yield null (DMN 1.5 §10.3.2.15), which is "not satisfied" — and `not(< 10)` and
 `not([1..10])` are null too, so they do not match either. Test for a missing
 value with an explicit `null` entry.
 

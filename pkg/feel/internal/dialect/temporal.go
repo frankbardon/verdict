@@ -358,7 +358,7 @@ func compareDurations(a, b *FEELDuration) (r int, ok bool) {
 	return 0, true
 }
 
-// AddDuration is date + duration. DMN 1.5 §10.3.2.3 (addition of a date and a
+// AddDuration is date + duration. DMN 1.5 §10.3.2.15 (Table 56, addition of a date and a
 // duration) evaluates it as the date of date and time(date, midnight) +
 // duration, so a days-and-time duration moves whole days and drops any
 // remainder of a day, and a years-and-months duration moves calendar months.

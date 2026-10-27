@@ -9,7 +9,7 @@ type RangeValue struct {
 }
 
 // HasNullEndpoint reports whether either endpoint is null. A literal such as
-// `[null..10]` has no defined start, and DMN 1.5 §10.3.2 makes every ordering
+// `[null..10]` has no defined start, and DMN 1.5 §10.3.2.15 makes every ordering
 // comparison against it null, so membership in it, and every range built-in
 // over it, is null rather than an answer computed from upstream's ordering of
 // null below every value. The fork builds ranges only from range literals
@@ -21,7 +21,7 @@ func (rv RangeValue) HasNullEndpoint() bool {
 
 // nullOnNullOperand makes a range built-in yield null when its `a` or `b`
 // argument is null, or is a range with a null endpoint (see HasNullEndpoint).
-// DMN 1.5 §10.3.4 defines each range function by ordering comparisons between
+// DMN 1.5 §10.3.4.7 defines each range function by ordering comparisons between
 // points and endpoints, and says a built-in given a parameter outside its
 // domain yields null; null is not a point. Upstream ordered null below every
 // value, so `before(null, [1..10])` was false and `includes([1..10], null)`
@@ -384,7 +384,7 @@ func installRangeFunctions(p *Prelude) {
 	// coincides dispatches on the argument types rather than decoding them
 	// into range structs: upstream's mapstructure decode turned a number (a
 	// struct) into a zero RangeValue, so `coincides(1, 1)` compared two nil
-	// endpoints and raised a type mismatch. DMN 1.5 §10.3.4 defines two
+	// endpoints and raised a type mismatch. DMN 1.5 §10.3.4.7 defines two
 	// signatures, (point, point) as `point1 = point2` and (range, range) as
 	// equal endpoints and equal closedness; a point paired with a range is
 	// outside both and yields null.

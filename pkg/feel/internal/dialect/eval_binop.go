@@ -66,7 +66,7 @@ func (binop Binop) numberOp(intp *Interpreter, en evalNumbers, op string) (any, 
 		}
 	}
 	// VERDICT DIVERGENCE: a null operand, or a pair of types the operator is
-	// not defined over, is null rather than an error (DMN 1.5 §10.3.2). See
+	// not defined over, is null rather than an error (DMN 1.5 §10.3.2.15). See
 	// the comment on typedOp.
 	return null, nil
 }
@@ -225,7 +225,7 @@ func (binop Binop) compareValues(intp *Interpreter) (int, error) {
 // VERDICT DIVERGENCE: upstream raised a type mismatch when an operand was null
 // or when the operand types had no defined sum or difference, so `1 + null`
 // failed the whole evaluation; and it concatenated a string with a number, so
-// `1 + "a"` was "1a". DMN 1.5 §10.3.2 defines arithmetic only over the type
+// `1 + "a"` was "1a". DMN 1.5 §10.3.2.15 defines arithmetic only over the type
 // pairs its semantic tables list — numbers, two strings for `+`, and the
 // temporal/duration combinations — and every other combination, a null
 // operand included, is null. A missing input in `a + b` is an absent answer,
@@ -325,7 +325,7 @@ func (binop Binop) divOp(intp *Interpreter) (any, error) {
 // An integer exponent is computed exactly at the evaluator's working precision
 // by repeated squaring; any other exponent goes through float64. A result that
 // is not a finite number — `0 ** -1`, `(-8) ** 0.5`, an overflow — is null, as
-// division by zero is (DMN 1.5 §10.3.2).
+// division by zero is (DMN 1.5 §10.3.2.15).
 func (binop Binop) powOp(intp *Interpreter) (any, error) {
 	return binop.numberOp(
 		intp,
@@ -340,7 +340,7 @@ func (binop Binop) powOp(intp *Interpreter) (any, error) {
 
 // Negation implements FEEL's unary `-`, which upstream did not parse: a
 // leading minus was only ever part of a numeric literal, so `-x` and `-(a + b)`
-// were syntax errors. DMN 1.5 §10.3.2 defines negation over numbers and
+// were syntax errors. DMN 1.5 §10.3.2.15 defines negation over numbers and
 // durations; anything else, null included, is null.
 type Negation struct {
 	Operand Node
@@ -369,7 +369,7 @@ func (n Negation) Eval(intp *Interpreter) (any, error) {
 //
 // Upstream routed them through compareInterfaces, which orders null below every
 // other value, so `2 < null` and `null >= null` evaluated to true. DMN 1.5
-// §10.3.2 makes an ordering comparison with a null operand null, not a
+// §10.3.2.15 makes an ordering comparison with a null operand null, not a
 // boolean: there is no answer to whether an absent value is smaller.
 // Equality keeps compareInterfaces' treatment, because `null = null` is true
 // and `2 = null` is false in the spec too.
@@ -532,7 +532,7 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	switch rv := rightVal.(type) {
 	case *RangeValue:
 		// Range membership is the conjunction of the endpoint comparisons, and
-		// DMN 1.5 §10.3.2 makes an ordering comparison with a null operand
+		// DMN 1.5 §10.3.2.15 makes an ordering comparison with a null operand
 		// null. Upstream ordered null below every value, so `null in [1..10]`
 		// was false and `not(null in [1..10])` was true.
 		// A null endpoint (`[null..10]`) is the same unknown on the range's

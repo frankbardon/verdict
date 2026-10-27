@@ -428,7 +428,7 @@ func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 				intp.Pop()
 				return nil, nil
 			}
-			// DMN 1.5 FEEL grammar rule 46 and §10.3.2.14: several
+			// DMN 1.5 FEEL grammar rule 44 and §10.3.2.14: several
 			// iteration contexts range over their cartesian product and
 			// yield one flat list. Only the inner context's own list is
 			// spliced; the body's result is never flattened.
@@ -444,7 +444,7 @@ func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 
 // iterationDomain turns the evaluated domain of one iteration context of a
 // for, some or every into the list it iterates. DMN 1.5 implicit conversion
-// to a singleton list (§10.3.2.9): a single value where a list is expected is
+// to a singleton list (§10.3.2.9.4): a single value where a list is expected is
 // the one-element list holding it, so a null domain is [null], not an error,
 // and the body or condition decides what an absent value means. A range value
 // such as [1..3] is not a list and is wrapped likewise. ok is false only for
@@ -460,8 +460,8 @@ func iterationDomain(listExpr Node, listLike any) (list []any, ok bool) {
 	return []any{listLike}, true
 }
 
-// Quantified expressions yield a boolean, DMN 1.5 FEEL grammar rule 58 and
-// §10.3.2.13: `some` is true if the condition is true for any element,
+// Quantified expressions yield a boolean, DMN 1.5 FEEL grammar rule 46 and
+// §10.3.2.15: `some` is true if the condition is true for any element,
 // `every` is true if it is true for all of them, and both fold a null or
 // non-boolean condition into a null result when no element decides the
 // answer outright. Upstream returned the first matching element from `some`

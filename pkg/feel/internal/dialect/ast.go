@@ -339,7 +339,7 @@ func (fe ForExpr) Repr() string {
 }
 
 // IterationRange is the integer-range form of an iteration context,
-// `name in Start .. End`, DMN 1.5 FEEL grammar rule 47. It is only ever the
+// `name in Start .. End`, DMN 1.5 FEEL grammar rule 63. It is only ever the
 // ListExpr of a ForExpr, SomeExpr or EveryExpr; a bare `a..b` is not an
 // expression anywhere else.
 type IterationRange struct {

@@ -78,7 +78,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("every interval bracket form parses", func(t *testing.T) {
-		// DMN 1.5 §10.3.1.7: `]` opens an exclusive interval and `[` closes
+		// DMN 1.5 §10.3.1.2 (grammar rules 9, 11): `]` opens an exclusive interval and `[` closes
 		// one, alongside the parenthesis spellings. Upstream accepted only
 		// `(a..b)`, `[a..b]`, `(a..b]` and `[a..b)`, so a table written in a
 		// modeller that emits the bracket forms failed to load.
@@ -149,7 +149,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("ordering comparison with null is null", func(t *testing.T) {
-		// DMN 1.5 §10.3.2: `<`, `<=`, `>` and `>=` with a null operand yield
+		// DMN 1.5 §10.3.2.15: `<`, `<=`, `>` and `>=` with a null operand yield
 		// null. Upstream ordered null below every value, so `2 < null` was
 		// true (issue #15).
 		for _, expr := range []string{
@@ -200,7 +200,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("quantified expressions yield a boolean", func(t *testing.T) {
-		// DMN 1.5 FEEL grammar rule 58: `some` and `every` yield true, false
+		// DMN 1.5 FEEL grammar rule 46: `some` and `every` yield true, false
 		// or null. Upstream returned the first match from `some` and the list
 		// of matches from `every` (issue #14).
 		cases := []struct {
@@ -239,7 +239,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("quantified expressions accept several iteration contexts", func(t *testing.T) {
-		// DMN 1.5 FEEL grammar rule 58: a comma-separated list of iteration
+		// DMN 1.5 FEEL grammar rule 46: a comma-separated list of iteration
 		// contexts ranges over the cartesian product, and a later context may
 		// reference an earlier name. Upstream parsed a single context only.
 		cases := []struct {
@@ -278,7 +278,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("for with several iteration contexts yields one flat list", func(t *testing.T) {
-		// DMN 1.5 FEEL grammar rule 46 and §10.3.2.14: the contexts range over
+		// DMN 1.5 FEEL grammar rule 44 and §10.3.2.14: the contexts range over
 		// their cartesian product, a later context may reference an earlier
 		// name, and the result is one list. Upstream nested a list per outer
 		// element. The body's own list result is never flattened.
@@ -337,7 +337,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("a for over a non-list iterates the singleton list", func(t *testing.T) {
-		// DMN 1.5 implicit conversion (§10.3.2.9), as for quantifiers: a single
+		// DMN 1.5 implicit conversion (§10.3.2.9.4), as for quantifiers: a single
 		// value where a list is expected is the one-element list holding it.
 		// Upstream raised a type mismatch. Null is the singleton [null], and a
 		// range value is wrapped, not iterated; `1..3` still iterates.
@@ -365,11 +365,11 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("an iteration context iterates an integer range", func(t *testing.T) {
-		// DMN 1.5 FEEL grammar rule 47 and §10.3.2.14: `name in a..b` iterates
+		// DMN 1.5 FEEL grammar rule 63 and §10.3.2.14: `name in a..b` iterates
 		// the integers from a to b inclusive, descending when b < a. Upstream
 		// rejected the `..` at parse time. Non-integer endpoints are outside
 		// the semantic domain and make the whole expression null. The fork
-		// also admits the form in some/every, where rule 58 has a plain
+		// also admits the form in some/every, where rule 46 has a plain
 		// expression.
 		lists := map[string]string{
 			"for i in 1..3 return i":                     "[1 2 3]",
@@ -480,7 +480,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("range membership with null is null", func(t *testing.T) {
-		// DMN 1.5 §10.3.2: membership is the endpoint comparisons, each null
+		// DMN 1.5 §10.3.2.15: membership is the endpoint comparisons, each null
 		// for a null operand. Upstream ordered null below the start, so
 		// `null in [1..10]` was false and its negation true.
 		for _, expr := range []string{"null in [1..10]", "null in (1..10)", "null in ]1..10["} {
@@ -527,7 +527,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("a range with a null endpoint yields null", func(t *testing.T) {
-		// DMN 1.5 §10.3.2: membership and the range built-ins are endpoint
+		// DMN 1.5 §10.3.2.15: membership and the range built-ins are endpoint
 		// comparisons, each null for a null endpoint. Upstream ordered null
 		// below every value, so `[null..10]` behaved as "up to 10".
 		for _, expr := range []string{
@@ -558,7 +558,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("a range built-in with a null operand yields null", func(t *testing.T) {
-		// DMN 1.5 §10.3.4: the range functions are ordering comparisons over
+		// DMN 1.5 §10.3.4.7: the range functions are ordering comparisons over
 		// points, and a parameter outside a built-in's domain makes it null.
 		// Upstream ordered a null point below every value, and raised a type
 		// mismatch for a null where a range was expected.
@@ -596,7 +596,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("range built-ins accept a point in a point position", func(t *testing.T) {
-		// DMN 1.5 §10.3.4: coincides(point1, point2) is point1 = point2, and
+		// DMN 1.5 §10.3.4.7: coincides(point1, point2) is point1 = point2, and
 		// coincides(range1, range2) compares endpoints and closedness.
 		// Upstream decoded a number into a zero range, so coincides(1, 1)
 		// raised "bad type in comparation, <nil> vs. <nil>". The point/point
@@ -664,7 +664,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("arithmetic with null or mismatched operands is null", func(t *testing.T) {
-		// DMN 1.5 §10.3.2: arithmetic over a null operand, or over a pair of
+		// DMN 1.5 §10.3.2.15: arithmetic over a null operand, or over a pair of
 		// types the operator is not defined for, is null. Upstream raised a
 		// type mismatch, and concatenated a string with a number.
 		vars := map[string]any{"x": FromGo(3)}
@@ -697,7 +697,7 @@ func TestForkedDefects(t *testing.T) {
 	})
 
 	t.Run("exponentiation and negation parse and evaluate", func(t *testing.T) {
-		// DMN 1.5 grammar rules 4e and 4f. Upstream parsed neither.
+		// DMN 1.5 grammar rules 4.c and 4.d. Upstream parsed neither.
 		vars := map[string]any{"x": FromGo(3)}
 		for expr, want := range map[string]any{
 			"2 ** 3": 8.0, "2 ** -1": 0.5, "2 * 3 ** 2": 18.0, "2 ** 3 ** 2": 64.0,

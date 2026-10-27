@@ -279,7 +279,7 @@ func (p *Parser) mulOrDivOp() (Node, error) {
 }
 
 // VERDICT DIVERGENCE: exponentiation and arithmetic negation (DMN 1.5 grammar
-// rules 4e and 4f). Upstream parsed neither: a leading `-` was only ever part
+// rules 4.c and 4.d). Upstream parsed neither: a leading `-` was only ever part
 // of a numeric literal. `**` binds tighter than `*` and `/` and associates
 // left, as the fork's other binary operators do; negation binds tighter than
 // `**`, matching upstream's negative numeric literal, so `-x ** 2` is
@@ -473,7 +473,7 @@ func (p *Parser) singleElement() (Node, error) {
 		return p.parseBracketOrRange()
 	case "[":
 		return p.parseRangeOrArray()
-	// VERDICT DIVERGENCE: `]` opens an exclusive interval — DMN 1.5 §10.3.1.7
+	// VERDICT DIVERGENCE: `]` opens an exclusive interval — DMN 1.5 §10.3.1.2 (grammar rules 9, 11)
 	// admits `]a..b]` alongside `(a..b]`. A closing bracket can never begin an
 	// expression, so routing it here is unambiguous.
 	case "]":
@@ -962,11 +962,11 @@ func (p *Parser) parseForExpr() (Node, error) {
 }
 
 // iterationContext parses the domain of one iteration context, DMN 1.5 FEEL
-// grammar rule 47: `expression [ ".." expression ]`. The two-expression form
+// grammar rule 63: `expression [ ".." expression ]`. The two-expression form
 // is an integer range and parses to an IterationRange; upstream parsed only
 // the list form, so `for i in 1..3` was a syntax error at the `..`.
 //
-// VERDICT DIVERGENCE: the spec's rule 58 gives `some` and `every` a plain
+// VERDICT DIVERGENCE: the spec's rule 46 gives `some` and `every` a plain
 // expression, not an iteration context; the fork accepts the integer-range
 // form there too (an open DMN issue proposes the same), see NOTICE.md.
 func (p *Parser) iterationContext() (Node, error) {
@@ -991,7 +991,7 @@ func (p *Parser) iterationContext() (Node, error) {
 }
 
 // parseSomeOrEvery parses a quantified expression with one or more
-// comma-separated iteration contexts, DMN 1.5 FEEL grammar rule 58:
+// comma-separated iteration contexts, DMN 1.5 FEEL grammar rule 46:
 // `some x in A, y in B satisfies P`. Upstream accepted a single context only.
 // Several contexts desugar to nested quantifiers of the same kind, innermost
 // last, the way parseForExpr nests `for`: a later context sees the names bound
