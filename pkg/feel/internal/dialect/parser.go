@@ -806,13 +806,27 @@ func (p *Parser) parseMapKey() (string, error) {
 
 func (p *Parser) parseTemporalNode() (Node, error) {
 	rng := p.startTextRange()
-	v := p.CurrentToken().Value
+	tok := p.CurrentToken()
+	v := tok.Value
+	// VERDICT DIVERGENCE: an at-literal whose string is not a date, time, date
+	// and time or duration string is a syntax error, raised here rather than
+	// when the literal is evaluated. DMN 1.5 §10.3.1.2, additional syntax
+	// rules: "The string in rule 65 must follow the date string, time string,
+	// date and time string or duration string syntax". Unlike the conversion
+	// built-ins (null outside their domain, §10.3.4), a malformed literal is
+	// rejected at load, as VERDICT_LOAD_013.
+	node := &TemporalNode{Value: v}
+	if _, perr := ParseTemporalValue(node.Content()); perr != nil {
+		return nil, fmt.Errorf("invalid temporal literal %s, at %d %d: %w",
+			v, tok.Pos.Row, tok.Pos.Column, perr)
+	}
 	err := p.scanner.Next()
 	if err != nil {
 		return nil, err
 	}
 	rng.End = p.CurrentToken().Pos
-	return &TemporalNode{Value: v, textRange: rng}, nil
+	node.textRange = rng
+	return node, nil
 }
 
 func (p *Parser) parseMapNode() (Node, error) {

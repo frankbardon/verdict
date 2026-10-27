@@ -288,15 +288,17 @@ func buildSupplement() {
 
 	bind("years and months duration", Function{
 		Params: []string{"from", "to"},
-		Help:   "the whole years and months between two dates",
+		Help:   "the whole years and months between two dates, null unless both are dates or date and times",
 		Fn: func(a map[string]any) (any, error) {
+			// DMN 1.5 §10.3.4.1 Table 72: from and to are dates or date and
+			// times; §10.3.4 makes anything else, null included, null.
 			from, ok := timeOf(a["from"])
 			if !ok {
-				return nil, fmt.Errorf("years and months duration: `from` must be a date or date and time")
+				return Null, nil
 			}
 			to, ok := timeOf(a["to"])
 			if !ok {
-				return nil, fmt.Errorf("years and months duration: `to` must be a date or date and time")
+				return Null, nil
 			}
 			neg := to.Before(from)
 			if neg {

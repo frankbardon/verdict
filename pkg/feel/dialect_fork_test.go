@@ -949,16 +949,125 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 		// Neither xs:dayTimeDuration nor xs:yearMonthDuration: rejected as any
-		// malformed duration string is, never read as a partial duration.
-		for _, expr := range []string{`duration("P1Y2D")`, `@"P1Y2D"`, `duration("PT")`, `duration("P1DT")`} {
-			if v, err := e.EvalText(expr, nil); err == nil {
-				t.Errorf("%s = %#v, want a parse failure", expr, ToGo(v))
+		// malformed duration string is, never read as a partial duration —
+		// null from duration() (§10.3.4), a syntax error as an at-literal
+		// (see "conversion built-ins are null outside their domain").
+		for _, expr := range []string{`duration("P1Y2D")`, `duration("PT")`, `duration("P1DT")`} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
 			}
+		}
+		if _, err := e.Compile(`@"P1Y2D"`); err == nil {
+			t.Errorf(`@"P1Y2D" compiled, want a syntax error`)
 		}
 		// The two duration kinds are distinct types and do not compare: the
 		// comparison is null (see "comparison of different kinds is null").
 		if got := mustEval(t, e, `duration("P1Y") = duration("P1D")`, nil); got != nil {
 			t.Errorf(`duration("P1Y") = duration("P1D") = %#v, want null`, got)
+		}
+	})
+
+	t.Run("conversion built-ins are null outside their domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4: "Whenever a parameter is outside its domain, the
+		// result of the built-in is null." Upstream raised "fail to parse
+		// temporal value" for a malformed date, time, date and time or
+		// duration string, returned 0 for number("abc"), and "&{}" for
+		// string(null) (Table 72's own example is string(null) = null).
+		for _, expr := range []string{
+			`duration("P1Y2D")`, `duration("nope")`, `duration("")`, `duration(1)`, `duration(null)`, `duration(duration("P1D"))`,
+			`date("nope")`, `date("2024-13-01")`, `date("")`, `date(1)`, `date(null)`, `date(true)`, `date(date("2024-01-01"))`,
+			`time("25:00")`, `time("nope")`, `time("")`, `time(1)`, `time(null)`,
+			`date and time("x")`, `date and time("2024-01-01")`, `date and time(1)`, `date and time(null)`, `date and time(date("2024-01-01"))`,
+			`number("abc")`, `number("")`, `number(" 1")`, `number("1,000")`, `number("Inf")`, `number("0x10")`, `number("1.")`, `number(true)`, `number(null)`,
+			`string(null)`,
+			`years and months duration(1, 2)`, `years and months duration(null, date("2013-08-24"))`, `years and months duration(date("2011-12-22"), "x")`,
+		} {
+			got, err := e.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(got) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(got))
+			}
+		}
+		// A missing input bound to a conversion is null, not a failed evaluation.
+		if got := mustEval(t, e, `date(d)`, map[string]any{"d": FromGo("not a date")}); got != nil {
+			t.Errorf(`date(d) with d = "not a date" = %#v, want null`, got)
+		}
+
+		// Valid inputs are unchanged.
+		strs := map[string]string{
+			`string(duration("P1Y2M"))`:  "P1Y2M",
+			`string(duration("P1D"))`:    "P1D",
+			`string(date("2012-12-25"))`: "2012-12-25",
+			`string(1.1)`:                "1.1",
+			`string(years and months duration(date("2011-12-22"), date("2013-08-24")))`: "P1Y8M",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		nums := map[string]float64{
+			`number("12")`: 12, `number("-1.5")`: -1.5, `number(".5")`: 0.5, `number("1e3")`: 1000, `number("-2E-1")`: -0.2, `number(7)`: 7,
+		}
+		for expr, want := range nums {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		bools := map[string]bool{
+			`date("2012-12-25") + duration("P1D") = date("2012-12-26")`:                                            true,
+			`date and time("2012-12-24T23:59:00") + duration("PT1M") = date and time("2012-12-25T00:00:00")`:       true,
+			`time("23:59:00") = time("23:59:00")`:                                                                  true,
+			`duration("P2Y2M") > duration("P2Y1M")`:                                                                true,
+			`date and time("2012-12-24T23:59:00") - date and time("2012-12-22T03:45:00") = duration("P2DT20H14M")`: true,
+			// The UTC designator Table 72's examples use, in either case.
+			`time("23:59:00z") = time("23:59:00Z")`:                                true,
+			`date and time("2012-12-25T11:00:00Z") = @"2012-12-25T11:00:00+00:00"`: true,
+			`date and time("2012-12-25T12:00:00+01:00") = @"2012-12-25T11:00:00Z"`: true,
+		}
+		for expr, want := range bools {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+
+		// Inside the domain but beyond the fork: still an evaluation error,
+		// never a null that reads as "the input was malformed". An IANA zone
+		// id, a component over upstream's cap (Table 72's own P26M), a
+		// fractional second, and the date(date and time) / time(time | date
+		// and time) overloads, which the fork does not implement.
+		for _, expr := range []string{
+			`date and time("2012-12-25T11:00:00@Europe/Paris")`, `time("11:00:00@Etc/UTC")`,
+			`duration("P26M")`, `duration("PT36H")`, `duration("PT1.5S")`,
+			`date(date and time("2012-12-25T11:00:00"))`, `time(time("10:00:00"))`, `time(date and time("2012-12-25T11:00:00"))`,
+		} {
+			if v, err := e.EvalText(expr, nil); err == nil {
+				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
+			}
+		}
+
+		// An at-literal is syntax, not a call: DMN 1.5 §10.3.1.2's additional
+		// syntax rules require rule 65's string to be a date, time, date and
+		// time or duration string, so a malformed one fails to compile — a
+		// VERDICT_LOAD_013 at model load — rather than evaluating to null.
+		for _, expr := range []string{`@"nope"`, `@"P1Y2D"`, `@""`, `@"2024-13-01"`, `x < @"25:00"`} {
+			if _, err := e.Compile(expr); err == nil {
+				t.Errorf("%s compiled, want a syntax error", expr)
+			} else {
+				var ce *CompileError
+				if !errors.As(err, &ce) {
+					t.Errorf("%s: error %T is not a *CompileError", expr, err)
+				}
+			}
+		}
+		if _, err := e.CompileUnaryTest(`< @"nope"`); err == nil {
+			t.Errorf(`unary test < @"nope" compiled, want a syntax error`)
+		}
+		for _, expr := range []string{`@"2024-01-01"`, `@"10:00:00"`, `@"2024-01-01T10:00:00Z"`, `@"P1D"`, `@"P1Y2M"`} {
+			if _, err := e.Compile(expr); err != nil {
+				t.Errorf("%s: %v", expr, err)
+			}
 		}
 	})
 

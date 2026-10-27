@@ -150,6 +150,17 @@ func TestYearsAndMonthsDuration(t *testing.T) {
 	if got != "P3Y1M" {
 		t.Errorf("years and months duration = %v, want P3Y1M", got)
 	}
+	// DMN 1.5 §10.3.4: an argument outside the domain (not a date or date and
+	// time, null included) is null, not an evaluation error.
+	for _, expr := range []string{
+		`years and months duration(1, date("2023-03-14"))`,
+		`years and months duration(date("2020-01-15"), null)`,
+		`years and months duration("2020-01-15", "2023-03-14")`,
+	} {
+		if got := mustEval(t, e, expr, nil); got != nil {
+			t.Errorf("%s = %#v, want null", expr, got)
+		}
+	}
 }
 
 func TestFunctionLibraryIsNamespaced(t *testing.T) {

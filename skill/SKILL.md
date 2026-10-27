@@ -160,7 +160,8 @@ if x then "a" else "b"                            // conditional
 value in ["low", "medium", "high"]                // membership
 decimal(amount * 1.2, 2)                          // round to 2 places
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
-date("2024-03-01")   date and time("2024-03-01T09:00:00")
+date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
+number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
 [1..10]  [1..10)  [1..10[  (1..10]  ]1..10]           // both bracket spellings
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
 ```
@@ -283,6 +284,18 @@ opens as an empty canvas.
   null. In a table, a `< 5` cell against a string input simply does not match,
   and neither does `not(< 5)`; an equality cell such as `"gold"` against a
   number does not match, so `not("gold")` does.
+- **A malformed conversion is null; a malformed `@"..."` does not load.**
+  `date("nope")`, `time("25:00")`, `date and time("x")`, `number("abc")`,
+  `duration("P1Y2D")` (mixes the two duration kinds), `date(null)` and
+  `string(null)` are null, not an error — so a bad string input surfaces as a
+  null output, and `number("1,000")` is null (the grouping form is not
+  supported). The literal `@"P1Y2D"` is a syntax error instead:
+  `VERDICT_LOAD_013` when the model loads. A string the spec allows but Verdict
+  cannot hold still fails the evaluation (`VERDICT_EVAL_005`) rather than
+  reading as malformed: an IANA zone (`"10:00:00@Europe/Paris"` — use `Z` or
+  `+01:00`), fractional duration seconds (`PT1.5S`), a component over its
+  carry (`P26M`, `PT36H` — write `P2Y2M`, `P1DT12H`), and `date(<date and
+  time>)` / `time(<time or date and time>)`.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration

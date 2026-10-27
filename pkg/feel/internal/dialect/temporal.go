@@ -9,10 +9,39 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
 var ErrParseTemporal = errors.New("fail to parse temporal value")
+
+// ErrUnsupportedTimeZone reports a time or date-and-time string in the DMN
+// lexical form whose IANA zone id (`@Europe/Paris`) the fork cannot resolve.
+// VERDICT DIVERGENCE: kept distinct from ErrParseTemporal so a conversion
+// built-in raises on it instead of yielding null — the string is inside the
+// domain, the fork is what falls short.
+var ErrUnsupportedTimeZone = errors.New("time zone id not supported")
+
+// parseZoned tries each layout against s. VERDICT DIVERGENCE: a trailing
+// lowercase `z` is read as UTC, as in DMN 1.5 Table 72's own examples
+// (`time("23:59:00z")`), and a string whose local part parses but whose `@`
+// zone id does not is ErrUnsupportedTimeZone rather than ErrParseTemporal.
+func parseZoned(s string, layouts []string, local string) (time.Time, error) {
+	if strings.HasSuffix(s, "z") {
+		s = s[:len(s)-1] + "Z"
+	}
+	for _, pat := range layouts {
+		if t, err := time.Parse(pat, s); err == nil {
+			return t, nil
+		}
+	}
+	if i := strings.LastIndex(s, "@"); i > 0 {
+		if _, err := time.Parse(local, s[:i]); err == nil {
+			return time.Time{}, fmt.Errorf("%w: %s", ErrUnsupportedTimeZone, s[i+1:])
+		}
+	}
+	return time.Time{}, ErrParseTemporal
+}
 
 type HasTime interface {
 	Time() time.Time
@@ -30,19 +59,20 @@ func (t FEELTime) Time() time.Time {
 	return t.t
 }
 
+// VERDICT DIVERGENCE: Z07:00 (upstream -07:00) also admits the UTC
+// designator `Z`, which DMN 1.5 §10.3.4.1 Table 72 uses in its examples.
 var timePatterns = []string{
 	"15:04:05",
-	"15:04:05-07:00",
+	"15:04:05Z07:00",
 	"15:04:05@MST",
 }
 
 func ParseTime(temporalStr string) (*FEELTime, error) {
-	for _, pat := range timePatterns {
-		if t, err := time.Parse(pat, temporalStr); err == nil {
-			return &FEELTime{t: t}, nil
-		}
+	t, err := parseZoned(temporalStr, timePatterns, "15:04:05")
+	if err != nil {
+		return nil, err
 	}
-	return nil, ErrParseTemporal
+	return &FEELTime{t: t}, nil
 }
 
 func (t FEELTime) GetAttr(name string) (interface{}, bool) {
@@ -195,19 +225,19 @@ func (dt *FEELDatetime) Sub(v HasTime) *FEELDuration {
 	return NewFEELDuration(delta)
 }
 
+// VERDICT DIVERGENCE: Z07:00 as in timePatterns.
 var dateTimePatterns = []string{
 	"2006-01-02T15:04:05",
-	"2006-01-02T15:04:05-07:00",
+	"2006-01-02T15:04:05Z07:00",
 	"2006-01-02T15:04:05@MST",
 }
 
 func ParseDatetime(temporalStr string) (*FEELDatetime, error) {
-	for _, pat := range dateTimePatterns {
-		if t, err := time.Parse(pat, temporalStr); err == nil {
-			return &FEELDatetime{t: t}, nil
-		}
+	t, err := parseZoned(temporalStr, dateTimePatterns, "2006-01-02T15:04:05")
+	if err != nil {
+		return nil, err
 	}
-	return nil, ErrParseTemporal
+	return &FEELDatetime{t: t}, nil
 }
 
 func MustParseDatetime(temporalStr string) *FEELDatetime {
@@ -470,16 +500,40 @@ func ParseDuration(temporalStr string) (*FEELDuration, error) {
 		return dur, nil
 	}
 
+	// VERDICT DIVERGENCE: xs:dayTimeDuration admits fractional seconds
+	// (PT1.5S), which FEELDuration's whole-second fields cannot hold. Report
+	// that as a limitation, not as a malformed string, so duration() raises
+	// rather than yielding the null reserved for input outside its domain.
+	if fractionalSecondsPattern.MatchString(temporalStr) {
+		return nil, ErrFractionalSeconds
+	}
 	return nil, ErrParseTemporal
 }
 
+// fractionalSecondsPattern is timeDurationPattern with a fractional seconds
+// component.
+var fractionalSecondsPattern = regexp.MustCompile(`^(\-?)P((\d+)D)?T((\d+)H)?((\d+)M)?\d+\.\d+S$`)
+
+// ErrFractionalSeconds reports a days and time duration string in the DMN
+// lexical form whose seconds have a fractional part the fork cannot hold.
+var ErrFractionalSeconds = errors.New("fractional seconds in a duration are not supported")
+
 func ParseTemporalValue(temporalStr string) (interface{}, error) {
-	if v, err := ParseDatetime(temporalStr); err == nil {
+	v, dtErr := ParseDatetime(temporalStr)
+	if dtErr == nil {
 		return v, nil
 	}
 
-	if v, err := ParseTime(temporalStr); err == nil {
-		return v, nil
+	t, tErr := ParseTime(temporalStr)
+	if tErr == nil {
+		return t, nil
+	}
+	// VERDICT DIVERGENCE: name the unsupported zone id rather than the
+	// generic parse failure the duration fallback would report.
+	for _, err := range []error{dtErr, tErr} {
+		if errors.Is(err, ErrUnsupportedTimeZone) {
+			return nil, err
+		}
 	}
 
 	if v, err := ParseDate(temporalStr); err == nil {
@@ -489,24 +543,65 @@ func ParseTemporalValue(temporalStr string) (interface{}, error) {
 	return ParseDuration(temporalStr)
 }
 
+// stringConversion builds a one-argument string → value conversion built-in
+// that yields null outside its domain (DMN 1.5 §10.3.4, Table 72): a string
+// the parser rejects as malformed (ErrParseTemporal), null, or an argument of
+// any other type. Inputs inside the domain that the fork falls short on still
+// raise, so they never read as malformed: a parser error other than
+// ErrParseTemporal (an IANA zone id, a component over upstream's cap such as
+// P26M or PT36H), and an argument for which unimplemented reports a spec
+// overload the fork lacks (date(date and time), time(time | date and time)).
+func stringConversion[T any](parse func(string) (T, error), unimplemented func(any) bool) *NativeFun {
+	return NewNativeFunc(func(kwargs map[string]any) (any, error) {
+		from := kwargs["from"]
+		if s, ok := from.(string); ok {
+			v, err := parse(s)
+			if errors.Is(err, ErrParseTemporal) {
+				return null, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			return v, nil
+		}
+		if unimplemented != nil && unimplemented(from) {
+			return nil, NewErrTypeMismatch("string")
+		}
+		return null, nil
+	})
+}
+
+func isDatetime(v any) bool {
+	switch v.(type) {
+	case *FEELDatetime, FEELDatetime:
+		return true
+	}
+	return false
+}
+
+func isTimeOrDatetime(v any) bool {
+	switch v.(type) {
+	case *FEELTime, FEELTime:
+		return true
+	}
+	return isDatetime(v)
+}
+
 // installDatetimeFunctions builtin functions
 func installDatetimeFunctions(prelude *Prelude) {
 	// conversions
-	prelude.Bind("date", wrapTyped(func(frm string) (interface{}, error) {
-		return ParseDate(frm)
-	}).Required("from"))
-
-	prelude.Bind("time", wrapTyped(func(frm string) (interface{}, error) {
-		return ParseTime(frm)
-	}).Required("from"))
-
-	prelude.Bind("date and time", wrapTyped(func(frm string) (interface{}, error) {
-		return ParseDatetime(frm)
-	}).Required("from"))
-
-	prelude.Bind("duration", wrapTyped(func(frm string) (interface{}, error) {
-		return ParseDuration(frm)
-	}).Required("from"))
+	//
+	// VERDICT DIVERGENCE: the four string conversions yield null for a string
+	// outside their lexical domain, and for an argument that is no overload's
+	// domain, instead of failing the evaluation. DMN 1.5 §10.3.4: "Whenever a
+	// parameter is outside its domain, the result of the built-in is null."
+	// date(date and time) and time(time | date and time) still raise: they
+	// are overloads the spec defines and the fork has not implemented, and
+	// nulling them would hide that gap behind a wrong answer.
+	prelude.Bind("date", stringConversion(ParseDate, isDatetime).Required("from"))
+	prelude.Bind("time", stringConversion(ParseTime, isTimeOrDatetime).Required("from"))
+	prelude.Bind("date and time", stringConversion(ParseDatetime, nil).Required("from"))
+	prelude.Bind("duration", stringConversion(ParseDuration, nil).Required("from"))
 
 	// temporal functions
 	prelude.Bind("now", wrapTyped(func() (interface{}, error) {
