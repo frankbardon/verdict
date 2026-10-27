@@ -546,8 +546,7 @@ func TestForkedDefects(t *testing.T) {
 				t.Errorf("%s = %#v, want null", expr, got)
 			}
 		}
-		// Non-null operands are untouched. coincides over two points is left
-		// out: it still raises a type mismatch, which a later change owns.
+		// Non-null operands are untouched.
 		for expr, want := range map[string]any{
 			"before(1, [2..10])": true, "after(11, [1..10])": true, "before(5, 1)": false,
 			"includes([1..10], 5)": true, "during(5, [1..10])": true,
@@ -556,6 +555,44 @@ func TestForkedDefects(t *testing.T) {
 		} {
 			if got := mustEval(t, e, expr, nil); got != want {
 				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("range built-ins accept a point in a point position", func(t *testing.T) {
+		// DMN 1.5 §10.3.4: coincides(point1, point2) is point1 = point2, and
+		// coincides(range1, range2) compares endpoints and closedness.
+		// Upstream decoded a number into a zero range, so coincides(1, 1)
+		// raised "bad type in comparation, <nil> vs. <nil>". The point/point
+		// and point/range overloads of the other range built-ins already
+		// worked; they are pinned here so a re-sync cannot regress them.
+		for expr, want := range map[string]any{
+			"coincides(1, 1)": true, "coincides(1, 2)": false,
+			`coincides("a", "a")`:                               true,
+			`coincides(date("2024-01-01"), date("2024-01-01"))`: true,
+			"coincides([1..5], [1..5])":                         true, "coincides([1..5], (1..5])": false,
+			"coincides([1..5], [1..5))": false, "coincides([1..5], [1..6])": false,
+			"before(1, 10)": true, "before(10, 1)": false, "before(1, 1)": false,
+			"after(10, 1)": true, "after(1, 10)": false, "after(1, 1)": false,
+			"before(1, [2..10])": true, "before(2, (2..10])": true, "before(2, [2..10])": false,
+			"before([1..10], 11)": true, "before([1..10), 10)": true, "before([1..10], 10)": false,
+			"after(11, [1..10])": true, "after(10, [1..10))": true, "after(10, [1..10])": false,
+			"after([5..10], 4)": true, "after((5..10], 5)": true, "after([5..10], 5)": false,
+			"finishes(10, [1..10])": true, "finishes(10, [1..10))": false,
+			"finished by([1..10], 10)": true, "finished by([1..10), 10)": false,
+			"starts(1, [1..10])": true, "starts(1, (1..10])": false,
+			"started by([1..10], 1)": true, "started by((1..10], 1)": false,
+			"includes([1..10], 1)": true, "includes((1..10], 1)": false, "includes([1..10], 11)": false,
+			"during(5, [1..10])": true, "during(1, (1..10])": false, "during(10, [1..10))": false,
+		} {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// A point paired with a range matches neither coincides signature.
+		for _, expr := range []string{"coincides(1, [1..1])", "coincides([1..1], 1)"} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
 			}
 		}
 	})

@@ -381,26 +381,19 @@ func installRangeFunctions(p *Prelude) {
 		}
 	}).Required("a", "b"))
 
+	// coincides dispatches on the argument types rather than decoding them
+	// into range structs: upstream's mapstructure decode turned a number (a
+	// struct) into a zero RangeValue, so `coincides(1, 1)` compared two nil
+	// endpoints and raised a type mismatch. DMN 1.5 §10.3.4 defines two
+	// signatures, (point, point) as `point1 = point2` and (range, range) as
+	// equal endpoints and equal closedness; a point paired with a range is
+	// outside both and yields null.
 	prelude.Bind("coincides", NewNativeFunc(func(kwargs map[string]any) (any, error) {
-		type coincidesArgs struct {
-			A *RangeValue `json:"a"`
-			B *RangeValue `json:"b"`
-		}
-		args := coincidesArgs{}
-		if err := decodeKWArgs(kwargs, &args); err != nil {
-			// a, b is not rangevalue
-			r, err := compareInterfaces(kwargs["a"], kwargs["b"])
-			if err != nil {
-				return nil, err
-			}
-			return r == 0, nil
-		} else {
-			a := args.A
-			b := args.B
-			if a.StartOpen != b.StartOpen {
-				return false, nil
-			}
-			if a.EndOpen != b.EndOpen {
+		a, aRange := kwargs["a"].(*RangeValue)
+		b, bRange := kwargs["b"].(*RangeValue)
+		switch {
+		case aRange && bRange:
+			if a.StartOpen != b.StartOpen || a.EndOpen != b.EndOpen {
 				return false, nil
 			}
 			cmpStart, err := compareInterfaces(a.Start, b.Start)
@@ -412,8 +405,15 @@ func installRangeFunctions(p *Prelude) {
 				return nil, err
 			}
 			return cmpStart == 0 && cmpEnd == 0, nil
+		case aRange || bRange:
+			return null, nil
+		default:
+			r, err := compareInterfaces(kwargs["a"], kwargs["b"])
+			if err != nil {
+				return nil, err
+			}
+			return r == 0, nil
 		}
-
 	}).Required("a", "b"))
 
 }
