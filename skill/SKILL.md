@@ -159,6 +159,7 @@ Applicant.credit_score >= 740                     // comparison
 if x then "a" else "b"                            // conditional
 value in ["low", "medium", "high"]                // membership
 decimal(amount * 1.2, 2)                          // round to 2 places
+modulo(-10.1, 4.5) = 3.4   sqrt(-1) = null           // numeric fns: exact decimals; null on null, non-number or out-of-domain args
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
 date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
 number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string

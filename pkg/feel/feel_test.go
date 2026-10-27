@@ -4,6 +4,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	pfeel "github.com/frankbardon/verdict/pkg/feel/internal/dialect"
 )
 
 func mustEval(t *testing.T, e *Evaluator, text string, vars map[string]any) any {
@@ -140,6 +142,68 @@ func TestStandardSupplement(t *testing.T) {
 		got := mustEval(t, e, c.expr, nil)
 		if !deepEqualNum(got, c.want) {
 			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestNumericBuiltinsAreNullOutsideTheirDomain pins DMN 1.5 §10.3.4.5 and the
+// §10.3.4 domain rule: a null or non-number argument, or a value the function
+// is undefined for, makes a numeric built-in null rather than an error.
+func TestNumericBuiltinsAreNullOutsideTheirDomain(t *testing.T) {
+	e := newFEEL(t)
+	for _, expr := range []string{
+		`decimal(null, 2)`, `decimal(1.5, null)`, `decimal("1.5", 0)`,
+		`floor(null)`, `floor("x")`, `floor(1.5, null)`, `floor(1.5, "1")`,
+		`ceiling(null)`, `ceiling(true)`, `ceiling(1.5, null)`,
+		`round up(null, 0)`, `round up(5, null)`, `round up("5", 0)`,
+		`round down(null, 0)`, `round down(5, null)`,
+		`round half up(null, 0)`, `round half up(5, null)`,
+		`round half down(null, 0)`, `round half down(5, null)`,
+		`decimal(1.5, 6177)`, `decimal(1.5, -6112)`, `floor(1.5, 1000000000)`,
+		`abs(null)`, `abs("x")`,
+		`modulo(null, 5)`, `modulo(5, null)`, `modulo("12", 5)`, `modulo(12, "5")`,
+		`modulo(12, 0)`, `modulo(0, 0)`, `modulo(10.1, 0)`,
+		`sqrt(null)`, `sqrt("a")`, `sqrt(-1)`,
+		`log(null)`, `log("a")`, `log(0)`, `log(-1)`,
+		`exp(null)`, `exp("x")`,
+		`odd(null)`, `odd("x")`, `even(null)`, `even("x")`,
+	} {
+		v, err := e.EvalText(expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want null", expr, err)
+			continue
+		}
+		if got := ToGo(v); got != nil {
+			t.Errorf("%s = %#v, want null", expr, got)
+		}
+	}
+}
+
+// TestModuloIsDecimal pins every modulo example of DMN 1.5 §10.3.4.5: the
+// remainder takes the divisor's sign and is computed on the exact decimals.
+func TestModuloIsDecimal(t *testing.T) {
+	e := newFEEL(t)
+	for expr, want := range map[string]string{
+		`modulo(12, 5)`:       "2",
+		`modulo(-12, 5)`:      "3",
+		`modulo(12, -5)`:      "-3",
+		`modulo(-12, -5)`:     "-2",
+		`modulo(10.1, 4.5)`:   "1.1",
+		`modulo(-10.1, 4.5)`:  "3.4",
+		`modulo(10.1, -4.5)`:  "-3.4",
+		`modulo(-10.1, -4.5)`: "-1.1",
+		`modulo(10, 2.5)`:     "0",
+	} {
+		v, err := e.EvalText(expr, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", expr, err)
+		}
+		n, ok := v.(*pfeel.Number)
+		if !ok {
+			t.Fatalf("%s = %#v, want a number", expr, v)
+		}
+		if got := n.String(); got != want {
+			t.Errorf("%s = %s, want %s", expr, got, want)
 		}
 	}
 }
