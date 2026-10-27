@@ -163,6 +163,19 @@ func (n *Number) Pow(other *Number) (*Number, bool) {
 	return NewNumberFromFloat(f), true
 }
 
+// rat is the number as an exact rational, read through its decimal text to 60
+// significant digits. VERDICT DIVERGENCE: a decimal literal such as 0.1 is held
+// in binary at Prec bits, so its big.Float is a hair off 1/10; rounding to 60
+// digits (well inside Prec's ~81) recovers the decimal the model wrote, which
+// is what duration scaling multiplies by (DMN 1.5 §10.3.2.15, Table 59).
+func (n *Number) rat() *big.Rat {
+	r, ok := new(big.Rat).SetString(n.v.Text('g', 60))
+	if !ok {
+		return new(big.Rat)
+	}
+	return r
+}
+
 // IsZero reports whether the number is exactly zero.
 func (n *Number) IsZero() bool { return n.v.Sign() == 0 }
 

@@ -673,6 +673,44 @@ func (duration FEELDuration) isYearsMonths() bool {
 // keeps the kind it was built with.
 func (duration FEELDuration) IsYearsMonths() bool { return duration.isYearsMonths() }
 
+// scaleDuration is duration * number, number * duration and duration / number
+// (DMN 1.5 §10.3.2.15, Table 59). The result keeps the duration's kind.
+//
+// VERDICT DIVERGENCE: upstream had no duration case in `*` or `/`, so every
+// scaling was null. The arithmetic is exact decimal: the duration's length
+// (months for a years and months duration, nanoseconds for a days and time
+// one) is multiplied or divided by the number as a rational, then truncated
+// toward zero to the kind's unit, since neither kind can hold a fraction of
+// it: P1M / 3 is P0M, P1Y * 1.5 is P1Y6M, PT1S / 3 is PT0.333333333S and
+// -P1M / 3 is P0M. The spec is silent on the fractional remainder; truncation
+// matches xs:yearMonthDuration's integer months and keeps both kinds alike.
+// A zero divisor is null (ok=false), as for numbers (Table 59: division by
+// zero is null). A result outside the kind's range is ErrDurationRange.
+func scaleDuration(d *FEELDuration, factor *Number, divide bool) (res *FEELDuration, ok bool, err error) {
+	f := factor.rat()
+	if divide {
+		if f.Sign() == 0 {
+			return nil, false, nil
+		}
+		f.Inv(f)
+	}
+	var length *big.Rat
+	if d.isYearsMonths() {
+		length = new(big.Rat).SetInt64(d.signedMonths())
+	} else {
+		length = new(big.Rat).SetInt64(int64(d.Duration()))
+	}
+	length.Mul(length, f)
+	q := new(big.Int).Quo(length.Num(), length.Denom())
+	if !q.IsInt64() {
+		return nil, true, ErrDurationRange
+	}
+	if d.isYearsMonths() {
+		return NewYearsMonthsDuration(q.Int64()), true, nil
+	}
+	return NewFEELDuration(time.Duration(q.Int64())), true, nil
+}
+
 // compareDurations orders two durations of the same kind: years-and-months by
 // total months, days-and-time by total length, so P1D = PT24H. The two kinds
 // are not comparable (DMN 1.5 §10.3.2.3.7 keeps them distinct types), which

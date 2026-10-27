@@ -599,10 +599,57 @@ func (binop Binop) subOp(intp *Interpreter) (any, error) {
 }
 
 func (binop Binop) mulOp(intp *Interpreter) (any, error) {
-	return binop.numberOp(
+	return binop.scaleOp(
 		intp,
 		func(a, b *Number) any { return a.Mul(b) },
-		"*")
+		false)
+}
+
+// scaleOp is `*` (divide false) or `/` (divide true): number by number through
+// en, and a duration scaled by a number through scaleDuration. Multiplication
+// commutes, so number * duration scales too; number / duration is undefined.
+//
+// VERDICT DIVERGENCE: upstream routed both through numberOp, so a duration
+// operand was null (DMN 1.5 §10.3.2.15, Table 59 defines duration * number,
+// number * duration and duration / number). Every other pairing, null
+// included, is still null.
+func (binop Binop) scaleOp(intp *Interpreter, en evalNumbers, divide bool) (any, error) {
+	leftVal, err := binop.Left.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	rightVal, err := binop.Right.Eval(intp)
+	if err != nil {
+		return nil, err
+	}
+	var dur *FEELDuration
+	var factor *Number
+	switch l := leftVal.(type) {
+	case *Number:
+		switch r := rightVal.(type) {
+		case *Number:
+			return en(l, r), nil
+		case *FEELDuration:
+			if !divide {
+				dur, factor = r, l
+			}
+		}
+	case *FEELDuration:
+		if r, ok := rightVal.(*Number); ok {
+			dur, factor = l, r
+		}
+	}
+	if dur == nil {
+		return null, nil
+	}
+	res, ok, err := scaleDuration(dur, factor, divide)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return null, nil
+	}
+	return res, nil
 }
 
 // divOp implements FEEL's `/`.
@@ -612,7 +659,7 @@ func (binop Binop) mulOp(intp *Interpreter) (any, error) {
 // decimals: division is exact division at the evaluator's working precision,
 // and division by zero is null rather than a panic (DMN 1.5 table 51).
 func (binop Binop) divOp(intp *Interpreter) (any, error) {
-	return binop.numberOp(
+	return binop.scaleOp(
 		intp,
 		func(a, b *Number) any {
 			if b.IsZero() {
@@ -620,7 +667,7 @@ func (binop Binop) divOp(intp *Interpreter) (any, error) {
 			}
 			return a.Div(b)
 		},
-		"/")
+		true)
 }
 
 // powOp implements FEEL's `**`, which upstream did not parse at all.

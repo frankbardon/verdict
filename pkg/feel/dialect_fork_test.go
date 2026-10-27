@@ -1927,6 +1927,53 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("durations multiply and divide by numbers", func(t *testing.T) {
+		// Upstream's * and / took numbers only, so every duration scaling was
+		// null. DMN 1.5 Table 59 defines duration * number, number * duration
+		// and duration / number; the result keeps the duration's kind, and a
+		// fraction of the kind's unit (a month, a nanosecond) truncates toward
+		// zero. Each case failed on upstream v1.0.6.
+		strs := map[string]string{
+			`string(duration("PT1H") * 2)`:        "PT2H",
+			`string(2 * duration("PT1H"))`:        "PT2H",
+			`string(duration("P1Y") / 2)`:         "P6M",
+			`string(duration("P1M") / 3)`:         "P0M",
+			`string(duration("P1Y") * 1.5)`:       "P1Y6M",
+			`string(duration("-P1M") / 3)`:        "P0M",
+			`string(duration("-P1Y") * 1.5)`:      "-P1Y6M",
+			`string(duration("P5M") * -0.5)`:      "-P2M",
+			`string(duration("PT1S") * 0.1)`:      "PT0.1S",
+			`string(duration("PT1S") / 3)`:        "PT0.333333333S",
+			`string(duration("-PT1S") / 3)`:       "-PT0.333333333S",
+			`string(duration("P1D") * 0.5)`:       "PT12H",
+			`string(duration("PT0.3S") * 3)`:      "PT0.9S",
+			`string(duration("PT1H") * 0)`:        "PT0S",
+			`string(duration("P1Y") * 0)`:         "P0M",
+			`string(0.1 * duration("PT10S") * 3)`: "PT3S",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		// Division by zero, a non-number operand and number / duration are
+		// null, not errors.
+		for _, expr := range []string{
+			`duration("PT1H") / 0`,
+			`duration("P1Y") / 0`,
+			`2 / duration("PT1H")`,
+			`duration("PT1H") * "2"`,
+			`duration("PT1H") * null`,
+			`null * duration("PT1H")`,
+			`duration("PT1H") * duration("PT1H")`,
+			`duration("PT1H") / true`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != nil {
+				t.Errorf("%s = %#v, want null", expr, got)
+			}
+		}
+	})
+
 	t.Run("syntax errors report a 1-based line and column", func(t *testing.T) {
 		// Upstream printed the scanner's 0-based row and column, so an error
 		// at the very start read "at 0 0", like an unset position, and every

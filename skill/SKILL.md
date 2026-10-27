@@ -336,7 +336,11 @@ opens as an empty canvas.
   the same kind add and subtract (`PT1.5S + PT0.5S = PT2S`); a years and months
   duration plus a days and time one is null. A zero keeps its kind:
   `duration("P1Y") - duration("P1Y")` is `P0M`, not `PT0S`, so adding `PT1H`
-  to it, or comparing it with `PT0S`, is null too.
+  to it, or comparing it with `PT0S`, is null too. A duration scales by a
+  number (`PT1H * 2` and `2 * PT1H` are `PT2H`, `P1Y / 2` is `P6M`, exact
+  decimal: `PT1S * 0.1` is `PT0.1S`); a fraction of a month or nanosecond
+  truncates toward zero (`P1M / 3` is `P0M`, `P1Y * 1.5` is `P1Y6M`).
+  Division by zero, `number / duration` and a non-number operand are null.
 - **Temporal arithmetic follows DMN Table 57.** `date - date` is a days and time
   duration (`date("2026-01-02") - date("2026-01-01")` is `P1D`; a date counts as
   UTC midnight against a date and time), as is `time - time`. A duration added
