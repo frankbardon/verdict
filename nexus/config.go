@@ -60,10 +60,10 @@ func parseConfig(raw map[string]any) pluginConfig {
 			c.DefaultMaxLatency = d
 		}
 	}
-	// A non-positive or non-integral cap keeps the engine default rather than
+	// A non-positive or non-integral budget keeps the engine default rather than
 	// failing boot; the engine never runs without one.
-	if v, ok := positiveInt(raw["max_iteration_range"]); ok {
-		c.MaxIterationRange = v
+	if v, ok := positiveInt(raw["max_iterations"]); ok {
+		c.MaxIterations = v
 	}
 	return c
 }

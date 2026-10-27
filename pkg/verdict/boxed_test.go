@@ -3,6 +3,7 @@ package verdict_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -279,18 +280,27 @@ func TestRecursiveServiceTerminates(t *testing.T) {
 	}
 }
 
-// TestIterationRangeIsCapped checks that an integer-range iteration context
-// cannot build an arbitrarily large list: a range over the cap fails with
-// VERDICT_EVAL_005 before allocating, one within it evaluates, and the
-// configured cap — not the default — is the one enforced.
-func TestIterationRangeIsCapped(t *testing.T) {
-	doc := `{"vdj":"1.0","id":"ranges","conformance_level":"feel",
-	  "input_data":[{"id":"n","name":"N","variable":{"name":"N","type_ref":"number"}}],
-	  "decisions":[{"id":"c","name":"Count","required_inputs":["n"],
-	    "variable":{"name":"Count","type_ref":"number"},
-	    "logic":{"kind":"literalExpression","text":"count(for i in 1..N return i)"}}]}`
-
-	run := func(t *testing.T, e *verdict.Engine, n int) (any, error) {
+// TestIterationBudgetBoundsAnEvaluation checks that one expression evaluation
+// cannot iterate without bound: its iteration contexts together — nested and
+// multi-context products counted in full — fail with VERDICT_EVAL_005 once they
+// exceed the budget, an expression within it evaluates, the configured budget
+// rather than the default is the one enforced, and sibling decisions evaluating
+// in parallel each get the whole budget.
+func TestIterationBudgetBoundsAnEvaluation(t *testing.T) {
+	model := func(texts ...string) string {
+		var ds []string
+		for k, text := range texts {
+			ds = append(ds, fmt.Sprintf(`{"id":"d%d","name":"D%d","required_inputs":["n"],
+			  "variable":{"name":"D%d","type_ref":"number"},
+			  "logic":{"kind":"literalExpression","text":%q}}`, k, k, k, text))
+		}
+		return `{"vdj":"1.0","id":"iterations","conformance_level":"feel",
+		  "input_data":[{"id":"n","name":"N","variable":{"name":"N","type_ref":"number"}}],
+		  "decisions":[` + strings.Join(ds, ",") + `]}`
+	}
+	// run evaluates every decision of doc and returns their outputs, or the
+	// first VERDICT_EVAL_005 diagnostic.
+	run := func(t *testing.T, e *verdict.Engine, doc string, n int) (map[string]any, error) {
 		t.Helper()
 		m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
 		if err != nil {
@@ -305,37 +315,71 @@ func TestIterationRangeIsCapped(t *testing.T) {
 				return nil, d
 			}
 		}
-		return res.Outputs["Count"], nil
+		return res.Outputs, nil
 	}
-	isRangeFailure := func(err error) bool {
+	isBudgetFailure := func(err error) bool {
 		var d diag.Diagnostic
 		return errors.As(err, &d) && d.Code == diag.CodeExpressionError &&
 			strings.Contains(d.Message, "exceeds the limit")
 	}
+	flat := model("count(for i in 1..N return i)")
+	nested := model("count(for i in 1..N, j in 1..N return j)")
 
-	t.Run("default cap", func(t *testing.T) {
+	t.Run("default budget", func(t *testing.T) {
 		e := verdict.MustNewEngine()
-		if got, err := run(t, e, 1000); err != nil || got != 1000.0 {
+		if got, err := run(t, e, flat, 1000); err != nil || got["D0"] != 1000.0 {
 			t.Errorf("1..1000 = %#v, %v; want 1000", got, err)
 		}
-		if _, err := run(t, e, 1_000_000_000); !isRangeFailure(err) {
-			t.Errorf("1..1e9 under the default cap: err = %v, want a VERDICT_EVAL_005 range failure", err)
+		if _, err := run(t, e, flat, 1_000_000_000); !isBudgetFailure(err) {
+			t.Errorf("1..1e9 under the default budget: err = %v, want a VERDICT_EVAL_005 budget failure", err)
+		}
+		// 1..1000 twice is 1000 + 1000*1000 elements: each range alone is
+		// well inside the budget, their product is not.
+		if _, err := run(t, e, nested, 1000); !isBudgetFailure(err) {
+			t.Errorf("1..1000 × 1..1000 under the default budget: err = %v, want a VERDICT_EVAL_005 budget failure", err)
 		}
 	})
 
-	t.Run("configured cap", func(t *testing.T) {
-		e := verdict.MustNewEngine(verdict.WithMaxIterationRange(10))
-		if got, err := run(t, e, 10); err != nil || got != 10.0 {
-			t.Errorf("1..10 under a cap of 10 = %#v, %v; want 10", got, err)
+	t.Run("configured budget", func(t *testing.T) {
+		e := verdict.MustNewEngine(verdict.WithMaxIterations(12))
+		if got, err := run(t, e, flat, 12); err != nil || got["D0"] != 12.0 {
+			t.Errorf("1..12 under a budget of 12 = %#v, %v; want 12", got, err)
 		}
-		if _, err := run(t, e, 11); !isRangeFailure(err) {
-			t.Errorf("1..11 under a cap of 10: err = %v, want a VERDICT_EVAL_005 range failure", err)
+		if _, err := run(t, e, flat, 13); !isBudgetFailure(err) {
+			t.Errorf("1..13 under a budget of 12: err = %v, want a VERDICT_EVAL_005 budget failure", err)
+		}
+		// 3 + 3*3 = 12 fits; 4 + 4*4 = 20 does not.
+		if got, err := run(t, e, nested, 3); err != nil || got["D0"] != 9.0 {
+			t.Errorf("1..3 × 1..3 under a budget of 12 = %#v, %v; want 9", got, err)
+		}
+		if _, err := run(t, e, nested, 4); !isBudgetFailure(err) {
+			t.Errorf("1..4 × 1..4 under a budget of 12: err = %v, want a VERDICT_EVAL_005 budget failure", err)
 		}
 	})
 
-	t.Run("negative cap is rejected", func(t *testing.T) {
-		if _, err := verdict.NewEngine(verdict.WithMaxIterationRange(-1)); err == nil {
-			t.Error("NewEngine accepted a negative iteration-range cap")
+	t.Run("parallel siblings each get the whole budget", func(t *testing.T) {
+		// Eight independent decisions, each spending 3 + 3*3 = 12 of a budget
+		// of 12, in one parallel layer. A counter shared between them would
+		// fail all but the first.
+		texts := make([]string, 8)
+		for k := range texts {
+			texts[k] = "count(for i in 1..N, j in 1..N return j)"
+		}
+		e := verdict.MustNewEngine(verdict.WithMaxIterations(12), verdict.WithParallelDecisions(true))
+		got, err := run(t, e, model(texts...), 3)
+		if err != nil {
+			t.Fatalf("parallel siblings within budget: %v", err)
+		}
+		for k := range texts {
+			if v := got[fmt.Sprintf("D%d", k)]; v != 9.0 {
+				t.Errorf("D%d = %#v, want 9", k, v)
+			}
+		}
+	})
+
+	t.Run("negative budget is rejected", func(t *testing.T) {
+		if _, err := verdict.NewEngine(verdict.WithMaxIterations(-1)); err == nil {
+			t.Error("NewEngine accepted a negative iteration budget")
 		}
 	})
 }

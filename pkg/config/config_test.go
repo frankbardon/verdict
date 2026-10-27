@@ -94,7 +94,7 @@ func TestValidationRejectsNonsense(t *testing.T) {
 		"verdict:\n  tracing:\n    mode: verbose\n",
 		"verdict:\n  feel:\n    timezone: Mars/Olympus\n",
 		"verdict:\n  agent:\n    nexus:\n      session_strategy: telepathic\n",
-		"verdict:\n  feel:\n    max_iteration_range: -1\n",
+		"verdict:\n  feel:\n    max_iterations: -1\n",
 	}
 	for _, src := range bad {
 		if _, err := Parse([]byte(src)); err == nil {
@@ -119,23 +119,23 @@ verdict:
 	}
 }
 
-func TestMaxIterationRangeDefaultsAndIsHonoured(t *testing.T) {
+func TestMaxIterationsDefaultsAndIsHonoured(t *testing.T) {
 	cfg, err := Parse([]byte("verdict:\n  feel:\n    dialect: feel\n"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if cfg.FEEL.MaxIterationRange != verdict.DefaultMaxIterationRange {
-		t.Errorf("max_iteration_range = %d, want the %d default", cfg.FEEL.MaxIterationRange, verdict.DefaultMaxIterationRange)
+	if cfg.FEEL.MaxIterations != verdict.DefaultMaxIterations {
+		t.Errorf("max_iterations = %d, want the %d default", cfg.FEEL.MaxIterations, verdict.DefaultMaxIterations)
 	}
 
 	// Zero means the default, not "unlimited".
-	cfg, err = Parse([]byte("verdict:\n  feel:\n    max_iteration_range: 0\n"))
-	if err != nil || cfg.FEEL.MaxIterationRange != verdict.DefaultMaxIterationRange {
-		t.Errorf("max_iteration_range: 0 -> %d, %v; want the default", cfg.FEEL.MaxIterationRange, err)
+	cfg, err = Parse([]byte("verdict:\n  feel:\n    max_iterations: 0\n"))
+	if err != nil || cfg.FEEL.MaxIterations != verdict.DefaultMaxIterations {
+		t.Errorf("max_iterations: 0 -> %d, %v; want the default", cfg.FEEL.MaxIterations, err)
 	}
 
-	// A configured cap reaches the engine through Options.
-	cfg, err = Parse([]byte("verdict:\n  feel:\n    max_iteration_range: 5\n"))
+	// A configured budget reaches the engine through Options.
+	cfg, err = Parse([]byte("verdict:\n  feel:\n    max_iterations: 5\n"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -151,6 +151,6 @@ func TestMaxIterationRangeDefaultsAndIsHonoured(t *testing.T) {
 	}
 	if _, err := e.Evaluate(context.Background(), m.ID, verdict.Inputs{}); err == nil ||
 		!strings.Contains(err.Error(), "exceeds the limit of 5") {
-		t.Errorf("1..6 under a configured cap of 5: err = %v, want the range cap", err)
+		t.Errorf("1..6 under a configured budget of 5: err = %v, want the iteration budget", err)
 	}
 }

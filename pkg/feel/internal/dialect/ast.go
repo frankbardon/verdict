@@ -9,13 +9,20 @@ type Scope map[string]interface{}
 
 type Interpreter struct {
 	ScopeStack []Scope
-	// MaxIterationRange caps the number of integers an integer-range
-	// iteration context (`for i in a..b`) may produce. Zero means no cap,
-	// which is upstream's behaviour; the façade always sets one.
+	// MaxIterations is the iteration budget of one evaluation: the total
+	// number of elements every iteration context of every for, some and
+	// every may produce, nested and multi-context products included. Zero
+	// means no budget, which is upstream's behaviour; the façade always sets
+	// one.
 	//
-	// VERDICT DIVERGENCE: see NOTICE.md. The fork takes the cap as a plain
-	// field rather than importing any Verdict configuration.
-	MaxIterationRange int64
+	// VERDICT DIVERGENCE: see NOTICE.md. The fork takes the budget as a
+	// plain field rather than importing any Verdict configuration.
+	MaxIterations int64
+	// iterations counts the elements charged against MaxIterations so far.
+	// It lives on the interpreter, which is built afresh for every
+	// evaluation and never shared between goroutines, so the budget is per
+	// evaluation and needs no lock.
+	iterations uint64
 }
 
 type Node interface {

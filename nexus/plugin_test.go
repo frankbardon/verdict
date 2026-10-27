@@ -181,7 +181,7 @@ func TestConfigParsing(t *testing.T) {
 		"role":                "reasoning",
 		"default_max_latency": "12s",
 		"publish_trace":       false,
-		"max_iteration_range": 5000,
+		"max_iterations":      5000,
 	})
 	if len(c.Paths) != 2 || c.Paths[0] != "a.dmn" {
 		t.Errorf("paths = %v", c.Paths)
@@ -198,8 +198,8 @@ func TestConfigParsing(t *testing.T) {
 	if c.PublishTrace {
 		t.Error("publish_trace: false was ignored")
 	}
-	if c.MaxIterationRange != 5000 {
-		t.Errorf("max iteration range = %d, want 5000", c.MaxIterationRange)
+	if c.MaxIterations != 5000 {
+		t.Errorf("max iterations = %d, want 5000", c.MaxIterations)
 	}
 
 	// An unparseable value must fall back rather than fail: a decision plugin
@@ -212,8 +212,8 @@ func TestConfigParsing(t *testing.T) {
 		t.Errorf("bad duration = %v, want zero", fallback.DefaultMaxLatency)
 	}
 	for _, bad := range []any{-1, 0, 2.5, "lots"} {
-		if got := parseConfig(map[string]any{"max_iteration_range": bad}).MaxIterationRange; got != 0 {
-			t.Errorf("max_iteration_range %#v = %d, want zero (the engine default)", bad, got)
+		if got := parseConfig(map[string]any{"max_iterations": bad}).MaxIterations; got != 0 {
+			t.Errorf("max_iterations %#v = %d, want zero (the engine default)", bad, got)
 		}
 	}
 }

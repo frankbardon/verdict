@@ -127,10 +127,14 @@ key has a documented default and a file only needs the keys it changes. See
 - **Run `verdict analyze` in CI.** It exits non-zero on an error-severity
   finding, so a table that develops a hole fails the build rather than a request.
 - **Turn on `strict_mode` in production**, and leave it off while modelling.
-- **Keep `feel.max_iteration_range` bounded.** An integer-range iteration
-  (`for i in 1..n`) builds its whole list, so a model accepted over Twirp or MCP
-  could otherwise ask for a billion elements. The 1,000,000 default fails such
-  an expression with `VERDICT_EVAL_005` before allocating; raise it only for a
-  model that genuinely needs a longer range. There is no unlimited setting.
+- **Keep `feel.max_iterations` bounded.** It is the iteration budget of one
+  expression evaluation: every element a `for`, `some` or `every` iteration
+  context produces is charged against it, integer ranges and list domains
+  alike, so nested contexts (`for i in 1..n, j in 1..n`) are charged n². A model
+  accepted over Twirp or MCP could otherwise ask for a billion elements. The
+  1,000,000 default fails such an expression with `VERDICT_EVAL_005`, refusing
+  an over-long range before allocating it; each evaluation gets the whole
+  budget, so parallel evaluations do not starve one another. Raise it only for
+  a model that genuinely iterates more. There is no unlimited setting.
 - **Watch `fallback_used` in your traces.** A rising rate is an agent
   availability problem showing up before your users report it.

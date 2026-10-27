@@ -140,11 +140,11 @@ func (ec *Context) eval(x *feel.Expr) (any, error) {
 }
 
 // feelFailure turns a FEEL evaluation error that a resource limit raised into a
-// VERDICT_EVAL_005 diagnostic, so a capped iteration range reaches the caller
+// VERDICT_EVAL_005 diagnostic, so an exhausted iteration budget reaches the caller
 // as a coded expression failure rather than an uncoded error. Other errors pass
 // through unchanged.
 func feelFailure(err error) error {
-	if err != nil && errors.Is(err, feel.ErrIterationRangeTooLarge) {
+	if err != nil && errors.Is(err, feel.ErrIterationBudgetExceeded) {
 		return diag.Errorf(diag.CodeExpressionError, "%v", err)
 	}
 	return err

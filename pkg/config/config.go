@@ -47,11 +47,13 @@ type FEEL struct {
 	// against. Defaults to UTC, because a decision that means something
 	// different depending on where it ran is not auditable.
 	Timezone string `yaml:"timezone"`
-	// MaxIterationRange caps the number of integers an integer-range
-	// iteration context (`for i in a..b`) may produce; a larger range fails
-	// the evaluation before anything is allocated. Defaults to 1,000,000.
-	// Zero (or omitting the key) means the default; negative is rejected.
-	MaxIterationRange int64 `yaml:"max_iteration_range"`
+	// MaxIterations is the iteration budget of one expression evaluation:
+	// the total number of elements every `for`, `some` and `every` iteration
+	// context in it may produce, ranges and lists alike, nested products
+	// counted in full. Exceeding it fails the evaluation, an integer range
+	// before anything is allocated. Defaults to 1,000,000. Zero (or omitting
+	// the key) means the default; negative is rejected.
+	MaxIterations int64 `yaml:"max_iterations"`
 }
 
 // Evaluation configures the evaluator.
@@ -187,7 +189,7 @@ func Default() Config {
 	parallel := true
 	mcp := true
 	return Config{
-		FEEL: FEEL{Dialect: "feel", Timezone: "UTC", MaxIterationRange: verdict.DefaultMaxIterationRange},
+		FEEL: FEEL{Dialect: "feel", Timezone: "UTC", MaxIterations: verdict.DefaultMaxIterations},
 		Evaluation: Evaluation{
 			DefaultMaxLatency:            Duration(30 * time.Second),
 			ParallelIndependentDecisions: &parallel,
@@ -266,8 +268,8 @@ func (c Config) Validate() error {
 	if c.Evaluation.DefaultMaxLatency < 0 {
 		return fmt.Errorf("config: evaluation.default_max_latency cannot be negative")
 	}
-	if c.FEEL.MaxIterationRange < 0 {
-		return fmt.Errorf("config: feel.max_iteration_range cannot be negative, got %d", c.FEEL.MaxIterationRange)
+	if c.FEEL.MaxIterations < 0 {
+		return fmt.Errorf("config: feel.max_iterations cannot be negative, got %d", c.FEEL.MaxIterations)
 	}
 	return nil
 }
@@ -296,8 +298,8 @@ func (c Config) Options() []verdict.Option {
 	if c.Evaluation.MaxDepth > 0 {
 		opts = append(opts, verdict.WithMaxDepth(c.Evaluation.MaxDepth))
 	}
-	if c.FEEL.MaxIterationRange > 0 {
-		opts = append(opts, verdict.WithMaxIterationRange(c.FEEL.MaxIterationRange))
+	if c.FEEL.MaxIterations > 0 {
+		opts = append(opts, verdict.WithMaxIterations(c.FEEL.MaxIterations))
 	}
 	if c.FEEL.Timezone != "" {
 		if loc, err := time.LoadLocation(c.FEEL.Timezone); err == nil {

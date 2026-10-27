@@ -36,8 +36,8 @@ func (f NodeEvaluatorFunc) Evaluate(ec *Context, expr model.Expression) (any, er
 // Config is everything the evaluator needs that is not the model itself.
 type Config struct {
 	// FEEL is the expression evaluator. Required. It carries the limits that
-	// bound a single expression — the integer-range iteration cap among them
-	// (feel.WithMaxIterationRange) — so they reach every expression the
+	// bound a single expression — the per-evaluation iteration budget among
+	// them (feel.WithMaxIterations) — so they reach every expression the
 	// program evaluates, decision tables and boxed expressions alike, without
 	// a second copy here that could disagree with it.
 	FEEL *feel.Evaluator

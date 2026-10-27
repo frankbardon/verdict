@@ -352,20 +352,25 @@ func (ir IterationRange) Eval(intp *Interpreter) (any, error) {
 	}
 	step := int64(1)
 	// The element count minus one, in unsigned arithmetic so that the full
-	// int64 span cannot overflow. Checked before anything is allocated: a
-	// model loaded over the network must not be able to ask for a
-	// billion-element list.
+	// int64 span cannot overflow. Charged against the evaluation's iteration
+	// budget before anything is allocated: a model loaded over the network
+	// must not be able to ask for a billion-element list.
 	span := uint64(to) - uint64(from)
 	if to < from {
 		step = -1
 		span = uint64(from) - uint64(to)
 	}
 	results := make([]any, 0)
-	if limit := intp.MaxIterationRange; limit > 0 {
-		if span >= uint64(limit) {
-			return nil, &IterationRangeTooLargeError{From: from, To: to, Limit: limit}
+	if intp.MaxIterations > 0 {
+		// span+1 wraps to zero only for the full 2^64-element span, which
+		// no int64 budget admits.
+		if span == ^uint64(0) {
+			return nil, &IterationBudgetExceededError{Limit: intp.MaxIterations}
 		}
-		// Bounded by the cap, so sizing the list up front is safe.
+		if err := intp.chargeIterations(span + 1); err != nil {
+			return nil, err
+		}
+		// Bounded by the budget, so sizing the list up front is safe.
 		results = make([]any, 0, span+1)
 	}
 	for i := from; ; i += step {
@@ -377,15 +382,39 @@ func (ir IterationRange) Eval(intp *Interpreter) (any, error) {
 	return results, nil
 }
 
-// IterationRangeTooLargeError reports an integer-range iteration context that
-// would produce more elements than Interpreter.MaxIterationRange allows.
-type IterationRangeTooLargeError struct {
-	From, To int64
-	Limit    int64
+// chargeIterations spends n elements of the evaluation's iteration budget,
+// failing when the total would exceed Interpreter.MaxIterations. A zero
+// budget charges nothing.
+func (intp *Interpreter) chargeIterations(n uint64) error {
+	limit := intp.MaxIterations
+	if limit <= 0 {
+		return nil
+	}
+	if n > uint64(limit)-intp.iterations {
+		return &IterationBudgetExceededError{Limit: limit}
+	}
+	intp.iterations += n
+	return nil
 }
 
-func (e *IterationRangeTooLargeError) Error() string {
-	return fmt.Sprintf("iteration range %d..%d exceeds the limit of %d elements", e.From, e.To, e.Limit)
+// chargeDomain charges the elements of a for, some or every domain against
+// the iteration budget. An integer-range context charged its own elements
+// before building them, so only a list (or singleton) domain is charged here.
+func (intp *Interpreter) chargeDomain(listExpr Node, list []any) error {
+	if _, isRange := listExpr.(*IterationRange); isRange {
+		return nil
+	}
+	return intp.chargeIterations(uint64(len(list)))
+}
+
+// IterationBudgetExceededError reports an evaluation whose iteration contexts
+// would together produce more elements than Interpreter.MaxIterations allows.
+type IterationBudgetExceededError struct {
+	Limit int64
+}
+
+func (e *IterationBudgetExceededError) Error() string {
+	return fmt.Sprintf("iteration exceeds the limit of %d elements per evaluation", e.Limit)
 }
 
 // iterationEndpoint reports v as an int64 when it is an integral FEEL number
@@ -409,6 +438,9 @@ func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 		// An integer-range context with a non-integer endpoint: the whole
 		// for expression is null, not a type mismatch.
 		return nil, nil
+	}
+	if err := intp.chargeDomain(fe.ListExpr, aList); err != nil {
+		return nil, err
 	}
 
 	intp.PushEmpty()
@@ -479,6 +511,9 @@ func quantify(intp *Interpreter, varname string, listExpr, cond Node, decisive b
 	aList, ok := iterationDomain(listExpr, listLike)
 	if !ok {
 		return nil, nil
+	}
+	if err := intp.chargeDomain(listExpr, aList); err != nil {
+		return nil, err
 	}
 
 	intp.PushEmpty()
