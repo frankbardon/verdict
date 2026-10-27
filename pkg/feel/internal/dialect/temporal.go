@@ -221,9 +221,16 @@ func (dt *FEELDatetime) Add(dur *FEELDuration) *FEELDatetime {
 	return &FEELDatetime{t: dt.t.Add(dur.Duration())}
 }
 
-func (dt *FEELDatetime) Sub(v HasTime) *FEELDuration {
-	delta := dt.t.Sub(v.Time())
-	return NewFEELDuration(delta)
+// subInstants is the days and time duration a - b, the valuedtd⁻¹ of the
+// difference of two instants (DMN 1.5 §10.3.2.15, Table 57). A difference
+// beyond time.Duration's range (about 292 years) raises ErrDurationRange:
+// upstream's time.Time.Sub saturated it to the range's bound without a word.
+func subInstants(a, b time.Time) (*FEELDuration, error) {
+	delta := a.Sub(b)
+	if !b.Add(delta).Equal(a) {
+		return nil, ErrDurationRange
+	}
+	return NewFEELDuration(delta), nil
 }
 
 // VERDICT DIVERGENCE: Z07:00 as in timePatterns.
@@ -498,13 +505,42 @@ func compareDurations(a, b *FEELDuration) (r int, ok bool) {
 	return 0, true
 }
 
-// AddDuration is date + duration. DMN 1.5 §10.3.2.15 (Table 56, addition of a date and a
-// duration) evaluates it as the date of date and time(date, midnight) +
-// duration, so a days-and-time duration moves whole days and drops any
-// remainder of a day, and a years-and-months duration moves calendar months.
+// AddDuration is date + duration. DMN 1.5 §10.3.2.15 (Table 57, date with a
+// days and time or a years and months duration) evaluates it as the date of
+// date and time(date, midnight) + duration, so a days-and-time duration moves
+// whole days and drops any remainder of a day, and a years-and-months duration
+// moves calendar months.
 func (d *FEELDate) AddDuration(dur *FEELDuration) *FEELDate {
 	dt := (&FEELDatetime{t: d.t}).Add(dur).t
 	return &FEELDate{t: time.Date(dt.Year(), dt.Month(), dt.Day(), 0, 0, 0, 0, d.t.Location())}
+}
+
+// utcMidnight is the date as a date and time at UTC midnight, the implicit
+// conversion DMN 1.5 §10.3.2.3.5 applies to a date on either side of a
+// subtraction of dates and date and times (§10.3.2.15, Table 57). The
+// calendar date is kept whatever location the date was built in, so
+// today() - a parsed date counts whole days.
+func (d *FEELDate) utcMidnight() time.Time {
+	return time.Date(d.t.Year(), d.t.Month(), d.t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// AddDuration is time ± days and time duration: valuet⁻¹(valuet(t) +
+// valuedtd(dur)) (DMN 1.5 §10.3.2.15, Table 57), where valuet⁻¹ applies its
+// argument modulo 86400 seconds (§10.3.2.3.4), so the result wraps within the
+// day — 23:00:00 + PT2H is 01:00:00 — and keeps the time's offset. The caller
+// rules out a years and months duration, which Table 57 does not pair with a
+// time.
+func (tm *FEELTime) AddDuration(dur *FEELDuration) *FEELTime {
+	const day = int64(24 * time.Hour)
+	t := tm.t
+	sinceMidnight := int64(t.Hour())*int64(time.Hour) + int64(t.Minute())*int64(time.Minute) +
+		int64(t.Second())*int64(time.Second) + int64(t.Nanosecond())
+	x := (sinceMidnight + int64(dur.Duration())%day) % day
+	if x < 0 {
+		x += day
+	}
+	midnight := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	return &FEELTime{t: midnight.Add(time.Duration(x))}
 }
 
 var yearmonthDurationPattern = regexp.MustCompile(`^(\-?)P((\d+)Y)?((\d+)M)?$`)

@@ -307,21 +307,28 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 			}
 		}
 	case *FEELDatetime:
-		if op == "+" {
-			if rightDur, ok := rightVal.(*FEELDuration); ok {
-				return v.Add(rightDur), nil
+		// Upstream subtracted anything with a Time() — a time included, so
+		// date and time - time was a meaningless duration — and had no date
+		// operand, so date and time - date was null.
+		switch r := rightVal.(type) {
+		case *FEELDuration:
+			if op == "-" {
+				r = r.Negative()
 			}
-		} else if op == "-" {
-			if rightDur, ok := rightVal.(*FEELDuration); ok {
-				return v.Add(rightDur.Negative()), nil
-			} else if rightTime, ok := rightVal.(HasTime); ok {
-				return v.Sub(rightTime), nil
+			return v.Add(r), nil
+		case *FEELDatetime:
+			if op == "-" {
+				return subInstants(v.t, r.t)
+			}
+		case *FEELDate:
+			if op == "-" {
+				return subInstants(v.t, r.utcMidnight())
 			}
 		}
 	case *FEELDuration:
 		// Upstream had no duration case, so duration ± duration fell through
 		// to null.
-		if rightDur, ok := rightVal.(*FEELDuration); ok && (op == "+" || op == "-") {
+		if rightDur, ok := rightVal.(*FEELDuration); ok {
 			if op == "-" {
 				rightDur = rightDur.Negative()
 			}
@@ -332,14 +339,56 @@ func (binop Binop) typedOp(intp *Interpreter, es evalStrings, en evalNumbers, op
 			if ok {
 				return sum, nil
 			}
+			break
+		}
+		// Table 57: addition of a duration to a date, a date and time or a
+		// time commutes; subtraction from a duration is undefined.
+		if op != "+" {
+			break
+		}
+		switch r := rightVal.(type) {
+		case *FEELDate:
+			return r.AddDuration(v), nil
+		case *FEELDatetime:
+			return r.Add(v), nil
+		case *FEELTime:
+			if !v.isYearsMonths() {
+				return r.AddDuration(v), nil
+			}
 		}
 	case *FEELDate:
-		// Upstream had no date case, so date ± duration fell through to null.
-		if rightDur, ok := rightVal.(*FEELDuration); ok {
-			if op == "+" {
-				return v.AddDuration(rightDur), nil
-			} else if op == "-" {
-				return v.AddDuration(rightDur.Negative()), nil
+		// Upstream had no date case, so date ± duration and date - date fell
+		// through to null.
+		switch r := rightVal.(type) {
+		case *FEELDuration:
+			if op == "-" {
+				r = r.Negative()
+			}
+			return v.AddDuration(r), nil
+		case *FEELDate:
+			if op == "-" {
+				return subInstants(v.utcMidnight(), r.utcMidnight())
+			}
+		case *FEELDatetime:
+			if op == "-" {
+				return subInstants(v.utcMidnight(), r.t)
+			}
+		}
+	case *FEELTime:
+		// Upstream had no time case, so time ± duration and time - time fell
+		// through to null. Table 57 pairs a time with a days and time
+		// duration only; with a years and months duration it is null.
+		switch r := rightVal.(type) {
+		case *FEELDuration:
+			if !r.isYearsMonths() {
+				if op == "-" {
+					r = r.Negative()
+				}
+				return v.AddDuration(r), nil
+			}
+		case *FEELTime:
+			if op == "-" {
+				return subInstants(v.t, r.t)
 			}
 		}
 	}

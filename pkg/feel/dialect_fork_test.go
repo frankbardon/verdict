@@ -1052,6 +1052,99 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("Table 57 temporal addition and subtraction", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15 Table 57, row by row as the fork supports it.
+		// Upstream had no case for a duration on the left of +, for a date or
+		// a time on the left of either operator, or for date and time - date,
+		// so all of these were null; and date and time - time subtracted the
+		// time's instant on 0000-01-01.
+		strs := map[string]string{
+			// date and time - date and time; a date is UTC midnight.
+			`string(date and time("2026-01-02T01:00:00") - date and time("2026-01-01T00:00:00"))`: "P1DT1H",
+			`string(date("2026-01-02") - date("2026-01-01"))`:                                     "P1D",
+			`string(date("2026-01-01") - date("2026-03-01"))`:                                     "-P59D",
+			`string(date("2024-03-01") - date("2024-02-01"))`:                                     "P29D",
+			`string(date and time("2026-01-02T06:00:00") - date("2026-01-01"))`:                   "P1DT6H",
+			`string(date("2026-01-02") - date and time("2026-01-01T18:00:00"))`:                   "PT6H",
+			// time - time.
+			`string(time("10:30:00") - time("08:00:00"))`:        "PT2H30M",
+			`string(time("08:00:00") - time("10:30:00"))`:        "-PT2H30M",
+			`string(time("10:00:00") - time("10:00:00"))`:        "PT0S",
+			`string(time("10:00:00+02:00") - time("08:00:00Z"))`: "PT0S",
+			// date and time ± years and months duration, and commuted.
+			`string(date and time("2026-01-15T10:00:00") + duration("P1Y2M"))`: "2027-03-15T10:00:00@UTC",
+			`string(date and time("2026-01-15T10:00:00") - duration("P1M"))`:   "2025-12-15T10:00:00@UTC",
+			`string(duration("P1Y") + date and time("2026-01-01T10:00:00"))`:   "2027-01-01T10:00:00@UTC",
+			// date and time ± days and time duration, and commuted.
+			`string(duration("P1DT1H") + date and time("2026-01-01T00:00:00"))`: "2026-01-02T01:00:00@UTC",
+			// time ± days and time duration wraps within the day, and commutes.
+			`string(time("10:00:00+02:00") + duration("PT1H"))`: "11:00:00+02:00",
+			`string(time("23:00:00Z") + duration("PT2H"))`:      "01:00:00+00:00",
+			`string(time("01:00:00Z") - duration("PT2H"))`:      "23:00:00+00:00",
+			`string(time("10:00:00Z") + duration("P3DT1H"))`:    "11:00:00+00:00",
+			`string(time("10:00:00Z") - duration("-PT1.5S"))`:   "10:00:01+00:00",
+			`string(duration("PT90M") + time("10:00:00Z"))`:     "11:30:00+00:00",
+			// date ± years and months duration, and commuted.
+			`string(date("2026-01-15") + duration("P1M"))`: "2026-02-15",
+			`string(date("2026-01-15") - duration("P1Y"))`: "2025-01-15",
+			`string(@"P1M" + date("2026-01-15"))`:          "2026-02-15",
+			// date ± days and time duration, and commuted.
+			`string(duration("P1D") + date("2026-01-01"))`:   "2026-01-02",
+			`string(duration("PT23H") + date("2026-01-01"))`: "2026-01-01",
+			`string(date("2026-01-01") - duration("PT1H"))`:  "2025-12-31",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+		bools := map[string]bool{
+			`time("23:00:00") + duration("PT2H") = time("01:00:00")`:             true,
+			`duration("P1D") + time("10:00:00") = time("10:00:00")`:              true,
+			`date("2026-01-02") - date("2026-01-01") = duration("PT24H")`:        true,
+			`date and time("2026-01-02T00:00:00") - date("2026-01-01") = @"P1D"`: true,
+			`duration("P1D") + date("2026-01-01") = date("2026-01-01") + @"P1D"`: true,
+			`time("12:00:00") - time("11:00:00") < duration("PT90M")`:            true,
+			// years and months between dates stays a built-in, not date - date.
+			`years and months duration(date("2026-01-01"), date("2027-03-15")) = duration("P1Y2M")`: true,
+		}
+		for expr, want := range bools {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// Pairs Table 57 does not list, and subtraction from a duration, which
+		// it marks undefined, are null.
+		for _, expr := range []string{
+			`duration("P1D") - date("2026-01-01")`,
+			`duration("P1D") - date and time("2026-01-01T00:00:00")`,
+			`duration("PT1H") - time("10:00:00")`,
+			`duration("P1M") - date("2026-01-01")`,
+			`time("10:00:00") + duration("P1Y")`, `time("10:00:00") - duration("P1M")`,
+			`duration("P1M") + time("10:00:00")`,
+			`date("2026-01-01") + date("2026-01-02")`,
+			`date and time("2026-01-01T00:00:00") + date and time("2026-01-01T00:00:00")`,
+			`time("10:00:00") + time("11:00:00")`,
+			`date and time("2026-01-01T10:00:00") - time("09:00:00")`,
+			`time("10:00:00") - date and time("2026-01-01T09:00:00")`,
+			`date("2026-01-01") - time("09:00:00")`, `time("09:00:00") - date("2026-01-01")`,
+			`date("2026-01-01") + time("09:00:00")`,
+		} {
+			got, err := e.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(got) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(got))
+			}
+		}
+		// A difference beyond time.Duration's range raises rather than
+		// saturating, as a too-long duration string does.
+		if _, err := e.EvalText(`date("9999-12-31") - date("0001-01-01")`, nil); err == nil ||
+			!strings.Contains(err.Error(), "duration exceeds the supported range") {
+			t.Errorf(`date("9999-12-31") - date("0001-01-01") err = %v, want the duration range error`, err)
+		}
+	})
+
 	t.Run("conversion built-ins are null outside their domain", func(t *testing.T) {
 		// DMN 1.5 §10.3.4: "Whenever a parameter is outside its domain, the
 		// result of the built-in is null." Upstream raised "fail to parse

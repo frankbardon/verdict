@@ -302,6 +302,14 @@ opens as an empty canvas.
   (`PT1.5S`, kept to the nanosecond; `.seconds` is `1.5`). Two durations of
   the same kind add and subtract (`PT1.5S + PT0.5S = PT2S`); a years and months
   duration plus a days and time one is null.
+- **Temporal arithmetic follows DMN Table 57.** `date - date` is a days and time
+  duration (`date("2026-01-02") - date("2026-01-01")` is `P1D`; a date counts as
+  UTC midnight against a date and time), as is `time - time`. A duration added
+  to a date, date and time or time commutes (`@"P1D" + d`); subtracting one
+  *from* a duration is null. `time ± days and time duration` wraps within the
+  day (`23:00 + PT2H` is `01:00`); a time with a years and months duration is
+  null. Whole years and months between dates is `years and months duration(a,
+  b)`, not `b - a`.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration
