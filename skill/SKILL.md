@@ -269,8 +269,9 @@ opens as an empty canvas.
   explicit `null` rule.
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
-  `some` over `[]` is false, `every` over `[]` is true. One iteration context
-  only: `some x in A, y in B satisfies …` does not parse — nest two quantifiers.
+  `some` over `[]` is false, `every` over `[]` is true. Several iteration
+  contexts range over the cartesian product, and a later one may use an earlier
+  name: `some o in orders, l in o.lines satisfies l.qty > 10`.
 - **Input names come from the input-data variable**, not the file. `verdict
   explain` lists them.
 - **A decision service returns only its output decisions.** Encapsulated

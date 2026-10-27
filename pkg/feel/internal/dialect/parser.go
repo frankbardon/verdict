@@ -926,6 +926,13 @@ func (p *Parser) parseForExpr() (Node, error) {
 	}, nil
 }
 
+// parseSomeOrEvery parses a quantified expression with one or more
+// comma-separated iteration contexts, DMN 1.5 FEEL grammar rule 58:
+// `some x in A, y in B satisfies P`. Upstream accepted a single context only.
+// Several contexts desugar to nested quantifiers of the same kind, innermost
+// last, the way parseForExpr nests `for`: a later context sees the names bound
+// by earlier ones, and because the inner quantifier's three-valued result is
+// folded by the outer one, the answer is the fold over the cartesian product.
 func (p *Parser) parseSomeOrEvery() (Node, error) {
 	rng := p.startTextRange()
 	cmd := p.CurrentToken().Value
@@ -933,23 +940,40 @@ func (p *Parser) parseSomeOrEvery() (Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	// parse variable name
-	varName, err := p.parseName("in")
-	if err != nil {
-		return nil, err
-	}
 
-	if !p.CurrentToken().ExpectKeywords("in") {
-		return nil, p.Unexpected("in")
+	type iterContext struct {
+		varName  string
+		listExpr Node
 	}
-	err = p.scanner.Next()
-	if err != nil {
-		return nil, err
-	}
+	var contexts []iterContext
+	for {
+		// parse variable name
+		varName, err := p.parseName("in")
+		if err != nil {
+			return nil, err
+		}
 
-	listExpr, err := p.expression()
-	if err != nil {
-		return nil, err
+		if !p.CurrentToken().ExpectKeywords("in") {
+			return nil, p.Unexpected("in")
+		}
+		err = p.scanner.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		listExpr, err := p.expression()
+		if err != nil {
+			return nil, err
+		}
+		contexts = append(contexts, iterContext{varName: varName, listExpr: listExpr})
+
+		if !p.CurrentToken().Expect(",") {
+			break
+		}
+		err = p.scanner.Next()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if !p.CurrentToken().ExpectKeywords("satisfies") {
@@ -965,22 +989,27 @@ func (p *Parser) parseSomeOrEvery() (Node, error) {
 		return nil, err
 	}
 	rng.End = p.CurrentToken().Pos
-	if cmd == "some" {
-		return &SomeExpr{
-			Varname:    varName,
-			ListExpr:   listExpr,
-			FilterExpr: filterExpr,
-			textRange:  rng,
-		}, nil
-	} else {
-		return &EveryExpr{
-			Varname:    varName,
-			ListExpr:   listExpr,
-			FilterExpr: filterExpr,
-			textRange:  rng,
-		}, nil
-	}
 
+	node := filterExpr
+	for i := len(contexts) - 1; i >= 0; i-- {
+		c := contexts[i]
+		if cmd == "some" {
+			node = &SomeExpr{
+				Varname:    c.varName,
+				ListExpr:   c.listExpr,
+				FilterExpr: node,
+				textRange:  rng,
+			}
+		} else {
+			node = &EveryExpr{
+				Varname:    c.varName,
+				ListExpr:   c.listExpr,
+				FilterExpr: node,
+				textRange:  rng,
+			}
+		}
+	}
+	return node, nil
 }
 
 func (p *Parser) parseFunDef() (Node, error) {

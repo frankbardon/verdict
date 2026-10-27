@@ -235,6 +235,45 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("quantified expressions accept several iteration contexts", func(t *testing.T) {
+		// DMN 1.5 FEEL grammar rule 58: a comma-separated list of iteration
+		// contexts ranges over the cartesian product, and a later context may
+		// reference an earlier name. Upstream parsed a single context only.
+		cases := []struct {
+			expr string
+			want any
+		}{
+			{"some x in [1,2], y in [3,4] satisfies x + y = 6", true},
+			{"some x in [1,2], y in [3,4] satisfies x + y = 7", false},
+			{"every x in [1,2], y in [3,4] satisfies x < y", true},
+			{"every x in [1,2], y in [1,2] satisfies x <= y", false},
+			// Dependent contexts.
+			{"some x in [1,2], y in [x] satisfies y = 2", true},
+			{"every x in [[1,2],[3]], y in x satisfies y > 0", true},
+			{"some x in [1,2], y in [x], z in [x + y] satisfies z = 4", true},
+			// Any empty context empties the product.
+			{"some x in [1,2], y in [] satisfies true", false},
+			{"every x in [1,2], y in [] satisfies false", true},
+			{"some x in [], y in [1] satisfies true", false},
+			{"every x in [], y in [1] satisfies false", true},
+			// The quantify null folding holds over the whole product.
+			{"some x in [1,2], y in [null, 2] satisfies y > x", true},
+			{"some x in [1,2], y in [null, 1] satisfies y > x", nil},
+			{"every x in [1,2], y in [null, 1] satisfies y > 1", false},
+			{"every x in [1,2], y in [null, 2] satisfies y > 1", nil},
+			// Composes inside a larger expression, including a call argument.
+			{"count([some x in [1], y in [2] satisfies x < y, 1]) = 2", true},
+		}
+		for _, c := range cases {
+			if got := mustEval(t, e, c.expr, nil); got != c.want {
+				t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+			}
+		}
+		if got := mustEval(t, e, "(some x in [1], y in [2] satisfies x < y) and x = null and y = null", nil); got != true {
+			t.Errorf("a bound name leaked out of the quantifier scope: got %#v", got)
+		}
+	})
+
 	t.Run("a quantified result matches a true input entry", func(t *testing.T) {
 		c := NewCompiler(FEEL)
 		ut, err := c.CompileUnaryTest("true")
