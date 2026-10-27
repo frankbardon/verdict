@@ -172,6 +172,9 @@ string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; strings 
 context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key; context put/merge override instead
 context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list
 list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, negative from the end
+all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
+all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null
+1 in 1   "a" in "a"                                   // a non-list, non-range right side is `=`
 ```
 
 String, list and context built-ins return **null**, never an error, outside

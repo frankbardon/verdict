@@ -127,6 +127,92 @@ func extractList(args map[string]any, argName string) ([]any, error) {
 	}
 }
 
+// booleanItems binds the `list` parameter of all/any (and the fork's
+// and(list)/or(list)): DMN 1.5 §10.3.4.4 gives them the domain "list of
+// Boolean items or argument list of one or more Boolean items". A positional
+// call collects its arguments as the list, unless it passed one list; a named
+// `list:` that is not a list is a singleton list (§10.3.2.9.4). ok is false
+// — the call is null — for a missing or null list, or an item that is neither
+// a boolean nor null.
+//
+// VERDICT DIVERGENCE: the domain is checked before any item decides the
+// result, so `all([false, 123])` is null, not false. Interpretation: the TCK
+// (0059, 0060) only puts a non-boolean beside undecisive items; §10.3.4 makes
+// a parameter outside its domain null whatever else the list holds.
+func booleanItems(args map[string]any) (items []any, ok bool) {
+	v, present := args["list"]
+	if !present || isNullValue(v) {
+		return nil, false
+	}
+	items, isList := v.([]any)
+	switch {
+	case !isList:
+		items = []any{v}
+	case len(items) == 1:
+		if inner, nested := items[0].([]any); nested {
+			items = inner
+		}
+	}
+	for _, item := range items {
+		if isNullValue(item) {
+			continue
+		}
+		if _, isBool := item.(bool); !isBool {
+			return nil, false
+		}
+	}
+	return items, true
+}
+
+// allItems is all(list): false if any item is false, else true if every item
+// is true (so for an empty list), else null — a null item is unknown, never
+// falsy. DMN 1.5 §10.3.4.4: `all([false,null,true]) = false`, `all([]) =
+// true`, `all(0) = null`.
+func allItems(args map[string]any) (any, error) {
+	items, ok := booleanItems(args)
+	if !ok {
+		return null, nil
+	}
+	unknown := false
+	for _, item := range items {
+		switch item {
+		case false:
+			return false, nil
+		case true:
+		default:
+			unknown = true
+		}
+	}
+	if unknown {
+		return null, nil
+	}
+	return true, nil
+}
+
+// anyItems is any(list): true if any item is true, else false if every item
+// is false (so for an empty list), else null. DMN 1.5 §10.3.4.4:
+// `any([false,null,true]) = true`, `any([]) = false`, `any(0) = null`.
+func anyItems(args map[string]any) (any, error) {
+	items, ok := booleanItems(args)
+	if !ok {
+		return null, nil
+	}
+	unknown := false
+	for _, item := range items {
+		switch item {
+		case true:
+			return true, nil
+		case false:
+		default:
+			unknown = true
+		}
+	}
+	if unknown {
+		return null, nil
+	}
+	return false, nil
+}
+
 // separatedNumber rewrites s, written with the given separators, as a plain
 // numeric literal: number(from, grouping separator, decimal separator), DMN
 // 1.5 §10.3.4.1 Table 72. grouping is " ", "," or "." and decimal "." or ",",
@@ -448,57 +534,13 @@ func installBuiltinFunctions(prelude *Prelude) {
 		}
 	}).Vararg("list"))
 
-	prelude.Bind("all", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range list {
-			if !boolValue(v) {
-				return false, nil
-			}
-		}
-		return true, nil
-	}).Vararg("list"))
-
-	prelude.Bind("and", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range list {
-			if !boolValue(v) {
-				return false, nil
-			}
-		}
-		return true, nil
-	}).Vararg("list"))
-
-	prelude.Bind("any", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range list {
-			if boolValue(v) {
-				return true, nil
-			}
-		}
-		return false, nil
-	}).Vararg("list"))
-
-	prelude.Bind("or", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range list {
-			if boolValue(v) {
-				return true, nil
-			}
-		}
-		return false, nil
-	}).Vararg("list"))
+	// VERDICT DIVERGENCE: upstream coerced each item through boolValue, so
+	// `all([true, null])` was false and `any([123])` true, and raised on a
+	// null list. See allItems/anyItems.
+	prelude.Bind("all", NewNativeFunc(allItems).Vararg("list"))
+	prelude.Bind("and", NewNativeFunc(allItems).Vararg("list"))
+	prelude.Bind("any", NewNativeFunc(anyItems).Vararg("list"))
+	prelude.Bind("or", NewNativeFunc(anyItems).Vararg("list"))
 
 	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure
 	// (raising on a null list or position), returned "" for a start past the

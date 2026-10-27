@@ -2508,6 +2508,85 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
+	t.Run("all and any are three-valued and null outside their domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.4; TCK 0059-feel-all-function, 0060-feel-any-function.
+		// Upstream coerced each item through boolValue, so a null item was
+		// falsy, and raised on a null list.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`all([])`, true},
+			{`all([true, true])`, true},
+			{`all([true, false, true])`, false},
+			{`all([false, null, true])`, false},
+			{`all([true, null, true])`, nil},
+			{`all([true, 123, true])`, nil},
+			// Interpretation: the domain is checked before a decisive item.
+			{`all([false, 123])`, nil},
+			{`all(true)`, true},
+			{`all(false)`, false},
+			{`all(null)`, nil},
+			{`all(0)`, nil},
+			{`all(true, false, true)`, false},
+			{`all(true, null, true)`, nil},
+			{`all(true, 123, true)`, nil},
+			{`all()`, nil},
+			{`all(list: [true, false])`, false},
+			{`all(list: true)`, true},
+			{`all(list: null)`, nil},
+			{`all(l: [true])`, nil},
+			{`any([])`, false},
+			{`any([false, false])`, false},
+			{`any([false, null, true])`, true},
+			{`any([true, null])`, true},
+			{`any([null, false])`, nil},
+			{`any([123, false])`, nil},
+			{`any([true, 123])`, nil},
+			{`any(false)`, false},
+			{`any(null)`, nil},
+			{`any(0)`, nil},
+			{`any(false, null)`, nil},
+			{`any(false, true)`, true},
+			{`any()`, nil},
+			{`any(list: [false, true])`, true},
+			{`any(list: null)`, nil},
+			// The fork's aliases share the semantics.
+			{`and([true, null])`, nil},
+			{`and([false, null])`, false},
+			{`or([true, null])`, true},
+			{`or([false, null])`, nil},
+			{`or([1])`, nil},
+		})
+	})
+
+	t.Run("in with a scalar right side is equality", func(t *testing.T) {
+		// DMN 1.5 Table 55: `e1 in e2`, e2 not a list or range, is `e1 = e2`;
+		// TCK 0072-feel-in. Upstream raised a bad-op error.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`1 in 1`, true},
+			{`1 in 2`, false},
+			{`"a" in "a"`, true},
+			{`true in true`, true},
+			{`date("2018-12-05") in date("2018-12-05")`, true},
+			{`duration("P1Y") in duration("P1Y")`, true},
+			{`{a: "foo"} in {a: "foo"}`, true},
+			{`1 in "a"`, nil},
+			{`null in null`, true},
+			{`1 in null`, false},
+			// The list and range shapes are unchanged.
+			{`1 in [2,3,1]`, true},
+			{`1 in [2,3,4]`, false},
+			{`[1,2,3] in [[1,2,3,4], [1,2,3]]`, true},
+			{`5 in [1..10]`, true},
+			{`11 in [1..10]`, false},
+			{`"a" in [1, 2]`, nil},
+		})
+	})
+
 	t.Run("context put returns a new context and is null outside its domain", func(t *testing.T) {
 		// DMN 1.5 §10.3.4.10 Table 81; TCK 1146, 1147. Upstream raised on a
 		// null context or key and wrote a nested put into the argument's own

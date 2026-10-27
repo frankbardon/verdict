@@ -978,8 +978,8 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	return In(leftVal, rightVal)
 }
 
-// In implements FEEL's `e in container` for a range or a list container, and
-// yields true, false or null. inOp evaluates its operands and delegates here.
+// In implements FEEL's `e in container` for a range or a list container, or
+// any other value as equality, and yields true, false or null. inOp evaluates its operands and delegates here.
 //
 // VERDICT DIVERGENCE: upstream had no exported membership test. Verdict's
 // unary-test layer (pkg/feel/unarytest.go) interprets a range or list cell as
@@ -1039,6 +1039,9 @@ func In(leftVal, rightVal any) (any, error) {
 		}
 		return false, nil
 	default:
-		return nil, NewErrBadOp(typeName(leftVal), "in", typeName(rightVal))
+		// VERDICT DIVERGENCE: upstream raised a bad-op error. DMN 1.5 Table
+		// 55: `e1 in e2` with e2 neither a list nor a range is `e1 = e2`, so
+		// `1 in 1` is true and `1 in "a"` null (TCK 0072-feel-in).
+		return feelEqual(leftVal, rightVal)
 	}
 }

@@ -424,6 +424,46 @@ func TestStringAndListSupplementDomain(t *testing.T) {
 	}
 }
 
+func TestAllAnyAreThreeValued(t *testing.T) {
+	// DMN 1.5 §10.3.4.4; TCK 0059/0060. A null item decides nothing; a
+	// non-boolean item puts the call outside its domain.
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`all([false, null])`, false},
+		{`all([true, null])`, nil},
+		{`all([false, 123])`, nil},
+		{`all([])`, true},
+		{`all(true)`, true},
+		{`all(123)`, nil},
+		{`all(null)`, nil},
+		{`all(true, true)`, true},
+		{`any([true, null])`, true},
+		{`any([false, null])`, nil},
+		{`any([])`, false},
+		{`any(false)`, false},
+		{`any(false, true)`, true},
+		{`any(null)`, nil},
+		// Table 55: a scalar right side of `in` is equality.
+		{`1 in 1`, true},
+		{`"a" in "a"`, true},
+		{`"a" in "b"`, false},
+		{`1 in "a"`, nil},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); got != c.want {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 func TestConversionOverloadsTakeModelValues(t *testing.T) {
 	// DMN 1.5 §10.3.4.1 Table 72: the component overloads of date and time,
 	// fed from model inputs as a decision would feed them.
