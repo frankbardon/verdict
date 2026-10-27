@@ -1,6 +1,7 @@
 package feel
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -272,6 +273,29 @@ func TestForkedDefects(t *testing.T) {
 		}
 		if got := mustEval(t, e, "(some x in [1], y in [2] satisfies x < y) and x = null and y = null", nil); got != true {
 			t.Errorf("a bound name leaked out of the quantifier scope: got %#v", got)
+		}
+	})
+
+	t.Run("for with several iteration contexts yields one flat list", func(t *testing.T) {
+		// DMN 1.5 FEEL grammar rule 46 and §10.3.2.14: the contexts range over
+		// their cartesian product, a later context may reference an earlier
+		// name, and the result is one list. Upstream nested a list per outer
+		// element. The body's own list result is never flattened.
+		cases := map[string]string{
+			"for x in [1,2], y in [3,4] return x * y":                 "[3 4 6 8]",
+			"for x in [1,2], y in [x] return y":                       "[1 2]",
+			"for x in [1,2], y in [x], z in [x + y] return [x, y, z]": "[[1 1 2] [2 2 4]]",
+			"for x in [1,2], y in [] return x":                        "[]",
+			"for x in [1,2] return x * 10":                            "[10 20]",
+			"for x in [1,2] return [x]":                               "[[1] [2]]",
+			"for x in [1,2], y in [3] return [x, y]":                  "[[1 3] [2 3]]",
+			"count(for x in [1,2,3], y in [1,2] return x + y)":        "6",
+		}
+		for expr, want := range cases {
+			got := mustEval(t, e, expr, nil)
+			if s := fmt.Sprint(got); s != want {
+				t.Errorf("%s = %s, want %s", expr, s, want)
+			}
 		}
 	})
 

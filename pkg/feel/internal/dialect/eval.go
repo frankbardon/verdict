@@ -342,6 +342,15 @@ func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 				intp.Pop()
 				return nil, err
 			}
+			if fe.Continues {
+				// DMN 1.5 FEEL grammar rule 46 and §10.3.2.14: several
+				// iteration contexts range over their cartesian product and
+				// yield one flat list. Only the inner context's own list is
+				// spliced; the body's result is never flattened.
+				inner, _ := res.([]any)
+				results = append(results, inner...)
+				continue
+			}
 			results = append(results, res)
 		}
 		intp.Pop()

@@ -927,10 +927,15 @@ func (p *Parser) parseForExpr() (Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The remaining contexts iterate inside this one; Continues makes
+		// Eval splice their results into one flat list rather than nest them.
+		rng.End = p.CurrentToken().Pos
 		return &ForExpr{
 			Varname:    varName,
 			ListExpr:   listExpr,
 			ReturnExpr: returnExpr,
+			Continues:  true,
+			textRange:  rng,
 		}, nil
 	}
 

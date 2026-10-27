@@ -313,11 +313,14 @@ func (mt MultiTests) Repr() string {
 	return fmt.Sprintf("(multitests %s)", strings.Join(s, " "))
 }
 
-// ForExpr FOR expression
+// ForExpr FOR expression. A `for` with several iteration contexts parses as
+// nested ForExprs, one per context; every one but the innermost has Continues
+// set, and its ReturnExpr is the next context's ForExpr.
 type ForExpr struct {
 	Varname    string
 	ListExpr   Node
 	ReturnExpr Node
+	Continues  bool
 	textRange  TextRange
 }
 
