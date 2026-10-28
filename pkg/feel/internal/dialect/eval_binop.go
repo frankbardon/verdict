@@ -1007,7 +1007,9 @@ func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {
 				if elem, ok := m[r]; ok {
 					return elem, nil
 				}
-				return nil, NewErrKeyNotFound(r)
+				// DMN 1.5 §10.3.2.6: a context without the entry
+				// selects null, as the path `.r` does.
+				return null, nil
 			}
 		}
 	}

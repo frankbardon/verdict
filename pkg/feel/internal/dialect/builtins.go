@@ -301,6 +301,11 @@ func installBuiltinFunctions(prelude *Prelude) {
 			if _, ok := intp.Resolve(varNode.Name); !ok {
 				return false, nil
 			}
+		} else if dotop, ok := args["value"].(*DotOp); ok {
+			// A missing context entry selects null rather than raising
+			// (DMN 1.5 §10.3.2.6), so ask the context whether it holds
+			// the entry: `is defined({a: 1}.b)` stays false.
+			return entryDefined(intp, dotop)
 		} else {
 			_, err := args["value"].Eval(intp)
 			if err != nil {
@@ -838,4 +843,43 @@ func isFEELName(k string) bool {
 		}
 	}
 	return true
+}
+
+// entryDefined is `is defined(e.name)`: whether the value e selects from has
+// an entry or attribute called name. Upstream answered it from the "key not
+// found" a missing entry raised; the path is now null instead (DMN 1.5
+// §10.3.2.6), so the entry is looked up directly. A path over a list, or over
+// a value that is neither a context nor has attributes, is defined when it
+// evaluates without error, as before.
+func entryDefined(intp *Interpreter, dotop *DotOp) (any, error) {
+	if inner, ok := dotop.Left.(*DotOp); ok {
+		defined, err := entryDefined(intp, inner)
+		if err != nil || defined != true {
+			return defined, err
+		}
+	}
+	leftVal, err := dotop.Left.Eval(intp)
+	if err != nil {
+		var evalErr *EvalError
+		if errors.As(err, &evalErr) && (evalErr.Short == "key not found" || evalErr.Short == "index error") {
+			return false, nil
+		}
+		return false, err
+	}
+	if m, ok := asContext(leftVal); ok {
+		_, found := m[dotop.Attr]
+		return found, nil
+	}
+	if obj, ok := leftVal.(HasAttrs); ok {
+		_, found := obj.GetAttr(dotop.Attr)
+		return found, nil
+	}
+	if _, err := dotop.Eval(intp); err != nil {
+		var evalErr *EvalError
+		if errors.As(err, &evalErr) && (evalErr.Short == "key not found" || evalErr.Short == "index error") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }

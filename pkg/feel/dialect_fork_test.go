@@ -3184,6 +3184,24 @@ func TestForkedDefects(t *testing.T) {
 			{`[1, 2, 3][-1]`, 3.0},
 		})
 	})
+
+	t.Run("a missing context entry selects null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.6. Upstream raised "key not found" for `{a: 1}.b`
+		// and `{a: 1}["b"]`, and "type mismatch, expect map" for a path on
+		// the resulting null.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`{a: 1}.b`, nil},
+			{`{a: 1}["b"]`, nil},
+			{`{a: 1}.b.c`, nil},
+			{`{a: 1}.a`, 1.0},
+			{`{a: 1}.b = null`, true},
+			{`is defined({a: 1}.b)`, false},
+			{`is defined({a: 1}.a)`, true},
+		})
+	})
 }
 
 func approx(a, b float64) bool {

@@ -196,6 +196,7 @@ list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, n
 xs[1]   xs[-1]   [1, 2, 3][4] = null   [1, 2, 3][0] = null   // index from 1, negative from the end; out of range or fractional: null
 xs[item > 2]   people[age >= 18]   people[item.age >= 18]   // filter: item bound, a context's entries by name; false/null drops
 people.name = ["A", "B"]   get entries(m)[key = "y"].value   // a path on a list of contexts projects; missing entry: null
+{a: 1}.b = null   {a: 1}["b"] = null   {a: 1}.b.c = null   // a missing context entry selects null, never an error; is defined({a: 1}.b) = false
 list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]   // match form: replace each item match(item, newItem) is true for
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
 all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null

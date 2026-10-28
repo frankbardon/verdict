@@ -641,6 +641,54 @@ func TestListFilterAndPath(t *testing.T) {
 	}
 }
 
+// TestMissingContextEntry pins DMN 1.5 §10.3.2.6: selecting an entry a
+// context does not have, by path or by string bracket, is null rather than an
+// evaluation error, on a literal and on a context-typed variable alike, and a
+// path continuing from that null stays null. `is defined` still tells a
+// missing entry from one holding null, and an unbound name is still null.
+func TestMissingContextEntry(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"m":  FromGo(map[string]any{"a": 1, "n": nil, "in": map[string]any{"x": 2}}),
+		"cs": FromGo([]any{map[string]any{"x": 1}, map[string]any{"y": 2}}),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`{a: 1}.b`, nil},
+		{`{a: 1}["b"]`, nil},
+		{`{a: 1}.b.c`, nil},
+		{`{a: 1}.a`, 1.0},
+		{`m.b`, nil},
+		{`m["b"]`, nil},
+		{`m.b.c`, nil},
+		{`m.in.y`, nil},
+		{`m.a`, 1.0},
+		{`m.in.x`, 2.0},
+		{`m.b + 1`, nil},
+		{`cs.x`, []any{1.0, nil}},
+		{`[{x: 1}, {y: 2}].x`, []any{1.0, nil}},
+		{`unbound`, nil},
+		{`is defined(m.b)`, false},
+		{`is defined(m.b.c)`, false},
+		{`is defined(m.n)`, true},
+		{`is defined(m.in.x)`, true},
+		{`is defined(m.in.y)`, false},
+		{`is defined(unbound)`, false},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 // TestStringAndListSupplementDomain pins the §10.3.4 domain rule for the
 // supplement's string and list built-ins: a null or wrong-typed argument, an
 // invalid regular expression, replacement or flags (footnote 2), a position

@@ -309,6 +309,14 @@ func (mapNode MapNode) Eval(intp *Interpreter) (any, error) {
 	return mapVal, nil
 }
 
+// Eval is a path expression on a single value. DMN 1.5 §10.3.2.6 selects
+// the entry named Attr from a context; a context without that entry has
+// nothing to select, so the path is null (`{a: 1}.b` is null), and a path
+// continuing from that null is null too (`{a: 1}.b.c`), as null propagates
+// through every FEEL operator.
+//
+// VERDICT DIVERGENCE: upstream raised "key not found" for a missing entry and
+// "type mismatch, expect map" for a path on null. See NOTICE.md.
 func (dotop DotOp) Eval(intp *Interpreter) (any, error) {
 	leftVal, err := dotop.Left.Eval(intp)
 	if err != nil {
@@ -317,30 +325,22 @@ func (dotop DotOp) Eval(intp *Interpreter) (any, error) {
 	if list, ok := leftVal.([]any); ok {
 		return dotop.project(intp, list)
 	}
-	if mapVal, ok := leftVal.(Scope); ok {
-		if val, found := mapVal[dotop.Attr]; found {
+	if m, ok := asContext(leftVal); ok {
+		if val, found := m[dotop.Attr]; found {
 			return val, nil
-		} else {
-			return nil, NewErrKeyNotFound(dotop.Attr)
 		}
-	} else if mapVal, ok = leftVal.(map[string]interface{}); ok {
-		// todo: consolidate duplicate code as above, same as for 'Scope'
-		if val, found := mapVal[dotop.Attr]; found {
-			return val, nil
-		} else {
-			return nil, NewErrKeyNotFound(dotop.Attr)
-		}
-	} else if obj, ok := leftVal.(HasAttrs); ok {
+		return null, nil
+	}
+	if isNullValue(leftVal) {
+		return null, nil
+	}
+	if obj, ok := leftVal.(HasAttrs); ok {
 		if v, found := obj.GetAttr(dotop.Attr); found {
 			return normalizeValue(v), nil
-		} else {
-			//return nil, NewEvalError(-4001, "attr error", fmt.Sprintf("cannot get attr %s", dotop.Attr))
-			return nil, NewErrKeyNotFound(dotop.Attr)
-
 		}
-	} else {
-		return nil, NewErrTypeMismatch("map")
+		return nil, NewErrKeyNotFound(dotop.Attr)
 	}
+	return nil, NewErrTypeMismatch("map")
 }
 
 // project is a path over a list (DMN 1.5 §10.3.2.5): "a selection using the
