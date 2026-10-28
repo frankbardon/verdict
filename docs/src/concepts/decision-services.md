@@ -3,7 +3,7 @@
 A decision service is a named slice of the decision requirements graph with a
 contract: the inputs it declares (input data and input decisions), the output
 decisions it returns, and the encapsulated decisions it runs to get there
-without exposing them (DMN 1.5 §10.4).
+without exposing them (DMN 1.5 §6.3.10, Table 17; the notation is §6.2.5).
 
 ## Calling a service
 

@@ -71,7 +71,7 @@ func TestBoxedExpressions(t *testing.T) {
 
 		{"affordable", "Affordable", true},
 
-		// A decision service is callable from an expression (DMN 1.5 §7.4).
+		// A decision service is callable from an expression (DMN 1.5 §10.3.2.13.2).
 		{"service_caller", "Service Caller", "senior"},
 	}
 

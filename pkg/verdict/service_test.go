@@ -44,7 +44,7 @@ func serviceModel(checks map[string]string) string {
 
 // TestDecisionServicesPassNativeFEELValues pins issue #45: a value crossing a
 // decision service, in either direction, keeps its FEEL type and value (DMN 1.5
-// §10.4). Before the fix every argument and result was narrowed to plain Go
+// §10.3.2.9). Before the fix every argument and result was narrowed to plain Go
 // and back, so a zoneless date and time came back zoned UTC, a date or time
 // came back a date and time, a years-and-months duration came back a string
 // and a decimal came back a float64 — each visible to FEEL after the call.
