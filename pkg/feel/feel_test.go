@@ -521,6 +521,57 @@ func TestStringAndListSupplementDomain(t *testing.T) {
 	}
 }
 
+// TestListReplaceMatchFunction pins the match form of `list replace` (DMN
+// 1.5 §10.3.4.4): every item the function of (item, newItem) returns true
+// for is replaced. Issue #54.
+func TestListReplaceMatchFunction(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"limit": FromGo(5)}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// The spec example, positionally and by name.
+		{`list replace([2,4,6,8], function(item, newItem) item < newItem, 5)`, []any{5.0, 5.0, 6.0, 8.0}},
+		{`list replace(list: [2,4,6,8], match: function(item, newItem) item < newItem, newItem: 5)`, []any{5.0, 5.0, 6.0, 8.0}},
+		{`list replace(match: function(item, newItem) item = 4, newItem: null, list: [2,4,6])`, []any{2.0, nil, 6.0}},
+		// The predicate sees outer variables and iteration bindings.
+		{`list replace([2,4,6,8], function(item, newItem) item > limit, 0)`, []any{2.0, 4.0, 0.0, 0.0}},
+		{`for t in [3] return list replace([2,4], function(x, y) x > t, 0)`, []any{[]any{2.0, 0.0}}},
+		// A result that is not true is no match.
+		{`list replace([2,4,6,8], function(item, newItem) 1, 5)`, []any{2.0, 4.0, 6.0, 8.0}},
+		{`list replace([2,4], function(item, newItem) null, 5)`, []any{2.0, 4.0}},
+		{`list replace([2,4], function(item, newItem) false, 5)`, []any{2.0, 4.0}},
+		// An empty list or a singleton conversion.
+		{`list replace([], function(item, newItem) true, 5)`, []any{}},
+		{`list replace(1, function(item, newItem) true, 5)`, []any{5.0}},
+		// Outside the domain: null.
+		{`list replace([2,4], function(item) true, 5)`, nil},
+		{`list replace([2,4], function(a, b, c) true, 5)`, nil},
+		{`list replace(null, function(item, newItem) true, 5)`, nil},
+		{`list replace(list: [2,4], match: 1, newItem: 5)`, nil},
+		{`list replace(list: [2,4], match: function(a, b) true, position: 1, newItem: 5)`, nil},
+		// The position form is unchanged.
+		{`list replace([1,2,3], 2, 9)`, []any{1.0, 9.0, 3.0}},
+		{`list replace(list: [1,2,3], position: -1, newItem: 9)`, []any{1.0, 2.0, 9.0}},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+
+	// An error inside the predicate propagates, as it does from sort's.
+	if _, err := e.EvalText(`list replace([1,2], function(a, b) a.x.y, 5)`, nil); err == nil {
+		t.Error("a failing predicate: want an evaluation error, got none")
+	}
+}
+
 func TestStringLiteralsAndCharacters(t *testing.T) {
 	// DMN 1.5 §10.3.1.2 grammar rule 66: a string literal's escapes decode
 	// (issue #55). §10.3.4.3 Table 73: lengths and positions count

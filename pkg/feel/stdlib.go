@@ -53,6 +53,14 @@ func buildSupplement() {
 		// wrong arguments is null (DMN 1.5 §10.3.4), as for the prelude's.
 		supplement[name] = nativeFunc(f).Standard()
 	}
+	// bindNative is bind for a built-in constructed directly on the fork's
+	// NativeFun — one that needs a hook Function does not expose.
+	bindNative := func(name string, nf *pfeel.NativeFun) {
+		if _, exists := pfeel.GetPrelude().Resolve(name); exists {
+			return
+		}
+		supplement[name] = nf.Standard()
+	}
 
 	// ---- string functions -------------------------------------------------
 	//
@@ -216,29 +224,14 @@ func buildSupplement() {
 
 	// ---- list functions ---------------------------------------------------
 
-	bind("list replace", Function{
-		Params: []string{"list", "position", "newItem"},
-		Help:   "a copy of list with the position (1-based, negative from the end) replaced; null outside the list",
-		Fn: func(a map[string]any) (any, error) {
-			// DMN 1.5 §10.3.4.4: list is a list (a non-list item converted
-			// to a singleton list, §10.3.2.9.4), position an integer
-			// counted from 1 or, if negative, from the end, and newItem
-			// "any element including null"; anything else is null (TCK
-			// 1155).
-			l, ok := asList(a["list"])
-			if !ok {
-				return Null, nil
-			}
-			idx, ok := listPosition(a["position"], len(l))
-			if !ok {
-				return Null, nil
-			}
-			out := make([]any, len(l))
-			copy(out, l)
-			out[idx] = a["newItem"]
-			return out, nil
-		},
-	})
+	// list replace(list, position, newItem) and list replace(list, match,
+	// newItem), DMN 1.5 §10.3.4.4. The match form calls a function value,
+	// so it is bound through the fork's interpreter-aware hook rather than
+	// Function, whose Fn never sees the interpreter.
+	bindNative("list replace", pfeel.NewNativeFuncI(listReplace).Overloads(
+		[]string{"list", "position", "newItem"},
+		[]string{"list", "match", "newItem"},
+	).Help("a copy of list with the position (1-based, negative from the end), or every item match(item, newItem) holds for, replaced; null outside the list"))
 	bind("duplicate values", Function{
 		Params: []string{"list"},
 		Help:   "the values occurring more than once, in first-occurrence order",
@@ -388,6 +381,53 @@ func twoStrings(a map[string]any, k1, k2 string) (string, string, bool) {
 	s1, ok1 := asString(a[k1])
 	s2, ok2 := asString(a[k2])
 	return s1, s2, ok1 && ok2
+}
+
+// listReplace is `list replace` (DMN 1.5 §10.3.4.4): list is a list (a
+// non-list item converted to a singleton list, §10.3.2.9.4) and newItem "any
+// element including null". The second argument is either a position — an
+// integer counted from 1 or, if negative, from the end — or a match function
+// of (item, newItem), and every item it returns true for is replaced. A
+// positional call binds the position overload, so a function value there is
+// the match form too. A match function of the wrong arity, a position outside
+// the list, or any other second argument is null (TCK 1155); a match result
+// that is not true leaves the item, and an error from its body propagates.
+func listReplace(intp *pfeel.Interpreter, a map[string]any) (any, error) {
+	l, ok := asList(a["list"])
+	if !ok {
+		return Null, nil
+	}
+	sel, isMatch := a["match"]
+	if !isMatch {
+		sel = a["position"]
+	}
+	out := make([]any, len(l))
+	copy(out, l)
+	switch sel.(type) {
+	case *pfeel.FunDef, *pfeel.NativeFun:
+		for i, item := range l {
+			r, ok, err := pfeel.CallFunction(intp, sel, item, a["newItem"])
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return Null, nil
+			}
+			if b, _ := r.(bool); b {
+				out[i] = a["newItem"]
+			}
+		}
+		return out, nil
+	}
+	if isMatch {
+		return Null, nil
+	}
+	idx, ok := listPosition(sel, len(l))
+	if !ok {
+		return Null, nil
+	}
+	out[idx] = a["newItem"]
+	return out, nil
 }
 
 // listPosition resolves a list position — an integer counted from 1 or, if

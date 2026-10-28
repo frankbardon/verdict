@@ -3039,6 +3039,25 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("a built-in can call a function value", func(t *testing.T) {
+		// NativeFun.Call dropped the interpreter, so a native built-in could
+		// not apply a function argument and `list replace(list, match,
+		// newItem)` (DMN 1.5 §10.3.4.4) was null (#54). NewNativeFuncI and
+		// CallFunction give it the interpreter, with ordinary argument
+		// binding and the standard null rules.
+		cases := map[string]any{
+			"list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]":            true,
+			"list replace(list: [2,4], match: function(item, newItem) item = 4, newItem: 0) = [2,0]":    true,
+			"list replace([2,4], function(item) true, 5)":                                               nil,
+			"(for t in [3] return list replace([2,4], function(item, newItem) item > t, 0)) = [[2, 0]]": true,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {

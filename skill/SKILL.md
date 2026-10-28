@@ -191,6 +191,7 @@ context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key;
 context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list
 context put(Applicant, "k", 1)   Applicant = {name: "A", age: 30}   // a context input is a context to =, built-ins, string()
 list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, negative from the end
+list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]   // match form: replace each item match(item, newItem) is true for
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
 all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null
 1 in 1   "a" in "a"                                   // a non-list, non-range right side is `=`
