@@ -3,6 +3,7 @@ package feel
 import (
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -1192,6 +1193,72 @@ func TestFromGoKeepsSubSecondTimes(t *testing.T) {
 	in := time.Date(2024, 3, 5, 10, 0, 0, 250_000_000, time.UTC)
 	if got := ToGo(FromGo(in)); got != "2024-03-05T10:00:00.25Z" {
 		t.Errorf("ToGo(FromGo(%v)) = %#v, want 2024-03-05T10:00:00.25Z", in, got)
+	}
+}
+
+// TestFromGoKeepsIANAZones pins #68: a Go time whose Location is a real IANA
+// zone reaches FEEL with that zone id (DMN 1.5 §10.3.2.3.5), so `.timezone`
+// reads it back; anything else keeps the offset, which is always lossless.
+func TestFromGoKeepsIANAZones(t *testing.T) {
+	paris, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2024-10-27 02:30 happens twice in Paris, at +02:00 and then +01:00.
+	// `2024-10-27T02:30:00@Europe/Paris` can name only one of them — the one
+	// time.Date picks, as the FEEL parser does — so the other keeps its offset.
+	named := time.Date(2024, 10, 27, 2, 30, 0, 0, paris)
+	other := time.Date(2024, 10, 27, 0, 30, 0, 0, time.UTC).In(paris)
+	if other.Equal(named) {
+		other = time.Date(2024, 10, 27, 1, 30, 0, 0, time.UTC).In(paris)
+	}
+	e, err := NewEvaluator(FEEL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		in   time.Time
+		want string
+		zone any
+	}{
+		{"paris summer", time.Date(2024, 7, 1, 10, 0, 0, 0, paris), "2024-07-01T10:00:00@Europe/Paris", "Europe/Paris"},
+		{"paris winter", time.Date(2024, 1, 15, 10, 0, 0, 0, paris), "2024-01-15T10:00:00@Europe/Paris", "Europe/Paris"},
+		{"paris nanoseconds", time.Date(2024, 7, 1, 10, 0, 0, 123456789, paris), "2024-07-01T10:00:00.123456789@Europe/Paris", "Europe/Paris"},
+		{"DST overlap, the occurrence the id names", named, "2024-10-27T02:30:00@Europe/Paris", "Europe/Paris"},
+		{"DST overlap, the other occurrence", other, other.Format("2006-01-02T15:04:05-07:00"), nil},
+		{"utc", time.Date(2024, 7, 1, 10, 0, 0, 0, time.UTC), "2024-07-01T10:00:00Z", nil},
+		{"unnamed fixed zone", time.Date(2024, 7, 1, 10, 0, 0, 0, time.FixedZone("", 3600)), "2024-07-01T10:00:00+01:00", nil},
+		{"fixed zone named CET in July", time.Date(2024, 7, 1, 10, 0, 0, 0, time.FixedZone("CET", 3600)), "2024-07-01T10:00:00+01:00", nil},
+		{"fixed zone named like an offset", time.Date(2024, 7, 1, 10, 0, 0, 0, time.FixedZone("+01:00", 3600)), "2024-07-01T10:00:00+01:00", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := FromGo(c.in)
+			if got := ToGo(v); got != c.want {
+				t.Errorf("ToGo(FromGo(%v)) = %#v, want %q", c.in, got, c.want)
+			}
+			zone, err := e.EvalText("x.timezone", map[string]any{"x": v})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ToGo(zone) != c.zone {
+				t.Errorf("x.timezone = %#v, want %#v", ToGo(zone), c.zone)
+			}
+			eq, err := e.EvalText(`x = date and time("`+c.in.UTC().Format(time.RFC3339Nano)+`")`, map[string]any{"x": v})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if eq != true {
+				t.Errorf("FromGo(%v) is not the same instant (= gave %#v)", c.in, eq)
+			}
+		})
+	}
+
+	// time.Local names the host's zone, never a zone id, whatever the host is.
+	local := FromGo(time.Date(2024, 7, 1, 10, 0, 0, 0, time.Local))
+	if s, _ := ToGo(local).(string); strings.Contains(s, "@") {
+		t.Errorf("ToGo(FromGo(local time)) = %q, want an offset form", s)
 	}
 }
 

@@ -425,16 +425,60 @@ func TypeName(v any) string {
 
 // datetimeFromGo builds a FEEL date-and-time from a Go time. The embedded
 // library keeps its temporal fields unexported and offers only string parsing,
-// so the conversion round-trips through the offset-bearing ISO-8601 form it
-// accepts. The fraction of a second is kept to the nanosecond, as a FEEL date
-// and time holds it, so a sub-second input is not silently truncated. The
-// result is always zoned: a time.Time has no zoneless form.
+// so the conversion round-trips through the ISO-8601 form it accepts. The
+// fraction of a second is kept to the nanosecond, as a FEEL date and time holds
+// it, so a sub-second input is not silently truncated. The result is always
+// zoned: a time.Time has no zoneless form.
+//
+// A time whose Location is a real IANA zone keeps it as a zone id
+// (`...@Europe/Paris`, DMN 1.5 §10.3.2.3.5 and Table 72), so `.timezone` reads
+// it back; any other time carries its offset (`Z`, `+01:00`). See ianaZone for
+// what counts as real.
 func datetimeFromGo(t time.Time) any {
-	dt, err := pfeel.ParseDatetime(t.Format("2006-01-02T15:04:05.999999999-07:00"))
+	const local = "2006-01-02T15:04:05.999999999"
+	s := t.Format(local + "-07:00")
+	if id := ianaZone(t); id != "" {
+		s = t.Format(local) + "@" + id
+	}
+	dt, err := pfeel.ParseDatetime(s)
 	if err != nil {
 		return Null
 	}
 	return dt
+}
+
+// ianaZone is the IANA zone id t's Location names, or "" when writing t with
+// that id would not give back t's instant and offset. A Location's name is
+// whatever its constructor was given, so the name alone proves nothing:
+//
+//   - "UTC" stays the offset form, so the common case prints `Z`, not `@UTC`;
+//     "Local" names the host's zone, which a decision must not depend on (the
+//     FEEL parser rejects it too); "" is an unnamed fixed zone.
+//   - The name must load from the time zone database, which rejects names such
+//     as `+01:00` given to time.FixedZone.
+//   - t's wall clock placed in the loaded zone must be t's instant. That
+//     rejects a fixed zone borrowing a real zone's name (FixedZone("CET", 3600)
+//     in July, when real CET is +02:00), and the one occurrence of a wall
+//     clock time repeated when DST ends that the zone id would not name (the
+//     FEEL parser places `local@zone` with time.Date, as this check does, so
+//     the id reads as the other occurrence) — there only the offset is
+//     lossless.
+func ianaZone(t time.Time) string {
+	name := t.Location().String()
+	switch name {
+	case "", "UTC", "Local":
+		return ""
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return ""
+	}
+	y, mo, d := t.Date()
+	h, mi, sec := t.Clock()
+	if !time.Date(y, mo, d, h, mi, sec, t.Nanosecond(), loc).Equal(t) {
+		return ""
+	}
+	return name
 }
 
 // Aggregate applies the DMN 1.5 §10.3.4.4 list aggregate name (count, min,

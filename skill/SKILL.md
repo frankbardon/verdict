@@ -450,6 +450,11 @@ opens as an empty canvas.
   `string(time("10:00:00.000"))` is `"10:00:00"`.
 - **`today()` is the UTC date**, not the host's: with `feel.timezone` set (the
   engine clock's zone, UTC by default) it is the date in that zone.
+- **`now()` and Go `time.Time` inputs keep their IANA zone.** Under
+  `feel.timezone: Europe/Paris`, `now()` is `...@Europe/Paris` and
+  `now().timezone` is `"Europe/Paris"`; under UTC it is `...Z` and `.timezone`
+  is null. A Go time in `time.Local`, a `time.FixedZone`, or the occurrence of a
+  DST fall-back hour the id cannot name carries its offset only (`.timezone` null).
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration

@@ -18,7 +18,9 @@ verdict:
 
     # The location now(), today() and date arithmetic resolve against. UTC by
     # default: a decision that means something different depending on where it
-    # ran is not auditable.
+    # ran is not auditable. An IANA zone here also names now()'s zone:
+    # `Europe/Paris` makes now() `...@Europe/Paris` with
+    # now().timezone = "Europe/Paris"; UTC makes it `...Z`, .timezone null.
     timezone: UTC
 
     # The iteration budget of one request: the total number of elements every
