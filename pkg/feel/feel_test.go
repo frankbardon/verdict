@@ -248,6 +248,10 @@ func TestModuloIsDecimal(t *testing.T) {
 		`modulo(10.1, -4.5)`:  "-3.4",
 		`modulo(-10.1, -4.5)`: "-1.1",
 		`modulo(10, 2.5)`:     "0",
+		// No 18-digit truncation of either the operands or the result
+		// (issue #59).
+		`modulo(0.00000000000000000001, 3)`:  "0.00000000000000000001",
+		`modulo(-0.00000000000000000001, 3)`: "2.99999999999999999999",
 	} {
 		v, err := e.EvalText(expr, nil)
 		if err != nil {
@@ -259,6 +263,33 @@ func TestModuloIsDecimal(t *testing.T) {
 		}
 		if got := n.String(); got != want {
 			t.Errorf("%s = %s, want %s", expr, got, want)
+		}
+	}
+}
+
+func TestNumbersPrintAtDecimal128Precision(t *testing.T) {
+	// DMN 1.5 §10.3.2.3.1: a number is decimal128, 34 significant digits;
+	// §10.3.4.1 Table 72 string(from). Printing used to truncate to 18
+	// fractional digits, so exp(-50) printed "0" (issue #59).
+	e := newFEEL(t)
+	for expr, want := range map[string]string{
+		`string(exp(-50))`: "0.0000000000000000000001928749847963917783017342816527013",
+		`string(0.1000000000000000055511151231257827)`: "0.1000000000000000055511151231257827",
+		`string(1/3)`:                            "0.3333333333333333333333333333333333",
+		`string(-1/3)`:                           "-0.3333333333333333333333333333333333",
+		`string(10)`:                             "10",
+		`string(1.50)`:                           "1.5",
+		`string(0.1)`:                            "0.1",
+		`string(-12.5)`:                          "-12.5",
+		`string(0)`:                              "0",
+		`string(-0)`:                             "0",
+		`string(10 ** -40)`:                      "0.0000000000000000000000000000000000000001",
+		`string(10 ** 40)`:                       "10000000000000000000000000000000000000000",
+		`string(2 ** 120)`:                       "1329227995784915872903807060280345000",
+		`"n=" + string(0.000000000000000000005)`: "n=0.000000000000000000005",
+	} {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("%s = %#v, want %q", expr, got, want)
 		}
 	}
 }

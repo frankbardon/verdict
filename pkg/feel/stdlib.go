@@ -200,7 +200,7 @@ func buildSupplement() {
 			q := new(big.Rat).Quo(d, v)
 			fl := new(big.Int).Div(q.Num(), q.Denom()) // Euclidean: floor, since Denom > 0
 			r := new(big.Rat).Sub(d, new(big.Rat).Mul(v, new(big.Rat).SetInt(fl)))
-			return pfeel.NewNumber(r.FloatString(decimalDigits)), nil
+			return decimal128Number(new(big.Float).SetPrec(mathPrec).SetRat(r)), nil
 		},
 	})
 	bind("sqrt", Function{Params: []string{"number"}, Help: "square root, null for negatives",
@@ -421,13 +421,10 @@ func numberArg(v any) (*pfeel.Number, bool) {
 	return n, ok && n != nil
 }
 
-// decimalDigits is how many fractional digits a decimal argument is read and
-// written at; it matches the precision a *pfeel.Number prints at.
-const decimalDigits = 18
-
 // decimalArg is a numeric argument as an exact rational, read through the
-// number's decimal text so a literal such as 10.1 is exactly 101/10 rather
-// than its nearest binary approximation.
+// number's decimal text (34 significant digits, the precision a *pfeel.Number
+// prints at) so a literal such as 10.1 is exactly 101/10 rather than its
+// nearest binary approximation.
 func decimalArg(v any) (*big.Rat, bool) {
 	n, ok := numberArg(v)
 	if !ok {

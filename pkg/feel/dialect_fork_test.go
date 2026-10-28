@@ -2829,6 +2829,32 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("numbers print at 34 significant digits as plain decimals", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.3.1. Upstream printed Text('f', 18), so anything
+		// below 5e-19 was "0" and longer fractions lost their tail. No
+		// exponent form, however extreme the magnitude.
+		for expr, want := range map[string]string{
+			`string(exp(-50)) != "0"`:                      "",
+			`string(0.1000000000000000055511151231257827)`: "0.1000000000000000055511151231257827",
+			`string(1/3)`:                                  "0.3333333333333333333333333333333333",
+			`string(10 ** -40)`:                            "0.0000000000000000000000000000000000000001",
+			`string(10 ** 40)`:                             "10000000000000000000000000000000000000000",
+			`string(-0)`:                                   "0",
+			`string(25)`:                                   "25",
+		} {
+			got := mustEval(t, e, expr, nil)
+			if want == "" {
+				if got != true {
+					t.Errorf("%s = %#v, want true", expr, got)
+				}
+				continue
+			}
+			if got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {

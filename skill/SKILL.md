@@ -169,6 +169,7 @@ value in ["low", "medium", "high"]                // membership
 decimal(amount * 1.2, 2)                          // round to 2 places
 modulo(-10.1, 4.5) = 3.4   sqrt(-1) = null           // numeric fns: exact decimals; null on null, non-number or out-of-domain args
 sqrt(2)   log(10)   exp(1)   odd(9007199254740993)  // 34 significant digits; odd/even exact on any integer
+string(1/3) = "0.3333333333333333333333333333333333"   // numbers print at 34 significant digits, plain decimal (never 1E-40), zeros trimmed
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
 date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
 number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
