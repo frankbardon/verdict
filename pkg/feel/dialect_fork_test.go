@@ -3397,6 +3397,24 @@ func TestForkedDefects(t *testing.T) {
 			t.Error("3 between 1 compiled, want a syntax error")
 		}
 	})
+
+	t.Run("function parameters take a type", func(t *testing.T) {
+		// DMN 1.5 grammar rule 56 and §10.3.2.13.2. Upstream read only a
+		// parameter name, so `function(a: string) a` was a syntax error.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`(function(a: string, b: number) a)("x", 1)`, "x"},
+			{`(function(a, b: number) a)(1, 2)`, 1.0},
+			{`(function(a: string) a)(1)`, nil},
+			{`(function(a: number) a)(null)`, nil},
+			{`(function(a: number) a)([7])`, 7.0},
+			{`(function(a: string) a) instance of function<string>->Any`, true},
+			{`(function(a: number) a) instance of function<string>->Any`, false},
+			{`(function(a) a) instance of function<string>->Any`, true},
+		})
+	})
 }
 
 func approx(a, b float64) bool {

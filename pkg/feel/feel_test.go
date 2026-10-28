@@ -1446,6 +1446,91 @@ func TestInstanceOf(t *testing.T) {
 	}
 }
 
+// TestTypedFunctionParameters pins DMN 1.5 grammar rule 56 (formal parameter
+// = parameter name [":" type]) and §10.3.2.13.2: an untyped parameter is Any;
+// an invocation whose argument does not conform to its parameter's type,
+// before or after implicit conversion, is null and the body does not run; and
+// `instance of function<…>->…` checks declared parameter types
+// contravariantly (§10.3.2.9.2).
+func TestTypedFunctionParameters(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"xs": FromGo([]any{3, 1, 2})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Parsing: typed, untyped and mixed parameters.
+		{`(function(a: string, b: number) a)("x", 1)`, "x"},
+		{`(function(a, b) a + b)(1, 2)`, 3.0},
+		{`(function(a: number, b) a + b)(1, 2)`, 3.0},
+		{`(function(a, b: string) b)(1, "y")`, "y"},
+		{`(function(d: date and time) d.year)(date and time("2020-01-01T10:00:00"))`, 2020.0},
+		{`(function(xs: list<number>) count(xs))([1, 2])`, 2.0},
+		{`(function(c: context<a: number>) c.a)({a: 1, b: 2})`, 1.0},
+		{`(function(f: function<number>->number) f(2))(abs)`, 2.0},
+		// A non-conforming argument makes the invocation null.
+		{`(function(a: string) a)(1)`, nil},
+		{`(function(a: number, b: string) a)(1, 2)`, nil},
+		{`(function(a: number, b) b)(b: 1, a: "x")`, nil},
+		{`(function(a: number) a)(a: 5)`, 5.0},
+		{`(function(c: context<a: number>) c.a)({b: 2})`, nil},
+		{`(function(xs: list<number>) xs)([1, "a"])`, nil},
+		// Null conforms to every type (Null <: T); Any and Null as types.
+		{`(function(a: number) a)(null)`, nil},
+		{`(function(a: number) a = null)(null)`, true},
+		{`(function(a: Any) a)("x")`, "x"},
+		{`(function(a: Null) 1)(5)`, nil},
+		{`(function(a: Null) 1)(null)`, 1.0},
+		// Implicit conversions (§10.3.2.9.4) are applied before the check.
+		{`(function(xs: list<number>) xs)(5)`, []any{5.0}},
+		{`(function(a: number) a)([7])`, 7.0},
+		{`(function(a: number) a)([7, 8])`, nil},
+		{`(function(d: date and time) string(d))(date("2020-01-01"))`, "2020-01-01T00:00:00Z"},
+		// A type that maps to no lattice node is not checked.
+		{`(function(a: tPerson) a)(5)`, 5.0},
+		// instance of: declared parameter types, contravariantly.
+		{`(function(a: string) a) instance of function<string>->Any`, true},
+		{`(function(a: number) a) instance of function<string>->Any`, false},
+		{`(function(a: Any) a) instance of function<string>->Any`, true},
+		{`(function(a: string) a) instance of function<Any>->Any`, false},
+		{`(function(a: string) a) instance of function<Null>->Any`, true},
+		{`(function(a, b: number) a) instance of function<string, number>->Any`, true},
+		{`(function(a, b: number) a) instance of function<string, string>->Any`, false},
+		{`(function(a: string) a) instance of function<string, string>->Any`, false},
+		{`(function(c: context<a: number>) c) instance of function<context<a: number, b: string>>->Any`, true},
+		{`(function(c: context<a: number, b: string>) c) instance of function<context<a: number>>->Any`, false},
+		{`(function(xs: list<number>) xs) instance of function<list<number>>->Any`, true},
+		{`(function(f: function<number>->Any) 1) instance of function<function<Any>->string>->Any`, true},
+		{`(function(f: function<Any>->Any) 1) instance of function<function<number>->Any>->Any`, false},
+		{`(function(a: tPerson) a) instance of function<number>->Any`, true},
+		// Closures still close over their definition scope.
+		{`{k: 10, f: function(a: number) a + k}.f(1)`, 11.0},
+		// sort and list replace apply typed predicates; a non-conforming call
+		// is null, which is not true: list replace reads it as "no match";
+		// sort as "not before", so a predicate that never conforms errors
+		// nothing and leaves the order unspecified.
+		{`sort(xs, function(a: number, b: number) a < b)`, []any{1.0, 2.0, 3.0}},
+		{`list replace(xs, function(item: number, newItem: number) item > 2, 0)`, []any{0.0, 1.0, 2.0}},
+		{`count(sort(xs, function(a: string, b: string) a < b))`, 3.0},
+		{`list replace(xs, function(item: string, newItem) item > 2, 0)`, []any{3.0, 1.0, 2.0}},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+	for _, bad := range []string{`function(a:) a`, `function(a: list<number) a`, `function(: string) a`} {
+		if _, err := e.Compile(bad); err == nil {
+			t.Errorf("%s compiled, want a syntax error", bad)
+		}
+	}
+}
+
 // TestBetween pins DMN 1.5 grammar rule 49.b and Table 55: `e1 between e2 and
 // e3` is `e1 >= e2 and e1 <= e3`, inclusive at both ends, a comparison at the
 // precedence of `=` and `in`, and null wherever the equivalent expression is.

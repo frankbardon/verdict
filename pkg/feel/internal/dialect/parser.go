@@ -1483,8 +1483,10 @@ func (p *Parser) parseFunDef() (Node, error) {
 		return nil, err
 	}
 
-	// parse var list
+	// parse the formal parameters, grammar rule 56: parameter name [":" type]
 	var args []string
+	var types []*TypeExpr
+	typed := false
 	for !p.CurrentToken().Expect(")") {
 		argName, err := p.parseName()
 		if err != nil {
@@ -1492,6 +1494,18 @@ func (p *Parser) parseFunDef() (Node, error) {
 		}
 
 		args = append(args, argName)
+
+		var argType *TypeExpr
+		if p.CurrentToken().Expect(":") {
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+			if argType, err = p.parseType(); err != nil {
+				return nil, err
+			}
+			typed = true
+		}
+		types = append(types, argType)
 
 		if p.CurrentToken().Expect(",") {
 			err = p.scanner.Next()
@@ -1518,9 +1532,13 @@ func (p *Parser) parseFunDef() (Node, error) {
 		return nil, err
 	}
 	rng.End = p.CurrentToken().Pos
+	if !typed {
+		types = nil
+	}
 	return &FunDef{
-		Args:      args,
-		Body:      exp,
-		textRange: rng,
+		Args:       args,
+		ParamTypes: types,
+		Body:       exp,
+		textRange:  rng,
 	}, nil
 }

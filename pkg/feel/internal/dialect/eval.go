@@ -690,10 +690,11 @@ func (ee EveryExpr) Eval(intp *Interpreter) (any, error) {
 // free names at the call site (dynamic scope). See NOTICE.md.
 func (fd FunDef) Eval(intp *Interpreter) (any, error) {
 	return &FunDef{
-		Args:      fd.Args,
-		Body:      fd.Body,
-		closure:   append([]Scope(nil), intp.ScopeStack...),
-		textRange: fd.textRange,
+		Args:       fd.Args,
+		ParamTypes: fd.ParamTypes,
+		Body:       fd.Body,
+		closure:    append([]Scope(nil), intp.ScopeStack...),
+		textRange:  fd.textRange,
 	}, nil
 }
 
@@ -714,6 +715,9 @@ func (fd *FunDef) invoke(intp *Interpreter, frame Scope) (any, error) {
 	return fd.Body.Eval(intp)
 }
 
+// EvalCall applies fd to positional arguments, as a built-in such as `sort`
+// does. An argument that does not conform to its parameter's declared type
+// makes the result null without running the body (§10.3.2.13.2).
 func (fd *FunDef) EvalCall(intp *Interpreter, args []any) (any, error) {
 	if len(args) != len(fd.Args) {
 		return nil, errors.New("eval call argument size mismatch")
@@ -721,6 +725,9 @@ func (fd *FunDef) EvalCall(intp *Interpreter, args []any) (any, error) {
 	frame := make(Scope, len(fd.Args))
 	for i, argName := range fd.Args {
 		frame[argName] = normalizeValue(args[i])
+	}
+	if ok, err := fd.conformFrame(intp, frame); !ok || err != nil {
+		return null, err
 	}
 	return fd.invoke(intp, frame)
 }
@@ -950,7 +957,9 @@ func (fc FunCall) EvalMacro(intp *Interpreter, macro *Macro) (any, error) {
 // `f(a: 1, z: 2)` ran with b null. DMN 1.5 §10.3.2.13.2: if the arguments do
 // not conform to the argument list the result of the invocation is null; so a
 // wrong count, or a name that is not a parameter, is null and the body is not
-// run. An error evaluating an argument still propagates.
+// run. An error evaluating an argument still propagates. So, too, is an
+// argument that does not conform to its parameter's declared type (grammar
+// rule 56; see FunDef.conformFrame).
 func (fc FunCall) EvalFunDef(intp *Interpreter, funDef *FunDef) (any, error) {
 	if len(funDef.Args) != len(fc.Args) {
 		return null, nil
@@ -978,6 +987,9 @@ func (fc FunCall) EvalFunDef(intp *Interpreter, funDef *FunDef) (any, error) {
 			}
 			frame[funDef.Args[i]] = normalizeValue(a)
 		}
+	}
+	if ok, err := funDef.conformFrame(intp, frame); !ok || err != nil {
+		return null, err
 	}
 	return funDef.invoke(intp, frame)
 }

@@ -115,7 +115,15 @@ func (fc FunCall) Repr() string {
 // FunDef function definition
 type FunDef struct {
 	Args []string
-	Body Node
+	// ParamTypes holds the type declared on each parameter, parallel to Args
+	// (DMN 1.5 grammar rule 56: parameter name [":" type]); an entry is nil
+	// where none was declared, and the slice is nil when no parameter has a
+	// type. An undeclared type is Any (§10.3.2.13.2).
+	//
+	// VERDICT DIVERGENCE: upstream did not parse parameter types. See
+	// NOTICE.md.
+	ParamTypes []*TypeExpr
+	Body       Node
 
 	// closure is the scope stack the definition was evaluated in (DMN 1.5
 	// §10.3.2.13.2: a FEEL function is a lexical closure). It holds the
@@ -134,7 +142,14 @@ func (fd FunDef) TextRange() TextRange {
 }
 
 func (fd FunDef) Repr() string {
-	return fmt.Sprintf("(function [%s] %s)", strings.Join(fd.Args, ", "), fd.Body.Repr())
+	params := make([]string, len(fd.Args))
+	for i, name := range fd.Args {
+		params[i] = name
+		if i < len(fd.ParamTypes) && fd.ParamTypes[i] != nil {
+			params[i] = name + ": " + fd.ParamTypes[i].Repr()
+		}
+	}
+	return fmt.Sprintf("(function [%s] %s)", strings.Join(params, ", "), fd.Body.Repr())
 }
 
 // Var variable

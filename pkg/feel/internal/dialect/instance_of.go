@@ -216,7 +216,20 @@ func conformsTo(intp *Interpreter, v any, t *TypeExpr) (bool, error) {
 		}
 		return true, nil
 	case TypeKindFunction:
-		return acceptsArity(v, len(t.Params)), nil
+		if !acceptsArity(v, len(t.Params)) {
+			return false, nil
+		}
+		if fd, ok := v.(*FunDef); ok && fd.ParamTypes != nil {
+			// Contravariance: each Si of the type must conform to the
+			// declared Ti of the parameter, so the function accepts every
+			// argument the type promises it.
+			for i, s := range t.Params {
+				if !typeConforms(s, fd.ParamTypes[i]) {
+					return false, nil
+				}
+			}
+		}
+		return true, nil
 	default:
 		switch t.Name {
 		case "Any":
@@ -229,12 +242,13 @@ func conformsTo(intp *Interpreter, v any, t *TypeExpr) (bool, error) {
 }
 
 // acceptsArity reports whether v is a function that can be invoked with n
-// positional arguments. It is the whole of the function-type check: a FEEL
-// function definition declares no parameter types the fork keeps (grammar
-// rule 56's `: type` is not parsed) and no result type at all (rule 55), so
-// its parameters are Any — to which every Si of the type conforms, as
-// contravariance requires — and its result type is not known without
-// evaluating it. Interpretation: an unknown result type is taken to conform.
+// positional arguments. With typeConforms over a FunDef's declared parameter
+// types it is the function-type check (§10.3.2.9.2). A parameter declared
+// without a type is Any (§10.3.2.13.2), to which every Si of the type
+// conforms, as contravariance requires; a built-in's parameters are taken as
+// Any too. A FEEL function definition declares no result type (rule 55), so
+// its result type is not known without evaluating it. Interpretation: an
+// unknown result type is taken to conform.
 func acceptsArity(v any, n int) bool {
 	switch f := v.(type) {
 	case *FunDef:
@@ -260,4 +274,129 @@ func arityFits(n, required, optional int, vararg bool) bool {
 		return false
 	}
 	return vararg || n <= required+optional
+}
+
+// declaredType is a parameter's declared type for checking: Any when none was
+// declared (§10.3.2.13.2) or when it maps to no lattice node.
+//
+// Interpretation: model itemDefinition names are not in scope for the fork,
+// so a parameter typed with one — or with a misspelt name — is not checked
+// rather than making every invocation null.
+func declaredType(t *TypeExpr) *TypeExpr {
+	if t == nil || !t.mapped() {
+		return anyType
+	}
+	return t
+}
+
+var anyType = &TypeExpr{Kind: TypeKindName, Name: "Any"}
+
+// typeConforms reports whether type s conforms to type t, s <: t, by the
+// rules of DMN 1.5 §10.3.2.9.2: equivalence; Null <: T <: Any; list and range
+// types by their element type; a context type with at least t's entries, each
+// conforming; and a function type of the same arity whose parameter types are
+// contravariant and result type covariant. A type that maps to no lattice
+// node is taken as Any (see declaredType).
+func typeConforms(s, t *TypeExpr) bool {
+	s, t = declaredType(s), declaredType(t)
+	if t.Kind == TypeKindName && t.Name == "Any" {
+		return true
+	}
+	if s.Kind == TypeKindName && s.Name == "Null" {
+		return true
+	}
+	if s.Kind != t.Kind {
+		return false
+	}
+	switch t.Kind {
+	case TypeKindList, TypeKindRange:
+		return typeConforms(s.Elem, t.Elem)
+	case TypeKindContext:
+		for i, key := range t.Keys {
+			found := false
+			for j, sk := range s.Keys {
+				if sk == key {
+					if !typeConforms(s.Fields[j], t.Fields[i]) {
+						return false
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+		return true
+	case TypeKindFunction:
+		if len(s.Params) != len(t.Params) {
+			return false
+		}
+		for i := range t.Params {
+			if !typeConforms(t.Params[i], s.Params[i]) {
+				return false
+			}
+		}
+		return typeConforms(s.Result, t.Result)
+	default:
+		return s.Name == t.Name
+	}
+}
+
+// conformFrame checks each bound argument in frame against its parameter's
+// declared type, replacing it with its implicitly converted value where the
+// conversion is what makes it conform. ok is false when an argument does not
+// conform: DMN 1.5 §10.3.2.13.2, "The arguments ... conform to the argument
+// list [X1, ... Xn] if type(ei) conforms to ti before or after applying
+// implicit conversions or ti is not specified in Xi ... if the arguments do
+// not conform to the argument list, the result of the invocation is null."
+func (fd *FunDef) conformFrame(intp *Interpreter, frame Scope) (bool, error) {
+	for i, t := range fd.ParamTypes {
+		if t == nil || !t.mapped() {
+			continue
+		}
+		name := fd.Args[i]
+		v, ok, err := conformArg(intp, frame[name], t)
+		if !ok || err != nil {
+			return false, err
+		}
+		frame[name] = v
+	}
+	return true, nil
+}
+
+// conformArg checks v against the mapped type t, first as it is and then
+// after each implicit conversion of §10.3.2.9.4 that can apply: to a
+// singleton list where t is a list type, from a singleton list where it is
+// not, and from a date to the date and time at its UTC midnight where t is
+// date and time. It returns the value to bind: v itself, or its conversion.
+func conformArg(intp *Interpreter, v any, t *TypeExpr) (any, bool, error) {
+	if ok, err := conformsTo(intp, v, t); ok || err != nil {
+		return v, ok, err
+	}
+	var converted any
+	switch {
+	case t.Kind == TypeKindList:
+		if _, isList := v.([]any); isList {
+			return nil, false, nil
+		}
+		converted = []any{v}
+	case t.Kind == TypeKindName && t.Name == "date and time":
+		d, isDate := v.(*FEELDate)
+		if !isDate {
+			return nil, false, nil
+		}
+		converted = &FEELDatetime{t: d.utcMidnight(), hasOffset: true}
+	default:
+		list, isList := v.([]any)
+		if !isList || len(list) != 1 {
+			return nil, false, nil
+		}
+		converted = list[0]
+	}
+	ok, err := conformsTo(intp, converted, t)
+	if !ok || err != nil {
+		return nil, false, err
+	}
+	return converted, true, nil
 }
