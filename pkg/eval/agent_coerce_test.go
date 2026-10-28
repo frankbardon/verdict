@@ -204,6 +204,8 @@ func TestCoerceToTypeCharacterization(t *testing.T) {
 		{"object/list", []any{1}, objX, "error: expected an object with fields x, got []interface {}"},
 		{"object/multi-field scalar", 7, obj, "error: expected an object with fields x, y, got int"},
 		{"object/multi-field nil", nil, nested, "error: expected an object with fields at, p, tags, got <nil>"},
+		{"object/multi-field all missing", map[string]any{}, obj, `error: missing field "x"`},
+		{"object/multi-field first invalid", map[string]any{"x": "a", "y": "b"}, obj, `error: field "x": "a" is not a number`},
 		{"object/nested", map[string]any{
 			"p":    map[string]int{"x": 1, "y": 2},
 			"tags": []string{"a"},

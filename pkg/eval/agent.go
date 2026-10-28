@@ -339,7 +339,8 @@ func coerceToType(v any, spec model.TypeSpec) (any, error) {
 			return nil, fmt.Errorf("expected an object with fields %s, got %T", fieldNames(spec.Components), v)
 		}
 		out := make(map[string]any, len(spec.Components))
-		for name, comp := range spec.Components {
+		for _, name := range sortedFieldNames(spec.Components) {
+			comp := spec.Components[name]
 			raw, present := obj[name]
 			if !present {
 				return nil, fmt.Errorf("missing field %q", name)
@@ -526,10 +527,17 @@ func toMap(v any) (map[string]any, bool) {
 // TypeSpec.Components is a map, so the declared order is not kept; the names
 // are sorted so the message is the same on every run.
 func fieldNames(components map[string]model.TypeSpec) string {
+	return strings.Join(sortedFieldNames(components), ", ")
+}
+
+// sortedFieldNames returns the component names in sorted order, so that
+// field checks run, and report the first failing field, the same way on
+// every run.
+func sortedFieldNames(components map[string]model.TypeSpec) []string {
 	names := make([]string, 0, len(components))
 	for k := range components {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	return strings.Join(names, ", ")
+	return names
 }
