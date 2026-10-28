@@ -563,34 +563,55 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return flattened, nil
 	}).Required("list"))
 
+	// VERDICT DIVERGENCE: upstream named the second parameter `predicates`,
+	// raised on a list argument that was not a list, on a second argument
+	// that was not a user-defined function, and ("eval call argument size
+	// mismatch") on a function that did not take two arguments. DMN 1.5
+	// §10.3.4.9 Table 80: sort(list, precedes), precedes a boolean function
+	// of 2 arguments; §10.3.4 makes a parameter outside its domain null. So a
+	// null list, a non-function or a function of any other arity is null; a
+	// non-list value is a singleton list (§10.3.2.9.4, as listArg); any
+	// function value — a FunDef or a native one such as a BKM — is called
+	// through CallFunction. An error raised inside the function's body
+	// propagates. The sort is stable, so a predicate whose result is never
+	// true leaves the list as it was (the spec fixes no order then).
 	prelude.Bind("sort", NewMacro(func(intp *Interpreter, args map[string]Node, varargs []Node) (any, error) {
 		vlist, err := args["list"].Eval(intp)
 		if err != nil {
 			return nil, err
 		}
-		list, ok := vlist.([]any)
-		if !ok {
-			//return nil, NewEvalError(-4080, "the first argument is not list")
-			return nil, NewErrTypeMismatch("list")
-		}
-
-		vpred, err := args["predicates"].Eval(intp)
+		vpred, err := args["precedes"].Eval(intp)
 		if err != nil {
 			return nil, err
 		}
-		predicates, ok := vpred.(*FunDef)
+		list, ok := listArg(vlist)
 		if !ok {
-			//return nil, NewEvalError(-4080, "the second argument is not function")
-			return nil, NewErrTypeMismatch("function")
+			return null, nil
+		}
+		switch p := vpred.(type) {
+		case *FunDef:
+			if len(p.Args) != 2 {
+				return null, nil
+			}
+		case *NativeFun:
+		default:
+			return null, nil
 		}
 
 		newList := append([]any{}, list...)
 		var sortErr error
-		sort.Slice(newList, func(i, j int) bool {
-			r, err := predicates.EvalCall(intp, []any{newList[i], newList[j]})
+		misfit := false
+		sort.SliceStable(newList, func(i, j int) bool {
+			if sortErr != nil || misfit {
+				return false
+			}
+			r, ok, err := CallFunction(intp, vpred, newList[i], newList[j])
 			if err != nil {
-				//panic(err)
 				sortErr = err
+				return false
+			}
+			if !ok {
+				misfit = true
 				return false
 			}
 			return boolValue(r)
@@ -598,8 +619,11 @@ func installBuiltinFunctions(prelude *Prelude) {
 		if sortErr != nil {
 			return nil, sortErr
 		}
+		if misfit {
+			return null, nil
+		}
 		return newList, nil
-	}).Required("list", "predicates"))
+	}).Required("list", "precedes"))
 
 	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure,
 	// so a null delimiter raised, and it took two further optional arguments

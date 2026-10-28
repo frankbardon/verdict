@@ -899,12 +899,30 @@ func (fc FunCall) evalArgsToMap(intp *Interpreter) (map[string]any, error) {
 	return kwArgMap, nil
 }
 
+// EvalMacro binds a call's unevaluated arguments to a macro's parameters and
+// calls it.
+//
+// VERDICT DIVERGENCE: upstream raised on too few or too many arguments and on
+// a missing keyword, and ignored a keyword no parameter had. DMN 1.5 §10.3.4
+// makes a built-in invoked outside its domain null, as EvalNativeFun does for
+// native built-ins: so a standard (prelude) macro — `sort`, `is defined` —
+// yields null for any of them, and an unknown keyword is a misfit too. An
+// error raised by the macro itself, such as one from evaluating an argument
+// or from inside a `sort` predicate's body, still propagates.
 func (fc FunCall) EvalMacro(intp *Interpreter, macro *Macro) (any, error) {
-	if len(macro.requiredArgNames) > len(fc.Args) {
-		return nil, NewErrTooFewArguments(macro.requiredArgNames[len(fc.Args):])
-		//return nil, NewEvalError(-1005, "number of args of macro mismatch")
+	argNodes, varArgs, err := fc.bindMacroArgs(macro)
+	if err != nil {
+		if macro.standard {
+			return null, nil
+		}
+		return nil, err
 	}
+	return macro.fn(intp, argNodes, varArgs)
+}
 
+// bindMacroArgs fits a call's argument nodes to a macro's parameters; an
+// error means they do not fit.
+func (fc FunCall) bindMacroArgs(macro *Macro) (map[string]Node, []Node, error) {
 	argNodes := make(map[string]Node)
 	var varArgs []Node
 	if fc.keywordArgs {
@@ -912,41 +930,40 @@ func (fc FunCall) EvalMacro(intp *Interpreter, macro *Macro) (any, error) {
 		for _, argNode := range fc.Args {
 			kwArgMap[argNode.argName] = argNode.arg
 		}
-
 		for _, argName := range macro.requiredArgNames {
-			if ast, ok := kwArgMap[argName]; ok {
-				argNodes[argName] = ast
-			} else {
-				//return nil, NewEvalError(-5001, "no keyword argument", fmt.Sprintf("no keyword argument %s", argName))
-				return nil, NewErrKeywordArgument(argName)
+			ast, ok := kwArgMap[argName]
+			if !ok {
+				return nil, nil, NewErrKeywordArgument(argName)
 			}
+			argNodes[argName] = ast
 		}
-
 		for _, argName := range macro.optionalArgNames {
 			if ast, ok := kwArgMap[argName]; ok {
 				argNodes[argName] = ast
 			}
 		}
-	} else {
-		if len(fc.Args) < len(macro.requiredArgNames) {
-			//reqArgs := strings.Join(macro.requiredArgNames[len(fc.Args):len(macro.requiredArgNames)], ", ")
-			//return nil, NewEvalError(-5003, "too few arguments", fmt.Sprintf("more arguments required: %s", reqArgs))
-			return nil, NewErrTooFewArguments(macro.requiredArgNames[len(fc.Args):])
-		}
-		for i, argNode := range fc.Args {
-			if i < len(macro.requiredArgNames) {
-				argNodes[macro.requiredArgNames[i]] = argNode.arg
-			} else if i < len(macro.requiredArgNames)+len(macro.optionalArgNames) {
-				argNodes[macro.optionalArgNames[i-len(macro.requiredArgNames)]] = argNode.arg
-			} else if macro.varArgName != "" {
-				varArgs = append(varArgs, argNode.arg)
-			} else {
-				//return nil, NewEvalError(-5002, "too many arguments")
-				return nil, NewErrTooManyArguments()
+		for argName := range kwArgMap {
+			if _, ok := argNodes[argName]; !ok {
+				return nil, nil, NewErrKeywordArgument(argName)
 			}
 		}
+		return argNodes, nil, nil
 	}
-	return macro.fn(intp, argNodes, varArgs)
+	if len(fc.Args) < len(macro.requiredArgNames) {
+		return nil, nil, NewErrTooFewArguments(macro.requiredArgNames[len(fc.Args):])
+	}
+	for i, argNode := range fc.Args {
+		if i < len(macro.requiredArgNames) {
+			argNodes[macro.requiredArgNames[i]] = argNode.arg
+		} else if i < len(macro.requiredArgNames)+len(macro.optionalArgNames) {
+			argNodes[macro.optionalArgNames[i-len(macro.requiredArgNames)]] = argNode.arg
+		} else if macro.varArgName != "" {
+			varArgs = append(varArgs, argNode.arg)
+		} else {
+			return nil, nil, NewErrTooManyArguments()
+		}
+	}
+	return argNodes, varArgs, nil
 }
 
 // EvalFunDef invokes a user-defined function.

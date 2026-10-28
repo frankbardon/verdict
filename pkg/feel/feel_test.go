@@ -976,6 +976,78 @@ func TestListReplaceMatchFunction(t *testing.T) {
 	}
 }
 
+// TestMacroBuiltinArguments pins the Macro built-ins (`sort`, `is defined`)
+// on arguments that do not fit: DMN 1.5 §10.3.4 makes a built-in invoked
+// outside its domain null. Upstream raised on a wrong argument count, a
+// missing keyword, a non-list or non-function argument to sort and a
+// predicate of the wrong arity.
+func TestMacroBuiltinArguments(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"xs": FromGo([]any{3, 1, 2}), "k": FromGo(-1)}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Misfitting arguments: null.
+		{`sort()`, nil},
+		{`sort(1)`, nil},
+		{`sort([3,1], 5)`, nil},
+		{`sort([3,1], null)`, nil},
+		{`sort(null, function(x, y) x < y)`, nil},
+		{`sort([3,1], function(x) x)`, nil},
+		{`sort([3,1], function(x, y, z) x < y)`, nil},
+		{`sort([1], function(x) x)`, nil},
+		{`sort([3,1], function(x, y) x < y, 5)`, nil},
+		{`sort(list: [1], foo: 1)`, nil},
+		{`sort(list: [3,1], precedes: function(x, y) x < y, foo: 1)`, nil},
+		{`sort(precedes: function(x, y) x < y)`, nil},
+		{`sort(list: [3,1], predicates: function(x, y) x < y)`, nil},
+		{`is defined()`, nil},
+		{`is defined(1, 2)`, nil},
+		{`is defined(foo: 1)`, nil},
+		// Valid calls are unchanged.
+		{`sort([3,1,4,5,2], function(x, y) x < y)`, []any{1.0, 2.0, 3.0, 4.0, 5.0}},
+		{`sort(list: [3,1,4,5,2], precedes: function(x,y) x < y)`, []any{1.0, 2.0, 3.0, 4.0, 5.0}},
+		{`sort(precedes: function(x,y) x > y, list: xs)`, []any{3.0, 2.0, 1.0}},
+		{`sort(xs, function(a, b) a * k < b * k)`, []any{3.0, 2.0, 1.0}},
+		{`sort([], function(x, y) x < y)`, []any{}},
+		{`sort(5, function(x, y) x < y)`, []any{5.0}},
+		{`sort(["b", "a"], function(x: string, y: string) x < y)`, []any{"a", "b"}},
+		{`is defined(xs)`, true},
+		{`is defined(value: xs)`, true},
+		{`is defined(nope)`, false},
+		{`is defined(null)`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+
+	// An error inside the predicate's body still propagates; only argument
+	// misfits are null. The predicate overruns the iteration budget, as in
+	// TestListReplaceMatchFunction.
+	capped, err := NewEvaluator(FEEL, WithMaxIterations(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capped.EvalText(`sort([1,2], function(a, b) count(for i in 1..100 return i) > 0)`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("a failing predicate: error %v, want ErrIterationBudgetExceeded", err)
+	}
+	// So does an error evaluating an argument.
+	if _, err := capped.EvalText(`sort(for i in 1..100 return i, function(a, b) a < b)`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("a failing argument: error %v, want ErrIterationBudgetExceeded", err)
+	}
+	if _, err := capped.EvalText(`is defined(for i in 1..100 return i)`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("a failing is defined argument: error %v, want ErrIterationBudgetExceeded", err)
+	}
+}
+
 func TestStringLiteralsAndCharacters(t *testing.T) {
 	// DMN 1.5 §10.3.1.2 grammar rule 66: a string literal's escapes decode
 	// (issue #55). §10.3.4.3 Table 73: lengths and positions count

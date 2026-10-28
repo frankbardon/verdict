@@ -3398,6 +3398,26 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("macro built-ins are null on misfitting arguments", func(t *testing.T) {
+		// DMN 1.5 §10.3.4: a built-in invoked outside its domain is null;
+		// §10.3.4.9 Table 80 names sort's parameters list and precedes.
+		// Upstream raised on every misfit below, and named the second
+		// parameter `predicates`.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`sort()`, nil},
+			{`sort(1)`, nil},
+			{`sort([3,1], 5)`, nil},
+			{`sort([3,1], function(x) x)`, nil},
+			{`sort(list: [1], foo: 1)`, nil},
+			{`is defined()`, nil},
+			{`is defined(1, 2)`, nil},
+			{`sort(list: [3,1,4,5,2], precedes: function(x,y) x < y)`, []any{1.0, 2.0, 3.0, 4.0, 5.0}},
+		})
+	})
+
 	t.Run("function parameters take a type", func(t *testing.T) {
 		// DMN 1.5 grammar rule 56 and §10.3.2.13.2. Upstream read only a
 		// parameter name, so `function(a: string) a` was a syntax error.

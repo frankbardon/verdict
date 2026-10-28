@@ -251,6 +251,12 @@ type Macro struct {
 	optionalArgNames []string
 	varArgName       string
 	help             string
+	// standard marks a prelude built-in, as NativeFun.standard does: a call
+	// whose arguments do not fit the parameters is null rather than an
+	// error (see FunCall.EvalMacro).
+	//
+	// VERDICT DIVERGENCE: fork-only; see NOTICE.md.
+	standard bool
 }
 
 func NewMacro(fn MacroDef) *Macro {
@@ -368,8 +374,11 @@ func (self *Prelude) Bind(name string, value interface{}) *Prelude {
 	if _, ok := self.vars[name]; ok {
 		panic(fmt.Sprintf("bind(), name '%s' already bound", name))
 	}
-	if nf, ok := value.(*NativeFun); ok {
-		nf.standard = true
+	switch f := value.(type) {
+	case *NativeFun:
+		f.standard = true
+	case *Macro:
+		f.standard = true
 	}
 	self.vars[name] = normalizeValue(value)
 	return self
