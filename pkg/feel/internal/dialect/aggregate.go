@@ -105,8 +105,9 @@ func aggregateItems(args map[string]any) (items []any, ok bool) {
 	return items, true
 }
 
-// anyList is v as a list of items. Besides []any it accepts any Go slice,
-// because some upstream built-ins (get entries) still return typed slices.
+// anyList is v as a list of items. Besides []any it accepts any Go slice:
+// no built-in returns a typed slice any more (get entries was the last), but
+// a host value bound without FromGo still can.
 func anyList(v any) ([]any, bool) {
 	if l, ok := v.([]any); ok {
 		return l, true

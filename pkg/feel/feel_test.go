@@ -438,6 +438,40 @@ func TestContextEntriesHaveDistinctKeys(t *testing.T) {
 	}
 }
 
+// TestGetEntriesIsAList pins DMN 1.5 §10.3.4.10 Table 81: get entries(m) is a
+// FEEL list of key-value contexts, for a literal context and a context-typed
+// variable alike, and ToGo converts its elements like any list's.
+func TestGetEntriesIsAList(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"x": FromGo(map[string]any{"y": 2, "w": "s"})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`get entries({y: 2}) = [{key: "y", value: 2}]`, true},
+		{`get entries(x)[1].key`, "w"},
+		{`get entries(x)[2].value`, 2.0},
+		{`count(get entries(x))`, 2.0},
+		{`for e in get entries(x) return e.value`, []any{"s", 2.0}},
+		{`get entries({y: 1.5})`, []any{map[string]any{"key": "y", "value": 1.5}}},
+		{`get entries(x)`, []any{
+			map[string]any{"key": "w", "value": "s"},
+			map[string]any{"key": "y", "value": 2.0},
+		}},
+		{`get entries(null)`, nil},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 // TestStringAndListSupplementDomain pins the §10.3.4 domain rule for the
 // supplement's string and list built-ins: a null or wrong-typed argument, an
 // invalid regular expression, replacement or flags (footnote 2), a position

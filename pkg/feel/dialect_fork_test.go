@@ -2798,6 +2798,46 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("get entries is a FEEL list of key-value contexts", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.10 Table 81: get entries(m) is a list of
+		// key-value pair contexts. Upstream returned a Go []map[string]any,
+		// which FEEL did not recognise as a list: indexing it raised
+		// "non-indexable value" and comparing it to a list literal was null.
+		// The entries come in key order, as string() writes a context.
+		vars := map[string]any{"a": FromGo(map[string]any{"x": 1, "n": map[string]any{"y": 2}})}
+		for _, expr := range []string{
+			`get entries({y: 2}) = [{key: "y", value: 2}]`,
+			`get entries({}) = []`,
+			`get entries({b: 1, a: 2}) = [{key: "a", value: 2}, {key: "b", value: 1}]`,
+			`get entries({y: 2})[1].key = "y"`,
+			`get entries({y: 2})[1].value = 2`,
+			`count(get entries({a: 1, b: 2})) = 2`,
+			`get entries(a)[1] = {key: "n", value: {y: 2}}`,
+			`get entries(a)[2].value = 1`,
+			`get entries(a.n) = [{key: "y", value: 2}]`,
+			`context(get entries(a)) = a`,
+			`(for e in get entries({a: 1, b: 2}) return e.key) = ["a", "b"]`,
+		} {
+			if got := mustEval(t, e, expr, vars); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+		v, err := e.EvalText(`get entries({y: 2, z: null})`, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := v.([]any); !ok {
+			t.Fatalf("get entries is %T, want []any", v)
+		}
+		want := []any{
+			map[string]any{"key": "y", "value": 2.0},
+			map[string]any{"key": "z", "value": nil},
+		}
+		if got := ToGo(v); !deepEqualNum(got, want) {
+			t.Errorf("ToGo(get entries({y: 2, z: null})) = %#v, want %#v", got, want)
+		}
+	})
+
 	t.Run("string literals unescape and lengths count characters", func(t *testing.T) {
 		// DMN 1.5 §10.3.1.2 grammar rule 66 and §10.3.4.3 Table 73. Upstream
 		// decoded only \n and \", so "\\d" reached a regular expression as

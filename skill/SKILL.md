@@ -190,6 +190,7 @@ string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; strings 
 context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key; context put/merge override instead
 context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list
 context put(Applicant, "k", 1)   Applicant = {name: "A", age: 30}   // a context input is a context to =, built-ins, string()
+get entries({b: 1, a: 2}) = [{key: "a", value: 2}, {key: "b", value: 1}]   get entries(m)[1].key   // a FEEL list, entries in key order
 list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, negative from the end
 list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]   // match form: replace each item match(item, newItem) is true for
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
