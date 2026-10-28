@@ -1127,12 +1127,78 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if tests, ok := binop.Right.(*MultiTests); ok {
+		return inTests(intp, leftVal, tests.Elements)
+	}
 	rightVal, err := binop.Right.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
 	return In(leftVal, rightVal)
 }
+
+// inTests is `e in t` and `e in (t1, t2, …)` for positive unary tests, DMN
+// 1.5 grammar rules 49.c and 49.d: the disjunction of `e` against each test,
+// folded three-valued (Table 51) as the list branch of In folds. A `? op x`
+// test (the parser's reading of `= 10`, `< 5`) compares e with x, x being
+// evaluated in the enclosing scope so a `?` inside it keeps its outer meaning;
+// any other test is `e in t` (Table 55), so `5 in (1, [4..6])` is true.
+func inTests(intp *Interpreter, leftVal any, tests []Node) (any, error) {
+	unknown := false
+	for _, test := range tests {
+		var r any
+		if b, ok := test.(*Binop); ok && isTestedValue(b.Left) && isComparisonOp(b.Op) {
+			endpoint, err := b.Right.Eval(intp)
+			if err != nil {
+				return nil, err
+			}
+			cmp := Binop{Op: b.Op, Left: valueNode{leftVal}, Right: valueNode{endpoint}}
+			if r, err = cmp.Eval(intp); err != nil {
+				return nil, err
+			}
+		} else {
+			v, err := test.Eval(intp)
+			if err != nil {
+				return nil, err
+			}
+			if r, err = In(leftVal, v); err != nil {
+				return nil, err
+			}
+		}
+		switch r {
+		case true:
+			return true, nil
+		case false:
+		default:
+			unknown = true
+		}
+	}
+	if unknown {
+		return null, nil
+	}
+	return false, nil
+}
+
+func isTestedValue(n Node) bool {
+	v, ok := n.(*Var)
+	return ok && v.Name == "?"
+}
+
+func isComparisonOp(op string) bool {
+	switch op {
+	case ">", ">=", "<", "<=", "!=", "=":
+		return true
+	}
+	return false
+}
+
+// valueNode is an already-evaluated operand, so inTests can reuse the
+// comparison operators without evaluating the left of `in` once per test.
+type valueNode struct{ v any }
+
+func (n valueNode) Repr() string                   { return fmt.Sprintf("%v", n.v) }
+func (n valueNode) Eval(*Interpreter) (any, error) { return n.v, nil }
+func (n valueNode) TextRange() TextRange           { return TextRange{} }
 
 // In implements FEEL's `e in container` for a range or a list container, or
 // any other value as equality, and yields true, false or null. inOp evaluates its operands and delegates here.

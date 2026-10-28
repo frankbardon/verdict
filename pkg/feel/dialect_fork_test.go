@@ -3282,6 +3282,39 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
+	t.Run("unary tests parse on the right of in", func(t *testing.T) {
+		// DMN 1.5 grammar rule 49.c and 49.d, TCK 0072-feel-in. Upstream read
+		// the right of `in` as a plain expression, so all four were syntax
+		// errors.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`10 in =10`, true},
+			{`10 in !=10`, false},
+			{`[1,2,3] in =[1,2,3]`, true},
+			{`10 in (1, < 5, >=10)`, true},
+			{`10 in (1, < 5, >10)`, false},
+			{`"a" in (1, < 2)`, nil},
+			{`5 in (1, [4..6])`, true},
+		})
+	})
+
+	t.Run("in binds as a comparison", func(t *testing.T) {
+		// DMN 1.5 grammar rule 49: `in` is a comparison, tighter than `and`
+		// and `or`. Upstream gave it its own level above `or`, so
+		// `x in [5] and b` parsed as `x in ([5] and b)` and was false.
+		vars := map[string]any{"x": FromGo(5), "b": FromGo(true), "f": FromGo(false)}
+		for expr, want := range map[string]any{
+			"x in [5] and b": true, "f or x in [5]": true, "x in [4] or b": true,
+			"x in < 6 and b": true, "x + 1 in [6]": true,
+		} {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
 	t.Run("temporals expose every Table 65 property", func(t *testing.T) {
 		// DMN 1.5 §10.3.2.15 Tables 65 and 66. Upstream had no `weekday`,
 		// returned `month` as Go's time.Month (the string "January"),

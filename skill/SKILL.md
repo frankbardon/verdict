@@ -166,6 +166,7 @@ Applicant.credit_score >= 740                     // comparison
 -balance   rate ** years                          // negation, exponentiation
 if x then "a" else "b"                            // conditional
 value in ["low", "medium", "high"]                // membership
+x in (1, < 5, >= 10)   x in != 0                  // in takes unary tests; binds like =, so x in [5] and b is (x in [5]) and b
 decimal(amount * 1.2, 2)                          // round to 2 places
 modulo(-10.1, 4.5) = 3.4   sqrt(-1) = null           // numeric fns: exact decimals; null on null, non-number or out-of-domain args
 sqrt(2)   log(10)   exp(1)   odd(9007199254740993)  // 34 significant digits; odd/even exact on any integer

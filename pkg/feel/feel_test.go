@@ -1291,6 +1291,46 @@ func TestInvokingANonFunction(t *testing.T) {
 	}
 }
 
+// TestInTakesPositiveUnaryTests covers `in` against a positive unary test or
+// a parenthesised list of them (DMN 1.5 grammar rule 49.c/d, TCK
+// 0072-feel-in), and its precedence as a comparison, while the list, range
+// and parenthesised-expression forms keep their meaning.
+func TestInTakesPositiveUnaryTests(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"x": FromGo(5), "b": FromGo(true), "xs": FromGo([]any{1, 2, 5})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`10 in =10`, true},
+		{`10 in !=10`, false},
+		{`[1,2,3] in =[1,2,3]`, true},
+		{`10 in (1, < 5, >=10)`, true},
+		{`x in (<5)`, false},
+		{`x in (1, 5)`, true},
+		{`x in (x)`, true},
+		{`x in (1..5)`, false},
+		{`x in (1..5]`, true},
+		{`x in [1..5]`, true},
+		{`x in xs`, true},
+		{`x in > 2 + 4`, false},
+		{`"a" in [1, 2]`, nil},
+		{`x in [5] and b`, true},
+		{`x in [5] and not(b)`, false},
+		{`some y in xs satisfies y in (2, 5)`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 func TestRoundTripValues(t *testing.T) {
 	when := time.Date(2024, 3, 1, 12, 30, 0, 0, time.UTC)
 	in := map[string]any{

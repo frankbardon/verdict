@@ -181,7 +181,7 @@ func (p *Parser) parseUnaryTest() (Node, error) {
 }
 
 func (p *Parser) expression() (Node, error) {
-	return p.inOp()
+	return p.logicOrOp()
 }
 
 type astFunc func() (Node, error)
@@ -236,13 +236,6 @@ func (p *Parser) binopKeywords(ops []string, subfunc astFunc) (Node, error) {
 }
 
 // pase chains
-func (p *Parser) inOp() (Node, error) {
-	return p.binopKeywords(
-		[]string{"in"},
-		p.logicOrOp,
-	)
-}
-
 func (p *Parser) logicOrOp() (Node, error) {
 	return p.binopKeywords(
 		[]string{"or"},
@@ -257,11 +250,100 @@ func (p *Parser) logicAndOp() (Node, error) {
 	)
 }
 
+// compareOp parses a comparison, DMN 1.5 FEEL grammar rule 49: the ordering
+// and equality operators (49.a) and `in` (49.c, 49.d), all at one precedence
+// level between conjunction and arithmetic, left associative.
+//
+// VERDICT DIVERGENCE: upstream parsed `in` as its own level above `or`, so
+// `x in [5] and b` was `x in ([5] and b)`, and read the right of `in` as a
+// plain expression, so `10 in =10` and `10 in (1, < 5, >= 10)` were syntax
+// errors. The right of `in` is now a positive unary test or a parenthesised
+// list of them (see inRight). Rule 49.b (`between`) and rule 51 (`instance
+// of`) are not parsed yet; both belong in this loop as further keyword cases.
 func (p *Parser) compareOp() (Node, error) {
-	return p.binop(
-		[]string{">", ">=", "<", "<=", "!=", "="},
-		p.addOrSubOp,
-	)
+	left, err := p.addOrSubOp()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		tok := p.CurrentToken()
+		switch {
+		case tok.Expect(">", ">=", "<", "<=", "!=", "="):
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+			right, err := p.addOrSubOp()
+			if err != nil {
+				return nil, err
+			}
+			left = &Binop{Op: tok.Kind, Left: left, Right: right, textRange: TextRange{Start: left.TextRange().Start, End: p.CurrentToken().Pos}}
+		case tok.ExpectKeywords("in"):
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+			right, err := p.inRight()
+			if err != nil {
+				return nil, err
+			}
+			left = &Binop{Op: "in", Left: left, Right: right, textRange: TextRange{Start: left.TextRange().Start, End: p.CurrentToken().Pos}}
+		default:
+			return left, nil
+		}
+	}
+}
+
+// inRight parses the right of `in`: a positive unary test (rule 49.c) or a
+// parenthesised, comma-separated list of them (rule 49.d). A test led by a
+// comparison operator (`= 10`, `< 5`) and a parenthesised list come back as
+// MultiTests, whose `? op x` elements Binop.inOp applies to the left operand;
+// anything else is an ordinary operand, so `x in [1..5]`, `x in (1..5)`,
+// `x in xs` and `x in (a)` parse exactly as before.
+//
+// `(` is ambiguous between an interval or parenthesised expression and a list
+// of tests, so it is first read as an ordinary operand and, only if that fails
+// (`(1, < 5)`, `(< 5)`), re-read from the same token as a list of tests.
+func (p *Parser) inRight() (Node, error) {
+	textRange := p.startTextRange()
+	if p.CurrentToken().Expect(">", ">=", "<", "<=", "!=", "=") {
+		op := p.CurrentToken().Kind
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		endpoint, err := p.addOrSubOp()
+		if err != nil {
+			return nil, err
+		}
+		textRange.End = p.CurrentToken().Pos
+		test := &Binop{Left: &Var{Name: "?"}, Op: op, Right: endpoint, textRange: textRange}
+		return &MultiTests{Elements: []Node{test}, textRange: textRange}, nil
+	}
+	if !p.CurrentToken().Expect("(") {
+		return p.addOrSubOp()
+	}
+	saved, savedNoIndex := *p.scanner, p.noIndex
+	operand, err := p.addOrSubOp()
+	if err == nil {
+		return operand, nil
+	}
+	*p.scanner, p.noIndex = saved, savedNoIndex
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	tests, err := p.delimited(p.parseUnaryTest)
+	if err != nil {
+		return nil, err
+	}
+	if !p.CurrentToken().Expect(")") {
+		return nil, p.Unexpected(",", ")")
+	}
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	textRange.End = p.CurrentToken().Pos
+	if mt, ok := tests.(*MultiTests); ok {
+		return &MultiTests{Elements: mt.Elements, textRange: textRange}, nil
+	}
+	return &MultiTests{Elements: []Node{tests}, textRange: textRange}, nil
 }
 
 func (p *Parser) addOrSubOp() (Node, error) {
