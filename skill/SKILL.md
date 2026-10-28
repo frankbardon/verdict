@@ -192,6 +192,7 @@ context merge({a: 1})   list contains(5, 5)              // a non-list item is a
 context put(Applicant, "k", 1)   Applicant = {name: "A", age: 30}   // a context input is a context to =, built-ins, string()
 get entries({b: 1, a: 2}) = [{key: "a", value: 2}, {key: "b", value: 1}]   get entries(m)[1].key   // a FEEL list, entries in key order
 list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, negative from the end
+xs[1]   xs[-1]   [1, 2, 3][4] = null   [1, 2, 3][0] = null   // index from 1, negative from the end; out of range or fractional: null
 list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]   // match form: replace each item match(item, newItem) is true for
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
 all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null

@@ -506,6 +506,54 @@ func TestGetEntriesIsAList(t *testing.T) {
 	}
 }
 
+// TestListIndex pins DMN 1.5 §10.3.2.5 and Table 68: L[1] is the first
+// element, L[-1] the last, L[-n] the nth from the end; an index the list does
+// not reach — 0, past either end — is null, and so is a non-integer index,
+// which no row of Table 68 covers. Indexing behaves the same on a literal, a
+// variable, a function result and a nested index.
+func TestListIndex(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"xs": FromGo([]any{1, 2, 3}),
+		"m":  FromGo(map[string]any{"a": 1, "b": 2}),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`[1, 2, 3][1]`, 1.0},
+		{`[1, 2, 3][3]`, 3.0},
+		{`[1, 2, 3][-1]`, 3.0},
+		{`[1, 2, 3][-3]`, 1.0},
+		{`[1, 2, 3][4]`, nil},
+		{`[1, 2, 3][-4]`, nil},
+		{`[1, 2, 3][0]`, nil},
+		{`[1, 2, 3][1.5]`, nil},
+		{`[1, 2, 3][-1.5]`, nil},
+		{`[1, 2, 3][2.0]`, 2.0},
+		{`[1, 2, 3][99999999999999999999999]`, nil},
+		{`[1, 2, 3][-99999999999999999999999]`, nil},
+		{`xs[-1]`, 3.0},
+		{`xs[-2]`, 2.0},
+		{`xs[0]`, nil},
+		{`get entries(m)[-1].key`, "b"},
+		{`reverse(xs)[-1]`, 1.0},
+		{`[[1, 2], [3]][-1][-1]`, 3.0},
+		{`[[1, 2], [3]][-2][-1]`, 2.0},
+		{`[1, null, 3][2]`, nil},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 // TestStringAndListSupplementDomain pins the §10.3.4 domain rule for the
 // supplement's string and list built-ins: a null or wrong-typed argument, an
 // invalid regular expression, replacement or flags (footnote 2), a position

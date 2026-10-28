@@ -3116,6 +3116,27 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("a negative index counts from the end, out of range is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.5: L[-n] is the nth element from the end, and "if
+		// L does not contain n items, then L[n] is null". Upstream raised
+		// "index out of range" for 0, a negative index and one past the end,
+		// and truncated a fractional index (Table 68 indexes only by an
+		// integer).
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`[1, 2, 3][-1]`, 3.0},
+			{`[1, 2, 3][-3]`, 1.0},
+			{`[1, 2, 3][0]`, nil},
+			{`[1, 2, 3][4]`, nil},
+			{`[1, 2, 3][-4]`, nil},
+			{`[1, 2, 3][1.5]`, nil},
+			{`[][1]`, nil},
+			{`[][-1]`, nil},
+		})
+	})
 }
 
 func approx(a, b float64) bool {

@@ -3,6 +3,7 @@ package dialect
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 )
@@ -931,6 +932,37 @@ func (binop Binop) orOp(intp *Interpreter) (any, error) {
 	}
 }
 
+// listIndex is `L[n]` for a numeric n (DMN 1.5 §10.3.2.5, Table 68): L[1] is
+// the first element and L[-1] the last, L[n] the nth from the start and L[-n]
+// the nth from the end. "If L does not contain n items, then L[n] is null", so
+// 0 and any index past either end is null. Table 68 applies the rule only to
+// an integer (0 scale) index and no rule covers any other number, so a
+// fractional index is null too.
+//
+// VERDICT DIVERGENCE: upstream raised "index out of range" for 0, a negative
+// index and one past the end, and truncated a fractional index.
+//
+// Numeric indexing is kept apart from indexAtOp's other branches so that a
+// boolean filter (Table 68's third and fourth rows) can be added beside it.
+func listIndex(list []any, n *Number) any {
+	if !n.v.IsInt() {
+		return null
+	}
+	i, acc := n.v.Int64()
+	if acc != big.Exact {
+		return null
+	}
+	size := int64(len(list))
+	switch {
+	case i > 0 && i <= size:
+		return list[i-1]
+	case i < 0 && i >= -size:
+		return list[size+i]
+	default:
+		return null
+	}
+}
+
 func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
@@ -943,11 +975,7 @@ func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {
 	switch v := leftVal.(type) {
 	case []any:
 		if nRight, ok := rightVal.(*Number); ok {
-			at := nRight.Int()
-			if at <= 0 || at > len(v) {
-				return nil, NewErrIndex("index out of range")
-			}
-			return v[at-1], nil
+			return listIndex(v, nRight), nil
 		} else {
 			//return nil, NewEvalError(-3200, "non int index")
 			return nil, NewErrIndex("non int index")
