@@ -233,6 +233,12 @@ reserved (`Date of Birth` resolves), but `instance of` together ends a name.
 `between` is not reserved either (`days between dates` resolves), but a name
 ends where `between <expression> and` follows.
 
+Name characters follow DMN 1.5 grammar rules 28-29 (XML 1.0 name characters plus
+`?`): `Prénom`, `Größe`, `имя`, `Approved?` and `Driver’s Age` all resolve. A
+lone `?` is still the unary-test input (`? = Approved?`). `-`, `+`, `*`, `/` and
+`.` are always operators, never part of a name: `a-b` is `a` minus `b`, so name
+a variable `a_b` or `a b` instead.
+
 A cell or literal expression is **one** expression: `3 4`, `"a" "b"`, `x between 1`
 or `1; 2` is a syntax error (`VERDICT_LOAD_013`), not the last value. Lists of
 unary tests use commas (`1, 2, 3`, `not(1, 2)`).

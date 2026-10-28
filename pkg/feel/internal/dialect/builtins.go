@@ -848,9 +848,11 @@ func writeFEEL(b *strings.Builder, v any) {
 // of which this fork's scanner reads as one name token. That is the
 // unambiguous subset of DMN 1.5 §10.3.1.2 grammar rules 27-30 that the
 // scanner admits: a keyword (`true`, `and`, `for`) is not a name, a run of
-// spaces would read back as one, and name characters the scanner does not
-// take (`?`, `é`) would not parse. Any other key is written as a string
-// literal, which always reads back.
+// spaces would read back as one, and a word the scanner splits or reads as
+// something else (`?` alone is the unary-test input; `a-b` and `a.b` are
+// operators; `1x` starts with a digit) would not parse. Names such as `é`,
+// `a?` and `Größe` print bare. Any other key is written as a string literal,
+// which always reads back.
 func isFEELName(k string) bool {
 	if k == "" {
 		return false

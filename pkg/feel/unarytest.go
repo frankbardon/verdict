@@ -273,28 +273,37 @@ func membership(input, container any) (ok, known bool, err error) {
 // modeller would write, so it cannot collide with a model variable.
 const inputRefName = "__verdict_input"
 
-// rewriteInputRef replaces `?` tokens outside string literals with
-// inputRefName.
+// rewriteInputRef replaces each `?` token with inputRefName. It asks the
+// scanner which `?`s are the input: `?` is also a name character (DMN 1.5
+// §10.3.1.2 grammar rule 28), so in `Approved? = ?` only the second is
+// rewritten, and one inside a string literal is never a token. Text the
+// scanner rejects is returned as it is, for the compiler to report.
 func rewriteInputRef(s string) string {
 	if !strings.Contains(s, "?") {
 		return s
 	}
 	var b strings.Builder
-	inString, escaped := false, false
-	for _, r := range s {
-		switch {
-		case escaped:
-			escaped = false
-		case inString && r == '\\':
-			escaped = true
-		case r == '"':
-			inString = !inString
-		case !inString && r == '?':
-			b.WriteString(inputRefName)
-			continue
+	sc := pfeel.NewScanner(s)
+	last := 0
+	for {
+		if err := sc.Next(); err != nil {
+			return s
 		}
-		b.WriteRune(r)
+		tok := sc.Current()
+		if tok.Kind == pfeel.TokenEOF {
+			break
+		}
+		if tok.Kind == "?" {
+			start := sc.Eaten - len(tok.Value)
+			b.WriteString(s[last:start])
+			b.WriteString(inputRefName)
+			last = sc.Eaten
+		}
 	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
 	return b.String()
 }
 

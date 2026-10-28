@@ -81,6 +81,53 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("names take every character of grammar rules 28-29", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 grammar rules 25-30. Upstream's name pattern
+		// admitted only ASCII letters and the Han, Greek, Bopomofo and
+		// Hangul scripts, so `Prénom`, `Größe` and `Approved?` failed to
+		// scan, and a keyword ended at RE2's ASCII word boundary, so
+		// `forêt` scanned as `for` followed by `êt`.
+		vars := map[string]any{
+			"Prénom": FromGo("Ada"), "Größe": FromGo(180), "Approved?": FromGo(true),
+			"имя": FromGo("i"), "اسم": FromGo("s"), "ä b": FromGo(1), "forêt": FromGo(2),
+			"?x": FromGo(3), "Driver’s Age": FromGo(30),
+			"a": FromGo(5), "b": FromGo(2), "a-b": FromGo(100), "a.b": FromGo(100),
+		}
+		cases := map[string]any{
+			`Prénom`:           "Ada",
+			`Größe + 1`:        181.0,
+			`Approved? = true`: true,
+			`имя`:              "i",
+			`اسم`:              "s",
+			`ä b`:              1.0,
+			`forêt * 2`:        4.0,
+			`?x`:               3.0,
+			`Driver’s Age`:     30.0,
+			`{Größe: 7}.Größe`: 7.0,
+			// Rule 30's operator symbols stay operators: the scanner has no
+			// scope to tell `a-b` the name from `a-b` the subtraction.
+			`a-b`: 3.0,
+			`a+b`: 7.0,
+			`a*b`: 10.0,
+			`a/b`: 2.5,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// A lone `?` is still the unary-test input.
+		x, err := e.CompileUnaryTest(`? = Approved?, < Größe`)
+		if err != nil {
+			t.Fatalf("CompileUnaryTest: %v", err)
+		}
+		for in, want := range map[any]bool{true: true, 170: true, 190: false} {
+			if got, err := e.EvalUnaryTest(x, FromGo(in), vars); err != nil || got != want {
+				t.Errorf("? = Approved?, < Größe against %v = %v (%v), want %v", in, got, err, want)
+			}
+		}
+	})
+
 	t.Run("a context entry sees the entries before it", func(t *testing.T) {
 		// DMN 1.5 §10.3.2.6. Upstream evaluated every entry against the outer
 		// scope alone, so `{c: 1, r: c}` gave r = null, or the outer c.
@@ -2501,7 +2548,7 @@ func TestForkedDefects(t *testing.T) {
 			{"string([\"\u2028\"])", `["\u2028"]`},
 			{`string(["\U0E0001"])`, `["\U0E0001"]`},
 			{`string({"x\ny": "q\"q"})`, `{"x\ny": "q\"q"}`},
-			{`string({"true": 1, "a  b": 2, "?": 3, "é": 4, "a b": 5})`, `{"?": 3, "a  b": 2, a b: 5, "true": 1, "é": 4}`},
+			{`string({"true": 1, "a  b": 2, "?": 3, "é": 4, "a b": 5, "a?": 6})`, `{"?": 3, "a  b": 2, a b: 5, a?: 6, "true": 1, é: 4}`},
 		})
 	})
 

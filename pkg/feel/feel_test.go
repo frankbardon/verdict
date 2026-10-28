@@ -2335,6 +2335,89 @@ func stringRoundTrip(e *Evaluator, x any) (string, any, error) {
 	return text, ToGo(back), nil
 }
 
+// TestUnicodeNames: a name is any run of DMN 1.5 §10.3.1.2 grammar rule 28-29
+// characters, so non-ASCII letters, combining marks and `?` resolve as
+// variables, and `?` alone is still the unary-test input.
+func TestUnicodeNames(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"Prénom": FromGo("Ada"), "Größe": FromGo(180), "Approved?": FromGo(true),
+		"имя": FromGo("i"), "اسم": FromGo("s"), "ä b": FromGo(1), "a?": FromGo(4),
+		"Ω₀": FromGo(6), "x·y": FromGo(8), "é": FromGo(9), "in?": FromGo(10),
+	}
+	cases := map[string]any{
+		`Prénom`:                     "Ada",
+		`Größe`:                      180.0,
+		`Approved?`:                  true,
+		`имя`:                        "i",
+		`اسم`:                        "s",
+		`ä b`:                        1.0,
+		`ä   b`:                      1.0,
+		`a? + 1`:                     5.0,
+		`Ω₀`:                         6.0,
+		`x·y`:                        8.0,
+		`in?`:                        10.0,
+		`{é: 1, b: é + 1}.b`:         2.0,
+		`if Approved? then 1 else 0`: 1.0,
+	}
+	for expr, want := range cases {
+		if got := mustEval(t, e, expr, vars); got != want {
+			t.Errorf("%s = %#v, want %v", expr, got, want)
+		}
+	}
+	for _, c := range []struct {
+		entry string
+		input any
+		want  bool
+	}{
+		{`? > 5`, 6, true},
+		{`< 5`, 6, false},
+		{`? = a?`, 4, true},
+		{`Größe`, 180, true},
+		{`?=a?`, 4, true},
+		{`"?"`, "?", true},
+	} {
+		x, err := e.CompileUnaryTest(c.entry)
+		if err != nil {
+			t.Fatalf("CompileUnaryTest(%q): %v", c.entry, err)
+		}
+		got, err := e.EvalUnaryTest(x, FromGo(c.input), vars)
+		if err != nil || got != c.want {
+			t.Errorf("%q against %v = %v (%v), want %v", c.entry, c.input, got, err, c.want)
+		}
+	}
+	// A digit, a combining mark or `·` may continue a name but not start one.
+	for _, bad := range []string{"\u0301a", "·a"} {
+		if _, err := e.Compile(bad); err == nil {
+			t.Errorf("%q compiled, want a syntax error", bad)
+		}
+	}
+}
+
+// TestLongNameScansInLinearTime: the name scanner is a single pass over the
+// runes, so a huge name scans in well under a second.
+func TestLongNameScansInLinearTime(t *testing.T) {
+	name := strings.Repeat("Größe?", 200000)
+	start := time.Now()
+	toks, err := pfeel.NewScanner(name + " + 1").Tokens()
+	if err != nil || len(toks) != 3 || toks[0].Value != name {
+		t.Fatalf("scan: %d tokens, %v", len(toks), err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("scanning a %d-byte name took %v", len(name), d)
+	}
+}
+
+func BenchmarkScanLongName(b *testing.B) {
+	text := strings.Repeat("Größe?", 10000) + " + 1"
+	b.SetBytes(int64(len(text)))
+	for b.Loop() {
+		if _, err := pfeel.NewScanner(text).Tokens(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // TestStringRoundTrip: string() of a list or context writes nested strings
 // and non-name keys as FEEL string literals with only the escapes of DMN 1.5
 // §10.3.1.2 grammar rule 66, so the text reads back as the same value.
@@ -2361,6 +2444,7 @@ func TestStringRoundTrip(t *testing.T) {
 	keys := []string{
 		"a b", "a  b", " a", "a ", "true", "and", "a and b", "for", "null",
 		"?", "a?", "é", "1x", "a.b", "a-b", "x\ny", "not", "between", "date",
+		"Größe", "?x", "in?", "Driver’s Age", "\u0301a", "a\u0301",
 	}
 	for _, k := range keys {
 		x := map[string]any{k: 1.0}
