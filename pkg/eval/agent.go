@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -521,10 +522,14 @@ func toMap(v any) (map[string]any, bool) {
 	return nil, false
 }
 
+// fieldNames lists a structured output's field names for an error message.
+// TypeSpec.Components is a map, so the declared order is not kept; the names
+// are sorted so the message is the same on every run.
 func fieldNames(components map[string]model.TypeSpec) string {
 	names := make([]string, 0, len(components))
 	for k := range components {
 		names = append(names, k)
 	}
+	sort.Strings(names)
 	return strings.Join(names, ", ")
 }

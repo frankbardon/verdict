@@ -75,8 +75,6 @@ func TestCoerceToTypeCharacterization(t *testing.T) {
 	enum := model.TypeSpec{Enumeration: []string{"low", "1.5", "3", "true", "2024-07-01T09:30:00@Europe/Paris", "PT1H"}}
 	list := func(s model.TypeSpec) model.TypeSpec { s.Collection = true; return s }
 	obj := model.TypeSpec{Components: map[string]model.TypeSpec{"x": num, "y": num}}
-	// fieldNames lists components in map order, so a rejection names one field
-	// to keep its message deterministic.
 	objX := model.TypeSpec{Components: map[string]model.TypeSpec{"x": num}}
 	nested := model.TypeSpec{Components: map[string]model.TypeSpec{
 		"p":    obj,
@@ -204,6 +202,8 @@ func TestCoerceToTypeCharacterization(t *testing.T) {
 		{"object/nil", nil, objX, "error: expected an object with fields x, got <nil>"},
 		{"object/scalar", 7, objX, "error: expected an object with fields x, got int"},
 		{"object/list", []any{1}, objX, "error: expected an object with fields x, got []interface {}"},
+		{"object/multi-field scalar", 7, obj, "error: expected an object with fields x, y, got int"},
+		{"object/multi-field nil", nil, nested, "error: expected an object with fields at, p, tags, got <nil>"},
 		{"object/nested", map[string]any{
 			"p":    map[string]int{"x": 1, "y": 2},
 			"tags": []string{"a"},
