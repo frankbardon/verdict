@@ -26,8 +26,16 @@ func (self ArgSizeError) Error() string {
 // NativeFunDef native function
 type NativeFunDef func(args map[string]interface{}) (interface{}, error)
 
+// NativeFunDefI is a native function that also receives the interpreter
+// evaluating the call, so it can apply a function value it was passed (see
+// CallFunction).
+//
+// VERDICT DIVERGENCE: fork-only; see NewNativeFuncI.
+type NativeFunDefI func(intp *Interpreter, args map[string]any) (any, error)
+
 type NativeFun struct {
 	fn               NativeFunDef
+	fnI              NativeFunDefI
 	requiredArgNames []string
 	optionalArgNames []string
 	varArgName       string
@@ -36,34 +44,65 @@ type NativeFun struct {
 	// overloads, when set, replaces requiredArgNames/optionalArgNames: each
 	// entry is one signature's parameter names in order. See Overloads.
 	overloads [][]string
-
-	// standard marks a DMN standard built-in: a call whose arguments do not
-	// fit its parameters is null rather than an error (see EvalNativeFun).
-	// The prelude sets it on every native function it binds; Standard sets
-	// it on one bound elsewhere.
-	standard bool
-}
-
-// Standard marks the function as a DMN standard built-in, so a call to it
-// with the wrong arguments is null (DMN 1.5 §10.3.4) instead of an error.
-//
-// VERDICT DIVERGENCE: fork-only; see EvalNativeFun.
-func (nativeFun *NativeFun) Standard() *NativeFun {
-	nativeFun.standard = true
-	return nativeFun
-}
-
-// bindFailure is the result of a call whose arguments fit no parameter list:
-// null for a standard built-in, the binding error for anything else.
-func (nativeFun *NativeFun) bindFailure(err error) (any, error) {
-	if nativeFun.standard {
-		return null, nil
-	}
-	return nil, err
 }
 
 func NewNativeFunc(fn NativeFunDef) *NativeFun {
 	return &NativeFun{fn: fn}
+}
+
+// NewNativeFuncI is NewNativeFunc for an implementation that needs the
+// interpreter — one that applies a function value argument through
+// CallFunction, as `list replace(list, match, newItem)` does. Binding,
+// overloads and the null rule for misfitting arguments are those of any
+// native function.
+//
+// VERDICT DIVERGENCE: upstream's NativeFun.Call dropped the interpreter, so
+// only a Macro (which also loses argument binding) could call a function
+// value; DMN 1.5 §10.3.4.4 defines `list replace` with a match function.
+func NewNativeFuncI(fn NativeFunDefI) *NativeFun {
+	return &NativeFun{fnI: fn}
+}
+
+// CallFunction applies a FEEL function value to positional arguments under
+// intp, so a call made from a built-in draws on the same iteration budget as
+// the expression that invoked the built-in; a *FunDef's body resolves free
+// names in the scope it was defined in (its closure, §10.3.2.13.2). ok is
+// false when fn is not a function or does not take len(args) arguments;
+// evaluation errors from the function's body are returned, as `sort` does.
+//
+// VERDICT DIVERGENCE: fork-only; see NewNativeFuncI.
+func CallFunction(intp *Interpreter, fn any, args ...any) (any, bool, error) {
+	switch f := fn.(type) {
+	case *FunDef:
+		if len(f.Args) != len(args) {
+			return nil, false, nil
+		}
+		v, err := f.EvalCall(intp, args)
+		return v, true, err
+	case *NativeFun:
+		var named map[string]any
+		if len(f.overloads) > 0 {
+			bound, err := f.bindOverload(args, nil)
+			if err != nil {
+				return nil, false, nil
+			}
+			named = bound
+		} else {
+			req, opt := len(f.requiredArgNames), len(f.optionalArgNames)
+			if f.varArgName != "" || len(args) < req || len(args) > req+opt {
+				return nil, false, nil
+			}
+			named = make(map[string]any, len(args))
+			for i, a := range args {
+				name, _ := f.ArgNameAt(i)
+				named[name] = a
+			}
+		}
+		v, err := f.Call(intp, named)
+		return v, true, err
+	default:
+		return nil, false, nil
+	}
 }
 
 func (nativeFun *NativeFun) Required(argNames ...string) *NativeFun {
@@ -169,7 +208,13 @@ func (nativeFun NativeFun) ArgNameAt(at int) (string, bool) {
 }
 
 func (nativeFun *NativeFun) Call(intp *Interpreter, args map[string]interface{}) (interface{}, error) {
-	v, err := nativeFun.fn(args)
+	var v any
+	var err error
+	if nativeFun.fnI != nil {
+		v, err = nativeFun.fnI(intp, args)
+	} else {
+		v, err = nativeFun.fn(args)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +228,11 @@ type Macro struct {
 	optionalArgNames []string
 	varArgName       string
 	help             string
+	// standard marks a prelude built-in: a call whose arguments do not fit
+	// the parameters is null rather than an error (see FunCall.EvalMacro).
+	//
+	// VERDICT DIVERGENCE: fork-only; see NOTICE.md.
+	standard bool
 }
 
 func NewMacro(fn MacroDef) *Macro {
@@ -300,8 +350,8 @@ func (self *Prelude) Bind(name string, value interface{}) *Prelude {
 	if _, ok := self.vars[name]; ok {
 		panic(fmt.Sprintf("bind(), name '%s' already bound", name))
 	}
-	if nf, ok := value.(*NativeFun); ok {
-		nf.standard = true
+	if m, ok := value.(*Macro); ok {
+		m.standard = true
 	}
 	self.vars[name] = normalizeValue(value)
 	return self

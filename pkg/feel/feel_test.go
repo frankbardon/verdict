@@ -1,10 +1,14 @@
 package feel
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	pfeel "github.com/frankbardon/verdict/pkg/feel/internal/dialect"
 )
@@ -41,6 +45,113 @@ func TestEvalBasics(t *testing.T) {
 	}
 }
 
+// TestNamesEndAtClosingDelimiters pins that a bare name or path may be the
+// last thing before `}`, `]` or `)` — DMN 1.5 §10.3.1.2 grammar rules 57-59
+// put no restriction on a context's last entry.
+func TestNamesEndAtClosingDelimiters(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"a":             FromGo(map[string]any{"n": 5}),
+		"b":             FromGo(2),
+		"Credit Rating": FromGo("A"),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`{v: a}`, map[string]any{"v": map[string]any{"n": 5.0}}},
+		{`{v: a.n}`, map[string]any{"v": 5.0}},
+		{`{v:a.n}`, map[string]any{"v": 5.0}},
+		{`{v: a.n, w: 1}`, map[string]any{"v": 5.0, "w": 1.0}},
+		{`{v: (a.n)}`, map[string]any{"v": 5.0}},
+		{`[{key: "k", value: a.n}]`, []any{map[string]any{"key": "k", "value": 5.0}}},
+		{`{v: a}.v.n`, 5.0},
+		{`{r: Credit Rating}`, map[string]any{"r": "A"}},
+		{`{outer: {inner: b}}.outer.inner`, 2.0},
+		{`[a.n, b]`, []any{5.0, 2.0}},
+		{`abs(b)`, 2.0},
+		{`(b)`, 2.0},
+	}
+	for _, c := range cases {
+		if got := mustEval(t, e, c.expr, vars); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestContextEntriesSeeEarlierEntries pins DMN 1.5 §10.3.2.6: a context
+// entry's value may refer to the entries before it in the same literal. An
+// entry shadows an outer variable of the same name, nested literals see their
+// enclosing literal's earlier entries, and a function called while the literal
+// is being built sees them too.
+func TestContextEntriesSeeEarlierEntries(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"c": FromGo(9), "xs": FromGo([]any{1, 7, 3})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`{c: 1, r: c}`, map[string]any{"c": 1.0, "r": 1.0}},
+		{`{c: 1, r: c}.r`, 1.0},
+		{`{r: c}`, map[string]any{"r": 9.0}},
+		{`{a: 1, b: a + 1, d: b * 10}`, map[string]any{"a": 1.0, "b": 2.0, "d": 20.0}},
+		{`{a: 2, n: {b: a + 1, m: {d: b + a}}}.n.m.d`, 5.0},
+		{`{"a b": 1, r: a b + 1}.r`, 2.0},
+		{`{f: function(x) x + 1, r: f(2)}.r`, 3.0},
+		{`{t: 5, r: list replace(xs, function(item, newItem) item > t, 0)}.r`, []any{1.0, 0.0, 3.0}},
+		// A later entry is not in scope for an earlier one, and the frame does
+		// not outlive the literal.
+		{`{r: q, q: 1}.r`, nil},
+		{`{q: 1}.q + c`, 10.0},
+	}
+	for _, c := range cases {
+		if got := mustEval(t, e, c.expr, vars); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestFunctionsAreLexicalClosures pins DMN 1.5 §10.3.2.13.2: a FEEL function
+// is a lexical closure over the scope it is defined in, and a call evaluates
+// its body in that scope with the arguments inserted first. Parameters shadow
+// captured names; captured names shadow the call site's; a name bound only at
+// the call site is not visible to the body.
+func TestFunctionsAreLexicalClosures(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"t": FromGo(99), "xs": FromGo([]any{1, 3, 2})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`{t: 5, f: function(x) x + t}.f(1)`, 6.0},
+		{`{t: 5, f: function(x) x + t}.f(x: 2)`, 7.0},
+		{`(function(x) x + t)(1)`, 100.0},
+		// Returned out of a for: each function keeps its own element.
+		{`(for t in [1, 2] return function(x) x + t)[2](10)`, 12.0},
+		{`(for t in [1, 2] return function(x) x + t)[1](10)`, 11.0},
+		{`for f in (for t in [1, 2] return function(x) x * t) return f(3)`, []any{3.0, 6.0}},
+		// Returned out of a nested context.
+		{`{g: {k: 3, f: function(x) x * k}.f, r: g(2)}.r`, 6.0},
+		// Parameters shadow captured names.
+		{`{x: 100, f: function(x) x + 1}.f(1)`, 2.0},
+		// Captured names shadow the call site's.
+		{`{t: 5, f: function(x) x + t, r: {t: 50, v: f(1)}.v}.r`, 6.0},
+		// A name bound only where the function is called is not in scope.
+		{`{g: {f: function(x) x + u}.f, r: {u: 1, v: g(1)}.v}.r`, nil},
+		// Recursion through the enclosing context's entry.
+		{`{fact: function(n) if n <= 1 then 1 else n * fact(n - 1), r: fact(5)}.r`, 120.0},
+		{`{fact: function(n) if n <= 1 then 1 else n * fact(n - 1)}.fact(4)`, 24.0},
+		// Built-ins that apply a function value see its closure.
+		{`{k: -1, r: sort(xs, function(a, b) a * k < b * k)}.r`, []any{3.0, 2.0, 1.0}},
+		{`{lt: {m: 2, f: function(item, newItem) item < m}.f, r: list replace(xs, lt, 0)}.r`, []any{0.0, 3.0, 2.0}},
+	}
+	for _, c := range cases {
+		if got := mustEval(t, e, c.expr, vars); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 func TestUnaryTests(t *testing.T) {
 	e := newFEEL(t)
 	cases := []struct {
@@ -59,6 +170,13 @@ func TestUnaryTests(t *testing.T) {
 		{`"low", "medium"`, "medium", true},
 		{`"low", "medium"`, "high", false},
 		{"not(1, 2)", 3, true},
+		// A list-literal cell holding ranges tests them by membership
+		// (DMN 1.5 Table 55, issue #62).
+		{"[[2..4], [1..3]]", 1, true},
+		{"[[1..3], 7]", 5, false},
+		{"[[1..3], 7]", 7, true},
+		{"not([[1..3], 7])", 5, true},
+		{"not([[1..3], 7])", 2, false},
 	}
 	for _, c := range cases {
 		x, err := e.CompileUnaryTest(c.entry)
@@ -75,6 +193,62 @@ func TestUnaryTests(t *testing.T) {
 	}
 }
 
+// TestRangeRelationsInExpressionsAndCells holds the Table 78 range relations
+// (DMN 1.5 §10.3.4.7) both as expressions and as decision-table input entries
+// over a range-valued input, where `?` is the tested range (issues #63, #64).
+func TestRangeRelationsInExpressionsAndCells(t *testing.T) {
+	e := newFEEL(t)
+	exprs := map[string]any{
+		"overlaps([1..10], [3..4])":       true,
+		"overlaps before([3..4], [1..5])": false,
+		"overlaps after((5..10], [1..5])": false,
+		"finishes([1..10], [5..10])":      false,
+		"starts([1..10), [1..10])":        true,
+		"started by([1..10], [1..5))":     true,
+		"finished by([1..10], (1..10])":   true,
+	}
+	for expr, want := range exprs {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("%s = %#v, want %#v", expr, got, want)
+		}
+	}
+	cells := []struct {
+		entry, input string
+		want         bool
+	}{
+		{"overlaps(?, [3..4])", "[1..10]", true},
+		{"overlaps(?, [11..20])", "[1..10]", false},
+		{"overlaps before(?, [1..5])", "[3..4]", false},
+		{"overlaps before(?, [3..8])", "[1..5]", true},
+		{"overlaps after(?, [1..5])", "(5..10]", false},
+		{"overlaps after(?, [1..5])", "[3..8]", true},
+		{"starts(?, [1..10])", "[1..5]", true},
+		{"starts(?, [1..10])", "(1..5]", false},
+		{"started by(?, [1..5])", "[1..10]", true},
+		{"finishes(?, [5..10])", "[1..10]", false},
+		{"finishes(?, [1..10])", "[5..10]", true},
+		{"finished by(?, [5..10))", "[1..10]", false},
+		{"not(overlaps(?, [3..4]))", "[1..10]", false},
+	}
+	for _, c := range cells {
+		x, err := e.CompileUnaryTest(c.entry)
+		if err != nil {
+			t.Fatalf("CompileUnaryTest(%q): %v", c.entry, err)
+		}
+		in, err := e.EvalText(c.input, nil)
+		if err != nil {
+			t.Fatalf("EvalText(%q): %v", c.input, err)
+		}
+		got, err := e.EvalUnaryTest(x, in, nil)
+		if err != nil {
+			t.Fatalf("EvalUnaryTest(%q, %s): %v", c.entry, c.input, err)
+		}
+		if got != c.want {
+			t.Errorf("cell %q against %s = %v, want %v", c.entry, c.input, got, c.want)
+		}
+	}
+}
+
 func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 	e, err := NewEvaluator(SFEEL)
 	if err != nil {
@@ -87,6 +261,12 @@ func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 		"every x in [1,2] satisfies x > 0",
 		"function(a) a + 1",
 		"-(if 1 > 0 then 1 else 2)",
+		"5 instance of number",
+		"3 between 1 and 5",
+		"x between 1 and 5 and x > 2",
+		"x in [1,2]",
+		"x in (1..5)",
+		"x > 0 and x in [1,2]",
 	}
 	for _, src := range rejected {
 		if _, err := e.Compile(src); err == nil {
@@ -104,6 +284,13 @@ func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 	for _, src := range rejected {
 		if _, err := full.Compile(src); err != nil {
 			t.Errorf("FEEL rejected %q: %v", src, err)
+		}
+	}
+	// S-FEEL unary tests (clause 9.2 rules 5-12) are not the `in` operator and
+	// stay accepted: intervals, comma lists, negation and comparison prefixes.
+	for _, entry := range []string{"[1..5]", "(1..5]", "1, 2", "not(3)", "< 5", "not(< 5, [7..9])"} {
+		if _, err := e.CompileUnaryTest(entry); err != nil {
+			t.Errorf("S-FEEL rejected unary-test cell %q: %v", entry, err)
 		}
 	}
 }
@@ -168,6 +355,9 @@ func TestNumericBuiltinsAreNullOutsideTheirDomain(t *testing.T) {
 		`log(null)`, `log("a")`, `log(0)`, `log(-1)`,
 		`exp(null)`, `exp("x")`,
 		`odd(null)`, `odd("x")`, `even(null)`, `even("x")`,
+		// Interpretation (#60): Table 76 is silent on a fraction; odd and
+		// even are defined on integers, so one is outside the domain.
+		`odd(1.5)`, `even(1.5)`, `odd(-0.5)`, `even(2.000001)`,
 	} {
 		v, err := e.EvalText(expr, nil)
 		if err != nil {
@@ -210,8 +400,8 @@ func TestNumericBuiltinsAreDecimal(t *testing.T) {
 		`odd(123456789012345678901234567890123)`,
 		`odd(-7)`,
 		`even(0)`,
-		`not(odd(2.5))`,
-		`not(even(2.5))`,
+		`odd(2.5) = null`,
+		`even(2.5) = null`,
 	} {
 		if got := mustEval(t, e, expr, nil); got != true {
 			t.Errorf("%s = %#v, want true", expr, got)
@@ -248,6 +438,10 @@ func TestModuloIsDecimal(t *testing.T) {
 		`modulo(10.1, -4.5)`:  "-3.4",
 		`modulo(-10.1, -4.5)`: "-1.1",
 		`modulo(10, 2.5)`:     "0",
+		// No 18-digit truncation of either the operands or the result
+		// (issue #59).
+		`modulo(0.00000000000000000001, 3)`:  "0.00000000000000000001",
+		`modulo(-0.00000000000000000001, 3)`: "2.99999999999999999999",
 	} {
 		v, err := e.EvalText(expr, nil)
 		if err != nil {
@@ -259,6 +453,33 @@ func TestModuloIsDecimal(t *testing.T) {
 		}
 		if got := n.String(); got != want {
 			t.Errorf("%s = %s, want %s", expr, got, want)
+		}
+	}
+}
+
+func TestNumbersPrintAtDecimal128Precision(t *testing.T) {
+	// DMN 1.5 §10.3.2.3.1: a number is decimal128, 34 significant digits;
+	// §10.3.4.1 Table 72 string(from). Printing used to truncate to 18
+	// fractional digits, so exp(-50) printed "0" (issue #59).
+	e := newFEEL(t)
+	for expr, want := range map[string]string{
+		`string(exp(-50))`: "0.0000000000000000000001928749847963917783017342816527013",
+		`string(0.1000000000000000055511151231257827)`: "0.1000000000000000055511151231257827",
+		`string(1/3)`:                            "0.3333333333333333333333333333333333",
+		`string(-1/3)`:                           "-0.3333333333333333333333333333333333",
+		`string(10)`:                             "10",
+		`string(1.50)`:                           "1.5",
+		`string(0.1)`:                            "0.1",
+		`string(-12.5)`:                          "-12.5",
+		`string(0)`:                              "0",
+		`string(-0)`:                             "0",
+		`string(10 ** -40)`:                      "0.0000000000000000000000000000000000000001",
+		`string(10 ** 40)`:                       "10000000000000000000000000000000000000000",
+		`string(2 ** 120)`:                       "1329227995784915872903807060280345000",
+		`"n=" + string(0.000000000000000000005)`: "n=0.000000000000000000005",
+	} {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("%s = %#v, want %q", expr, got, want)
 		}
 	}
 }
@@ -336,6 +557,290 @@ func TestContextEntriesHaveDistinctKeys(t *testing.T) {
 		}
 		if got := ToGo(v); !deepEqualNum(got, c.want) {
 			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestGetEntriesIsAList pins DMN 1.5 §10.3.4.10 Table 81: get entries(m) is a
+// FEEL list of key-value contexts, for a literal context and a context-typed
+// variable alike, and ToGo converts its elements like any list's.
+func TestGetEntriesIsAList(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"x": FromGo(map[string]any{"y": 2, "w": "s"})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`get entries({y: 2}) = [{key: "y", value: 2}]`, true},
+		{`get entries(x)[1].key`, "w"},
+		{`get entries(x)[2].value`, 2.0},
+		{`count(get entries(x))`, 2.0},
+		{`for e in get entries(x) return e.value`, []any{"s", 2.0}},
+		{`get entries({y: 1.5})`, []any{map[string]any{"key": "y", "value": 1.5}}},
+		{`get entries(x)`, []any{
+			map[string]any{"key": "w", "value": "s"},
+			map[string]any{"key": "y", "value": 2.0},
+		}},
+		{`get entries(null)`, nil},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestListIndex pins DMN 1.5 §10.3.2.5 and Table 68: L[1] is the first
+// element, L[-1] the last, L[-n] the nth from the end; an index the list does
+// not reach — 0, past either end — is null, and so is a non-integer index,
+// which no row of Table 68 covers. Indexing behaves the same on a literal, a
+// variable, a function result and a nested index.
+func TestListIndex(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"xs": FromGo([]any{1, 2, 3}),
+		"m":  FromGo(map[string]any{"a": 1, "b": 2}),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`[1, 2, 3][1]`, 1.0},
+		{`[1, 2, 3][3]`, 3.0},
+		{`[1, 2, 3][-1]`, 3.0},
+		{`[1, 2, 3][-3]`, 1.0},
+		{`[1, 2, 3][4]`, nil},
+		{`[1, 2, 3][-4]`, nil},
+		{`[1, 2, 3][0]`, nil},
+		{`[1, 2, 3][1.5]`, nil},
+		{`[1, 2, 3][-1.5]`, nil},
+		{`[1, 2, 3][2.0]`, 2.0},
+		{`[1, 2, 3][99999999999999999999999]`, nil},
+		{`[1, 2, 3][-99999999999999999999999]`, nil},
+		{`xs[-1]`, 3.0},
+		{`xs[-2]`, 2.0},
+		{`xs[0]`, nil},
+		{`get entries(m)[-1].key`, "b"},
+		{`reverse(xs)[-1]`, 1.0},
+		{`[[1, 2], [3]][-1][-1]`, 3.0},
+		{`[[1, 2], [3]][-2][-1]`, 2.0},
+		{`[1, null, 3][2]`, nil},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestListFilterAndPath pins DMN 1.5 §10.3.2.5 and Table 68: a boolean
+// filter is evaluated per item with `item` bound and, when the item is a
+// context, its entries in scope by name; an item whose filter is false, null or
+// not a boolean is dropped. A numeric bracket is still an index. A path on a
+// list of contexts projects over the elements, null where one lacks the entry.
+// Filters and paths work the same on a literal, a context-typed variable and a
+// built-in's result.
+func TestListFilterAndPath(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"cs": FromGo([]any{map[string]any{"a": 1}, map[string]any{"a": 2}}),
+		"m":  FromGo(map[string]any{"x": 1, "y": 2}),
+		"n":  FromGo(2),
+		"xs": FromGo([]any{1, 2, 3}),
+	}
+	a2 := []any{map[string]any{"a": 2.0}}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`[{a: 1}, {a: 2}][item.a = 2]`, a2},
+		{`[{a: 1}, {a: 2}][a = 2]`, a2},
+		{`cs[item.a = 2]`, a2},
+		{`cs[a = 2]`, a2},
+		{`[{a: 1}, {a: 2}].a`, []any{1.0, 2.0}},
+		{`cs.a`, []any{1.0, 2.0}},
+		{`get entries(m).key`, []any{"x", "y"}},
+		{`get entries({x: 1, y: 2})[key = "y"].value`, []any{2.0}},
+		{`get entries(m)[value > 1].key`, []any{"y"}},
+		{`[{x: 1, y: 2}, {x: 2}].y`, []any{2.0, nil}},
+		{`[1, 2, 3][item > 1]`, []any{2.0, 3.0}},
+		{`xs[item > n]`, []any{3.0}},
+		{`[{x: 1}, {x: null}, {x: "a"}][x < 2]`, []any{map[string]any{"x": 1.0}}},
+		{`[1, 2, 3][if item = 2 then null else true]`, []any{1.0, 3.0}},
+		{`[1, 2, 3][item > 5]`, []any{}},
+		{`[][item > 1]`, []any{}},
+		{`[[1, 2], [3, 4]][item[1] = 3]`, []any{[]any{3.0, 4.0}}},
+		{`count(cs[a > 0])`, 2.0},
+		{`xs[n]`, 2.0},
+		{`xs[-1]`, 3.0},
+		{`xs[0]`, nil},
+		{`[][1]`, nil},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestMissingContextEntry pins DMN 1.5 §10.3.2.6: selecting an entry a
+// context does not have, by path or by string bracket, is null rather than an
+// evaluation error, on a literal and on a context-typed variable alike, and a
+// path continuing from that null stays null. `is defined` still tells a
+// missing entry from one holding null, and an unbound name is still null.
+func TestMissingContextEntry(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"m":  FromGo(map[string]any{"a": 1, "n": nil, "in": map[string]any{"x": 2}}),
+		"cs": FromGo([]any{map[string]any{"x": 1}, map[string]any{"y": 2}}),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`{a: 1}.b`, nil},
+		{`{a: 1}["b"]`, nil},
+		{`{a: 1}.b.c`, nil},
+		{`{a: 1}.a`, 1.0},
+		{`m.b`, nil},
+		{`m["b"]`, nil},
+		{`m.b.c`, nil},
+		{`m.in.y`, nil},
+		{`m.a`, 1.0},
+		{`m.in.x`, 2.0},
+		{`m.b + 1`, nil},
+		{`cs.x`, []any{1.0, nil}},
+		{`[{x: 1}, {y: 2}].x`, []any{1.0, nil}},
+		{`unbound`, nil},
+		{`is defined(m.b)`, false},
+		{`is defined(m.b.c)`, false},
+		{`is defined(m.n)`, true},
+		{`is defined(m.in.x)`, true},
+		{`is defined(m.in.y)`, false},
+		{`is defined(unbound)`, false},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestPathOnNonContext pins DMN 1.5 §10.3.2.6 and Tables 64-65: `e.name`
+// selects a context entry or a property the value's type lists, and anything
+// else is null — on a single value and on each element of a list alike.
+func TestPathOnNonContext(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`date("2020-01-01").foo`, nil},
+		{`5.x`, nil},
+		{`"abc".length`, nil},
+		{`true.x`, nil},
+		{`5.x.y`, nil},
+		{`[date("2020-01-01")].foo`, []any{nil}},
+		{`[5, {x: 1}].x`, []any{nil, 1.0}},
+		{`date("2020-01-01").year`, 2020.0},
+		{`duration("P1D").days`, 1.0},
+		{`duration("P1Y2M").months`, 2.0},
+		{`(@"2020-01-01T10:00:00@Europe/Paris").timezone`, "Europe/Paris"},
+		{`[1..5].start`, 1.0},
+		{`[1..5].end`, 5.0},
+		{`[1..5].start included`, true},
+		{`(1..5].start included`, false},
+		{`[1..5).end included`, false},
+		{`[1..5].foo`, nil},
+		{`[[1..5], [2..3]].end`, []any{5.0, 3.0}},
+		{`is defined(5.x)`, false},
+		{`is defined(date("2020-01-01").foo)`, false},
+		{`is defined(date("2020-01-01").year)`, true},
+		{`is defined([1..5].start)`, true},
+		{`is defined([1..5].foo)`, false},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestIsDefinedIndex pins `is defined` over indexes, paths and their chains.
+// `is defined` is the Camunda FEEL extension (Camunda 8.2 / FEEL Scala 1.16):
+// a value is defined if it exists, null included. Since an index the list does
+// not reach is null (DMN 1.5 §10.3.2.5) rather than an error, existence is
+// asked structurally: no element is undefined, a null element defined.
+func TestIsDefinedIndex(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"xs": FromGo([]any{map[string]any{"a": 1}})}
+	cases := []struct {
+		expr string
+		want bool
+	}{
+		{`is defined([1, 2][9])`, false},
+		{`is defined([1, 2][-9])`, false},
+		{`is defined([1, 2][0])`, false},
+		{`is defined([1, 2][1.5])`, false},
+		{`is defined([1, 2][2])`, true},
+		{`is defined([1, 2][-1])`, true},
+		{`is defined([1, null][2])`, true},
+		{`is defined({a: [1]}.a[5])`, false},
+		{`is defined({a: [1]}.a[1])`, true},
+		{`is defined({a: {b: 1}}.a.c)`, false},
+		{`is defined(xs[5].a)`, false},
+		{`is defined(xs[1].a)`, true},
+		{`is defined(xs[1].b)`, false},
+		{`is defined([[1]][1][2])`, false},
+		{`is defined({a: 1}["b"])`, false},
+		{`is defined({a: null}["a"])`, true},
+		{`is defined(5[1])`, true},
+		{`is defined(5[2])`, false},
+		{`is defined([1, 2][item > 1])`, true},
+		{`is defined([1, 2][item > 5])`, true},
+		{`is defined({a: 1}.b)`, false},
+		{`is defined({a: null}.a)`, true},
+		{`is defined(5.x)`, false},
+		{`is defined([1..5].start)`, true},
+		{`is defined(unbound)`, false},
+		{`is defined(unbound.x)`, false},
+		{`is defined(unbound[1])`, false},
+		{`is defined(null)`, true},
+		{`is defined(null.x)`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); got != c.want {
+			t.Errorf("%s = %#v, want %v", c.expr, got, c.want)
 		}
 	}
 }
@@ -424,6 +929,313 @@ func TestStringAndListSupplementDomain(t *testing.T) {
 	}
 }
 
+// TestListReplaceMatchFunction pins the match form of `list replace` (DMN
+// 1.5 §10.3.4.4): every item the function of (item, newItem) returns true
+// for is replaced. Issue #54.
+func TestListReplaceMatchFunction(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"limit": FromGo(5)}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// The spec example, positionally and by name.
+		{`list replace([2,4,6,8], function(item, newItem) item < newItem, 5)`, []any{5.0, 5.0, 6.0, 8.0}},
+		{`list replace(list: [2,4,6,8], match: function(item, newItem) item < newItem, newItem: 5)`, []any{5.0, 5.0, 6.0, 8.0}},
+		{`list replace(match: function(item, newItem) item = 4, newItem: null, list: [2,4,6])`, []any{2.0, nil, 6.0}},
+		// The predicate sees outer variables and iteration bindings.
+		{`list replace([2,4,6,8], function(item, newItem) item > limit, 0)`, []any{2.0, 4.0, 0.0, 0.0}},
+		{`for t in [3] return list replace([2,4], function(x, y) x > t, 0)`, []any{[]any{2.0, 0.0}}},
+		// A result that is not true is no match.
+		{`list replace([2,4,6,8], function(item, newItem) 1, 5)`, []any{2.0, 4.0, 6.0, 8.0}},
+		{`list replace([2,4], function(item, newItem) null, 5)`, []any{2.0, 4.0}},
+		{`list replace([2,4], function(item, newItem) false, 5)`, []any{2.0, 4.0}},
+		// An empty list or a singleton conversion.
+		{`list replace([], function(item, newItem) true, 5)`, []any{}},
+		{`list replace(1, function(item, newItem) true, 5)`, []any{5.0}},
+		// Outside the domain: null.
+		{`list replace([2,4], function(item) true, 5)`, nil},
+		{`list replace([2,4], function(a, b, c) true, 5)`, nil},
+		{`list replace(null, function(item, newItem) true, 5)`, nil},
+		{`list replace(list: [2,4], match: 1, newItem: 5)`, nil},
+		{`list replace(list: [2,4], match: function(a, b) true, position: 1, newItem: 5)`, nil},
+		// The position form is unchanged.
+		{`list replace([1,2,3], 2, 9)`, []any{1.0, 9.0, 3.0}},
+		{`list replace(list: [1,2,3], position: -1, newItem: 9)`, []any{1.0, 2.0, 9.0}},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+
+	// An error inside the predicate propagates, as it does from sort's. Most
+	// FEEL mistakes are null rather than errors (a path on a number,
+	// §10.3.2.6; calling a number, §10.3.2.13.2), so the predicate overruns
+	// the iteration budget, which is an error by design.
+	capped, err := NewEvaluator(FEEL, WithMaxIterations(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capped.EvalText(`list replace([1,2], function(a, b) count(for i in 1..100 return i) > 0, 5)`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("a failing predicate: error %v, want ErrIterationBudgetExceeded", err)
+	}
+}
+
+// TestMacroBuiltinArguments pins the Macro built-ins (`sort`, `is defined`)
+// on arguments that do not fit: DMN 1.5 §10.3.4 makes a built-in invoked
+// outside its domain null. Upstream raised on a wrong argument count, a
+// missing keyword, a non-list or non-function argument to sort and a
+// predicate of the wrong arity.
+func TestMacroBuiltinArguments(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"xs": FromGo([]any{3, 1, 2}), "k": FromGo(-1)}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Misfitting arguments: null.
+		{`sort()`, nil},
+		{`sort(1)`, nil},
+		{`sort([3,1], 5)`, nil},
+		{`sort([3,1], null)`, nil},
+		{`sort(null, function(x, y) x < y)`, nil},
+		{`sort([3,1], function(x) x)`, nil},
+		{`sort([3,1], function(x, y, z) x < y)`, nil},
+		{`sort([1], function(x) x)`, nil},
+		{`sort([3,1], function(x, y) x < y, 5)`, nil},
+		{`sort(list: [1], foo: 1)`, nil},
+		{`sort(list: [3,1], precedes: function(x, y) x < y, foo: 1)`, nil},
+		{`sort(precedes: function(x, y) x < y)`, nil},
+		{`sort(list: [3,1], predicates: function(x, y) x < y)`, nil},
+		{`is defined()`, nil},
+		{`is defined(1, 2)`, nil},
+		{`is defined(foo: 1)`, nil},
+		// Valid calls are unchanged.
+		{`sort([3,1,4,5,2], function(x, y) x < y)`, []any{1.0, 2.0, 3.0, 4.0, 5.0}},
+		{`sort(list: [3,1,4,5,2], precedes: function(x,y) x < y)`, []any{1.0, 2.0, 3.0, 4.0, 5.0}},
+		{`sort(precedes: function(x,y) x > y, list: xs)`, []any{3.0, 2.0, 1.0}},
+		{`sort(xs, function(a, b) a * k < b * k)`, []any{3.0, 2.0, 1.0}},
+		{`sort([], function(x, y) x < y)`, []any{}},
+		{`sort(5, function(x, y) x < y)`, []any{5.0}},
+		{`sort(["b", "a"], function(x: string, y: string) x < y)`, []any{"a", "b"}},
+		// Only a boolean true is "before" (Table 80: precedes is a boolean
+		// function); a non-boolean or null result is not-before, like false,
+		// so the stable sort keeps the input order.
+		{`sort([3,1,2], function(x, y) 1)`, []any{3.0, 1.0, 2.0}},
+		{`sort([3,1,2], function(x, y) "x")`, []any{3.0, 1.0, 2.0}},
+		{`sort([3,1,2], function(x, y) null)`, []any{3.0, 1.0, 2.0}},
+		{`sort([3,1,2], function(x, y) [true])`, []any{3.0, 1.0, 2.0}},
+		{`sort([3,1,2], function(x, y) x < y)`, []any{1.0, 2.0, 3.0}},
+		{`is defined(xs)`, true},
+		{`is defined(value: xs)`, true},
+		{`is defined(nope)`, false},
+		{`is defined(null)`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+
+	// An error inside the predicate's body still propagates; only argument
+	// misfits are null. The predicate overruns the iteration budget, as in
+	// TestListReplaceMatchFunction.
+	capped, err := NewEvaluator(FEEL, WithMaxIterations(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capped.EvalText(`sort([1,2], function(a, b) count(for i in 1..100 return i) > 0)`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("a failing predicate: error %v, want ErrIterationBudgetExceeded", err)
+	}
+	// So does an error evaluating an argument.
+	if _, err := capped.EvalText(`sort(for i in 1..100 return i, function(a, b) a < b)`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("a failing argument: error %v, want ErrIterationBudgetExceeded", err)
+	}
+	if _, err := capped.EvalText(`is defined(for i in 1..100 return i)`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("a failing is defined argument: error %v, want ErrIterationBudgetExceeded", err)
+	}
+}
+
+func TestStringLiteralsAndCharacters(t *testing.T) {
+	// DMN 1.5 §10.3.1.2 grammar rule 66: a string literal's escapes decode
+	// (issue #55). §10.3.4.3 Table 73: lengths and positions count
+	// characters, which are code points (issue #56).
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`"a\\b"`, `a\b`},
+		{`"a\tb"`, "a\tb"},
+		{`"a\rb"`, "a\rb"},
+		{`"a\nb"`, "a\nb"},
+		{`"a\'b"`, "a'b"},
+		{`"a\"b"`, `a"b`},
+		{`"\u0041\u00e9"`, "Aé"},
+		{`"\uD83D\uDC0E"`, "🐎"},
+		{`"\U01F40E"`, "🐎"},
+		{`"\\"`, `\`},
+		{`"\\n"`, `\n`},
+		// Escapes the grammar does not define stay verbatim.
+		{`"\d"`, `\d`},
+		{`"\u12"`, `\u12`},
+		{`"\uD83D"`, "\uFFFD"},
+		// A regular expression written with an escaped backslash reaches the
+		// engine as one backslash.
+		{`matches("a1", "\\d")`, true},
+		{`matches("ad", "\\d")`, false},
+		{`replace("a1b2", "\\d", "#")`, "a#b#"},
+		{`string length("a\\b")`, 3.0},
+		{`string length("\uD83D\uDC0E")`, 1.0},
+		// Characters, not bytes.
+		{`string length("🐎ab")`, 3.0},
+		{`string length("é")`, 1.0},
+		{`string length("")`, 0.0},
+		{`substring("🐎ab", 2)`, "ab"},
+		{`substring("🐎ab", -2, 1)`, "a"},
+		{`substring before("🐎ab", "b")`, "🐎a"},
+		{`substring after("🐎ab", "🐎")`, "ab"},
+		{`upper case("éa🐎")`, "ÉA🐎"},
+		{`lower case("ÉA")`, "éa"},
+		{`starts with("🐎ab", "🐎")`, true},
+		{`ends with("ab🐎", "🐎")`, true},
+		{`contains("a🐎b", "🐎")`, true},
+		{`matches("🐎", "^.$")`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestListAggregates pins DMN 1.5 §10.3.4.4 Table 75 for count, min, max,
+// sum, product, mean, median, stddev and mode (#58): a null or out-of-domain
+// argument is null, never an error; an empty list is 0 for count, [] for
+// mode and null for the rest; a null or non-number item makes an arithmetic
+// aggregate null, while count counts it (an interpretation; TCK 0094-004
+// fixes only product). TCK ids: 0061 median, 0062 mode, 0063 stddev, 0094
+// product.
+func TestListAggregates(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Null or out-of-domain argument.
+		{`count(null)`, nil},
+		{`count(list: null)`, nil},
+		{`sum(null)`, nil},
+		{`product(null)`, nil},
+		{`mean(null)`, nil},
+		{`median(null)`, nil},
+		{`stddev(null)`, nil},
+		{`mode(null)`, nil},
+		{`min(null)`, nil},
+		{`max(null)`, nil},
+		{`sum("a")`, nil},
+		{`mean([1, "a"])`, nil},
+		{`median([1, 2, "foo", 4])`, nil},
+		{`mode([1, 2, "foo", 4])`, nil},
+		{`stddev([1, 2, "foo", 4])`, nil},
+		{`product([1, 2, "foo", 4])`, nil},
+		{`sum([[1, 2]])`, nil},
+		// Empty list.
+		{`count([])`, 0.0},
+		{`sum([])`, nil},
+		{`product([])`, nil},
+		{`mean([])`, nil},
+		{`median([])`, nil},
+		{`stddev([])`, nil},
+		{`min([])`, nil},
+		{`max([])`, nil},
+		{`mode([])`, []any{}},
+		// A null item.
+		{`count([1, null])`, 2.0},
+		{`sum([1, null])`, nil},
+		{`product([1, 2, null, 4])`, nil},
+		{`mean([1, null])`, nil},
+		{`median([1, null])`, nil},
+		{`stddev([1, null, 3])`, nil},
+		{`mode([1, null])`, nil},
+		{`max([1, null])`, nil},
+		// In the domain, including singleton conversion and varargs.
+		{`count([1, [2, 3]])`, 2.0},
+		{`count(1, 2, 3)`, 3.0},
+		{`count(5)`, 1.0},
+		{`sum([1, 2, 3])`, 6.0},
+		{`sum(1, 2, 3)`, 6.0},
+		{`sum(list: [1, 2])`, 3.0},
+		{`product([2, 3, 4])`, 24.0},
+		{`product(6)`, 6.0},
+		{`mean([1, 2, 3, 4])`, 2.5},
+		{`mean(5)`, 5.0},
+		{`median([8, 2, 5, 3, 4])`, 4.0},
+		{`median([6, 1, 2, 3])`, 2.5},
+		{`median(4)`, 4.0},
+		{`stddev(47)`, nil},
+		{`stddev([47])`, nil},
+		{`stddev([2, 4, 7, 5]) = 2.081665999466132735282297706979931`, true},
+		{`mode([6, 1, 9, 6, 1])`, []any{1.0, 6.0}},
+		{`mode([3, 6, 1, 9, 6, 1, 3])`, []any{1.0, 3.0, 6.0}},
+		{`mode(6, 3, 9, 6, 6)`, []any{6.0}},
+		{`min([3, 1, 2])`, 1.0},
+		{`max(3, 1, 2)`, 3.0},
+		{`string(mean([1, 2, 3, 4]))`, "2.5"},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestAggregateIsTheBuiltin pins that feel.Aggregate, the door COLLECT
+// aggregation uses, answers exactly as the FEEL built-ins do.
+func TestAggregateIsTheBuiltin(t *testing.T) {
+	list := []any{FromGo(3), FromGo(1), Null}
+	cases := map[string]any{"count": 3.0, "sum": nil, "min": nil, "max": nil, "mode": nil}
+	for name, want := range cases {
+		got, ok := Aggregate(name, list)
+		if !ok {
+			t.Fatalf("Aggregate(%q) unknown", name)
+		}
+		if g := ToGo(got); !deepEqualNum(g, want) {
+			t.Errorf("Aggregate(%q, [3, 1, null]) = %#v, want %#v", name, g, want)
+		}
+	}
+	if got, _ := Aggregate("sum", nil); !IsNull(got) {
+		t.Errorf("Aggregate(sum, []) = %#v, want null", got)
+	}
+	if got, _ := Aggregate("count", nil); ToGo(got) != 0.0 {
+		t.Errorf("Aggregate(count, []) = %#v, want 0", ToGo(got))
+	}
+	if _, ok := Aggregate("all", nil); ok {
+		t.Error("Aggregate(all) is not a list aggregate")
+	}
+}
+
 func TestAllAnyAreThreeValued(t *testing.T) {
 	// DMN 1.5 §10.3.4.4; TCK 0059/0060. A null item decides nothing; a
 	// non-boolean item puts the call outside its domain.
@@ -507,6 +1319,442 @@ func TestFunctionLibraryIsNamespaced(t *testing.T) {
 	for _, ns := range []string{"", "floor", "count"} {
 		if _, err := NewEvaluator(FEEL, WithLibraries(FunctionLibrary{Namespace: ns})); err == nil {
 			t.Errorf("NewEvaluator accepted namespace %q", ns)
+		}
+	}
+}
+
+// TestInvokingANonFunction pins DMN 1.5 §10.3.2.13.2: invoking something
+// that is not a function, or a user-defined function with arguments that do
+// not conform to its parameters, is null rather than an error. That holds
+// for built-ins, closures and library functions alike — a library function
+// is how a BKM or decision service is invoked from FEEL.
+func TestInvokingANonFunction(t *testing.T) {
+	lib := FunctionLibrary{
+		Namespace: "acme",
+		Functions: map[string]Function{
+			"one": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) { return 1, nil }},
+		},
+	}
+	e, err := NewEvaluator(FEEL, WithLibraries(lib))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]any{"a": FromGo(3), "k": FromGo(map[string]any{"a": 1})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`5(1)`, nil},
+		{`nofn(a)`, nil},
+		{`{a: 1}.a(2)`, nil},
+		{`k.a(2)`, nil},
+		{`null(1)`, nil},
+		{`sumx([1])`, nil},
+		{`acme.nofn(1)`, nil},
+		{`5(1) = null`, true},
+		{`(function(x) x)(1, 2)`, nil},
+		{`(function(x, y) x)(1)`, nil},
+		{`(function(x) x)(y: 1)`, nil},
+		{`(function(x) x)(x: 1)`, 1.0},
+		{`abs(-1)`, 1.0},
+		{`abs(1, 2)`, nil},
+		{`acme.one(1)`, 1.0},
+		{`acme.one(1, 2)`, nil},
+		{`acme.one()`, nil},
+		{`acme.one(m: 1)`, nil},
+		{`{t: 5, f: function(x) x + t}.f(1)`, 6.0},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+	// An error evaluating an argument still propagates.
+	capped, err := NewEvaluator(FEEL, WithMaxIterations(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capped.EvalText(`(function(x) x)(count(for i in 1..100 return i))`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("argument overrunning the budget: error %v, want ErrIterationBudgetExceeded", err)
+	}
+}
+
+// TestInTakesPositiveUnaryTests covers `in` against a positive unary test or
+// a parenthesised list of them (DMN 1.5 grammar rule 49.c/d, TCK
+// 0072-feel-in), and its precedence as a comparison, while the list, range
+// and parenthesised-expression forms keep their meaning.
+func TestInTakesPositiveUnaryTests(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"x": FromGo(5), "b": FromGo(true), "xs": FromGo([]any{1, 2, 5})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`10 in =10`, true},
+		{`10 in !=10`, false},
+		{`[1,2,3] in =[1,2,3]`, true},
+		{`10 in (1, < 5, >=10)`, true},
+		{`x in (<5)`, false},
+		{`x in (1, 5)`, true},
+		{`x in (x)`, true},
+		{`x in (1..5)`, false},
+		{`x in (1..5]`, true},
+		{`x in [1..5]`, true},
+		{`x in xs`, true},
+		{`x in > 2 + 4`, false},
+		{`"a" in [1, 2]`, nil},
+		{`x in [5] and b`, true},
+		{`x in [5] and not(b)`, false},
+		{`some y in xs satisfies y in (2, 5)`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestInstanceOf pins DMN 1.5 grammar rules 51-52 and Table 61: a type maps to
+// a node of the lattice or the check is null; null is an instance of Null only;
+// a non-null value is an instance of a type its own type conforms to
+// (§10.3.2.9.2). Several cases are TCK 0070-feel-instance-of's.
+func TestInstanceOf(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"x":              FromGo(5),
+		"b":              FromGo(true),
+		"a":              FromGo(map[string]any{"x": 1, "n": map[string]any{"y": 2}}),
+		"Date of Birth":  FromGo("1990-01-01"),
+		"instance count": FromGo(3),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Primitive types.
+		{`5 instance of number`, true},
+		{`x instance of number`, true},
+		{`"abc" instance of string`, true},
+		{`123 instance of string`, false},
+		{`true instance of boolean`, true},
+		{`date("2020-01-01") instance of date`, true},
+		{`date("2020-01-01") instance of date and time`, false},
+		{`date and time("2020-01-01T10:00:00") instance of date and time`, true},
+		{`time("10:00:00") instance of time`, true},
+		{`duration("P1D") instance of days and time duration`, true},
+		{`duration("P1D") instance of years and months duration`, false},
+		{`duration("P1Y") instance of years and months duration`, true},
+		{`@"P0Y" instance of years and months duration`, true},
+		// Any and Null (Table 61 rules 2-3).
+		{`5 instance of Any`, true},
+		{`null instance of number`, false},
+		{`null instance of Any`, false},
+		{`null instance of Null`, true},
+		{`5 instance of Null`, false},
+		{`(5 instance of number) = null`, false},
+		// Lists.
+		{`[123] instance of list<number>`, true},
+		{`[1, "a"] instance of list<number>`, false},
+		{`["a", true, 123] instance of list<Any>`, true},
+		{`[] instance of list<string>`, true},
+		{`[null, 1] instance of list<number>`, true},
+		{`[[1], [2]] instance of list<list<number>>`, true},
+		{`5 instance of list<number>`, false},
+		// Ranges.
+		{`[1..10) instance of range<number>`, true},
+		{`[1..10) instance of range<string>`, false},
+		{`[date("2020-01-01")..date("2020-12-31")] instance of range<date>`, true},
+		// Contexts: width subtyping, nested, null entries.
+		{`{a: "foo"} instance of context<>`, true},
+		{`{} instance of context<>`, true},
+		{`{a: "foo"} instance of context<a: string>`, true},
+		{`{a: "123", b: 123} instance of context<a: string>`, true},
+		{`{a: "123"} instance of context<a: number>`, false},
+		{`{b: 1} instance of context<a: number>`, false},
+		{`{a: null} instance of context<a: string>`, true},
+		{`{a: {b: 123}} instance of context<a: context<b: number>>`, true},
+		{`{a: {b: 123}} instance of context<a: context<b: string>>`, false},
+		{`{"full name": "x"} instance of context<"full name": string>`, true},
+		{`5 instance of context<>`, false},
+		{`a instance of context<>`, true},
+		{`a instance of context<x: number, n: context<y: number>>`, true},
+		// Functions: arity; untyped parameters are Any.
+		{`(function() "foo") instance of function<>->Any`, true},
+		{`(function() "foo") instance of function<>->string`, true},
+		{`(function(a, b) a) instance of function<string, string>->Any`, true},
+		{`(function(a) a) instance of function<string, string>->Any`, false},
+		{`abs instance of function<number>->number`, true},
+		{`5 instance of function<>->Any`, false},
+		// Types that map to no lattice node are null (Table 61 rule 1).
+		{`123 instance of list`, nil},
+		{`a instance of context`, nil},
+		{`5 instance of function`, nil},
+		{`5 instance of tNumber`, nil},
+		{`5 instance of list<tNumber>`, nil},
+		{`null instance of tNumber`, nil},
+		// Precedence: tighter than arithmetic and comparison, looser than a
+		// path and negation (grammar rule 2).
+		{`x instance of number and b`, true},
+		{`b and x instance of string`, false},
+		{`x instance of date and b`, false},
+		{`1 + 1 instance of number`, nil},
+		{`-5 instance of number`, true},
+		{`a.x instance of number`, true},
+		{`x instance of number = true`, true},
+		{`if x instance of number then 1 else 2`, 1.0},
+		{`[x instance of number, 1]`, []any{true, 1.0}},
+		// Names containing the words still resolve.
+		{`Date of Birth`, "1990-01-01"},
+		{`instance count + 1`, 4.0},
+		{`Date of Birth instance of string`, true},
+		{`instance count instance of number`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+	for _, bad := range []string{`5 instance of`, `5 instance of list<number`, `5 instance of context<a number>`, `5 instance of function<number>number`} {
+		if _, err := e.Compile(bad); err == nil {
+			t.Errorf("%s compiled, want a syntax error", bad)
+		}
+	}
+}
+
+// TestTypedFunctionParameters pins DMN 1.5 grammar rule 56 (formal parameter
+// = parameter name [":" type]) and §10.3.2.13.2: an untyped parameter is Any;
+// an invocation whose argument does not conform to its parameter's type,
+// before or after implicit conversion, is null and the body does not run; and
+// `instance of function<…>->…` checks declared parameter types
+// contravariantly (§10.3.2.9.2).
+func TestTypedFunctionParameters(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"xs": FromGo([]any{3, 1, 2})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Parsing: typed, untyped and mixed parameters.
+		{`(function(a: string, b: number) a)("x", 1)`, "x"},
+		{`(function(a, b) a + b)(1, 2)`, 3.0},
+		{`(function(a: number, b) a + b)(1, 2)`, 3.0},
+		{`(function(a, b: string) b)(1, "y")`, "y"},
+		{`(function(d: date and time) d.year)(date and time("2020-01-01T10:00:00"))`, 2020.0},
+		{`(function(xs: list<number>) count(xs))([1, 2])`, 2.0},
+		{`(function(c: context<a: number>) c.a)({a: 1, b: 2})`, 1.0},
+		{`(function(f: function<number>->number) f(2))(abs)`, 2.0},
+		// A non-conforming argument makes the invocation null.
+		{`(function(a: string) a)(1)`, nil},
+		{`(function(a: number, b: string) a)(1, 2)`, nil},
+		{`(function(a: number, b) b)(b: 1, a: "x")`, nil},
+		{`(function(a: number) a)(a: 5)`, 5.0},
+		{`(function(c: context<a: number>) c.a)({b: 2})`, nil},
+		{`(function(xs: list<number>) xs)([1, "a"])`, nil},
+		// Null conforms to every type (Null <: T); Any and Null as types.
+		{`(function(a: number) a)(null)`, nil},
+		{`(function(a: number) a = null)(null)`, true},
+		{`(function(a: Any) a)("x")`, "x"},
+		{`(function(a: Null) 1)(5)`, nil},
+		{`(function(a: Null) 1)(null)`, 1.0},
+		// Implicit conversions (§10.3.2.9.4) are applied before the check.
+		{`(function(xs: list<number>) xs)(5)`, []any{5.0}},
+		{`(function(a: number) a)([7])`, 7.0},
+		{`(function(a: number) a)([7, 8])`, nil},
+		{`(function(d: date and time) string(d))(date("2020-01-01"))`, "2020-01-01T00:00:00Z"},
+		// A type that maps to no lattice node is not checked.
+		{`(function(a: tPerson) a)(5)`, 5.0},
+		// instance of: declared parameter types, contravariantly.
+		{`(function(a: string) a) instance of function<string>->Any`, true},
+		{`(function(a: number) a) instance of function<string>->Any`, false},
+		{`(function(a: Any) a) instance of function<string>->Any`, true},
+		{`(function(a: string) a) instance of function<Any>->Any`, false},
+		{`(function(a: string) a) instance of function<Null>->Any`, true},
+		{`(function(a, b: number) a) instance of function<string, number>->Any`, true},
+		{`(function(a, b: number) a) instance of function<string, string>->Any`, false},
+		{`(function(a: string) a) instance of function<string, string>->Any`, false},
+		{`(function(c: context<a: number>) c) instance of function<context<a: number, b: string>>->Any`, true},
+		{`(function(c: context<a: number, b: string>) c) instance of function<context<a: number>>->Any`, false},
+		{`(function(xs: list<number>) xs) instance of function<list<number>>->Any`, true},
+		{`(function(f: function<number>->Any) 1) instance of function<function<Any>->string>->Any`, true},
+		{`(function(f: function<Any>->Any) 1) instance of function<function<number>->Any>->Any`, false},
+		{`(function(a: tPerson) a) instance of function<number>->Any`, true},
+		// Closures still close over their definition scope.
+		{`{k: 10, f: function(a: number) a + k}.f(1)`, 11.0},
+		// sort and list replace apply typed predicates; a non-conforming call
+		// is null, which is not true: list replace reads it as "no match";
+		// sort as "not before", so a predicate that never conforms errors
+		// nothing and leaves the order unspecified.
+		{`sort(xs, function(a: number, b: number) a < b)`, []any{1.0, 2.0, 3.0}},
+		{`list replace(xs, function(item: number, newItem: number) item > 2, 0)`, []any{0.0, 1.0, 2.0}},
+		{`count(sort(xs, function(a: string, b: string) a < b))`, 3.0},
+		{`list replace(xs, function(item: string, newItem) item > 2, 0)`, []any{3.0, 1.0, 2.0}},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+	for _, bad := range []string{`function(a:) a`, `function(a: list<number) a`, `function(: string) a`} {
+		if _, err := e.Compile(bad); err == nil {
+			t.Errorf("%s compiled, want a syntax error", bad)
+		}
+	}
+}
+
+// TestBetween pins DMN 1.5 grammar rule 49.b and Table 55: `e1 between e2 and
+// e3` is `e1 >= e2 and e1 <= e3`, inclusive at both ends, a comparison at the
+// precedence of `=` and `in`, and null wherever the equivalent expression is.
+func TestBetween(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"x":                  FromGo(3),
+		"b":                  FromGo(false),
+		"lo":                 FromGo(1),
+		"hi":                 FromGo(5),
+		"days between dates": FromGo(7),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Numbers, inclusive at both ends.
+		{`3 between 1 and 5`, true},
+		{`0 between 1 and 5`, false},
+		{`6 between 1 and 5`, false},
+		{`1 between 1 and 5`, true},
+		{`5 between 1 and 5`, true},
+		{`3 between 5 and 1`, false},
+		{`x between lo and hi`, true},
+		{`x + 3 between lo * 2 and hi + 1`, true},
+		// Strings, dates, times, durations.
+		{`"b" between "a" and "c"`, true},
+		{`"d" between "a" and "c"`, false},
+		{`date("2020-06-01") between date("2020-01-01") and date("2020-12-31")`, true},
+		{`date("2021-06-01") between date("2020-01-01") and date("2020-12-31")`, false},
+		{`time("10:00:00") between time("09:00:00") and time("17:00:00")`, true},
+		{`duration("P2D") between duration("P1D") and duration("P3D")`, true},
+		{`duration("P1Y") between duration("P6M") and duration("P2Y")`, true},
+		// Incomparable and null operands: null, as `>=`/`<=` and `and` give.
+		{`"a" between 1 and 5`, nil},
+		{`3 between "a" and "z"`, nil},
+		{`true between false and true`, nil},
+		{`null between 1 and 5`, nil},
+		{`3 between null and 5`, nil},
+		{`3 between 1 and null`, nil},
+		// Table 55 is the letter: one definite false makes the `and` false.
+		{`9 between null and 5`, false},
+		{`0 between 1 and "z"`, false},
+		// Precedence: a comparison; the inner `and` belongs to `between`.
+		{`x between 1 and 5 and b`, false},
+		{`x between 1 and 5 and true`, true},
+		{`b or x between 1 and 5`, true},
+		{`(x between 1 and 5) = true`, true},
+		{`x between 1 and 5 = true`, true}, // comparisons chain left to right
+		{`if x between 1 and 5 then "in" else "out"`, "in"},
+		{`[x between 1 and 2, 1]`, []any{false, 1.0}},
+		{`not(x between 1 and 5)`, false},
+		// A name merely containing the word still resolves.
+		{`days between dates`, 7.0},
+		{`days between dates between 1 and 10`, true},
+		{`days between dates + 1`, 8.0},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+	for _, bad := range []string{`3 between 1`, `3 between 1 or 5`, `3 between and 5`, `3 between 1 and`, `x between 1`} {
+		if _, err := e.Compile(bad); err == nil {
+			t.Errorf("%s compiled, want a syntax error", bad)
+		}
+	}
+	// In a unary-test cell, `? between a and b` is a comparison: a null input
+	// is not satisfied, rather than falling through to equality with null.
+	cell, err := e.CompileUnaryTest(`? between 1 and 5`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[any]bool{3: true, 0: false, 5: true, nil: false} {
+		got, err := e.EvalUnaryTest(cell, FromGo(in), nil)
+		if err != nil {
+			t.Fatalf("? between 1 and 5 against %v: %v", in, err)
+		}
+		if got != want {
+			t.Errorf("? between 1 and 5 against %v = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// DMN 1.5 §10.3.1.2 rules 1-2: a textual expression is one expression, so
+// juxtaposition is a syntax error, while comma lists of unary tests and
+// multi-word names are unaffected.
+func TestJuxtapositionIsASyntaxError(t *testing.T) {
+	e := newFEEL(t)
+	for _, bad := range []string{`3 4`, `3 foo`, `"a" "b"`, `x between 1`, `1; 2`, `1 "a"`} {
+		_, err := e.Compile(bad)
+		var ce *CompileError
+		if !errors.As(err, &ce) {
+			t.Errorf("%q: error %v, want a *CompileError", bad, err)
+		}
+	}
+	vars := map[string]any{"Date of Birth": FromGo("1990-01-01"), "days between dates": FromGo(7)}
+	for expr, want := range map[string]any{
+		`Date of Birth`:          "1990-01-01",
+		`days between dates`:     7.0,
+		`days between dates + 1`: 8.0,
+		``:                       nil,
+		`  `:                     nil,
+	} {
+		if got := mustEval(t, e, expr, vars); !deepEqualNum(got, want) {
+			t.Errorf("%q = %#v, want %#v", expr, got, want)
+		}
+	}
+	for _, c := range []struct {
+		entry string
+		input any
+		want  bool
+	}{
+		{`1, 2, 3`, 2, true},
+		{`1, 2, 3`, 4, false},
+		{`not(1, 2)`, 1, false},
+		{`not(1, 2)`, 3, true},
+		{`< 5, > 10`, 11, true},
+	} {
+		x, err := e.CompileUnaryTest(c.entry)
+		if err != nil {
+			t.Fatalf("CompileUnaryTest(%q): %v", c.entry, err)
+		}
+		got, err := e.EvalUnaryTest(x, FromGo(c.input), nil)
+		if err != nil {
+			t.Fatalf("EvalUnaryTest(%q, %v): %v", c.entry, c.input, err)
+		}
+		if got != c.want {
+			t.Errorf("%q against %v = %v, want %v", c.entry, c.input, got, c.want)
 		}
 	}
 }
@@ -778,6 +2026,99 @@ func TestTemporalZoneProperties(t *testing.T) {
 	}
 }
 
+// TestTemporalPropertiesPerKind walks DMN 1.5 §10.3.2.15 Table 65 kind by
+// kind, with Table 66's types: every listed property answers, and a property
+// the kind does not list is null.
+func TestTemporalPropertiesPerKind(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		kind  string
+		cases map[string]any
+	}{
+		{"date", map[string]any{
+			`date("2020-01-01").year`:  2020.0,
+			`date("2020-01-01").month`: 1.0,
+			`date("2020-01-01").day`:   1.0,
+			// ISO 8601 numbering (Table 66): 1 is Monday, 7 is Sunday.
+			`date("2020-01-01").weekday`:                       3.0,
+			`date("2020-01-06").weekday`:                       1.0,
+			`date("2020-01-05").weekday`:                       7.0,
+			`date("2020-12-01").month + 1`:                     13.0,
+			`is defined(date("2020-01-01").weekday)`:           true,
+			`[date("2020-01-01"), date("2020-01-02")].weekday`: []any{3.0, 4.0},
+			`date("2020-01-01").hour`:                          nil,
+			`date("2020-01-01").time offset`:                   nil,
+			`date("2020-01-01").timezone`:                      nil,
+			`is defined(date("2020-01-01").hour)`:              false,
+		}},
+		{"date and time", map[string]any{
+			`date and time("2020-03-05T10:20:30").year`:      2020.0,
+			`date and time("2020-03-05T10:20:30").month`:     3.0,
+			`date and time("2020-03-05T10:20:30").day`:       5.0,
+			`date and time("2020-03-05T10:20:30").weekday`:   4.0,
+			`date and time("2020-03-05T10:20:30").hour`:      10.0,
+			`date and time("2020-03-05T10:20:30").minute`:    20.0,
+			`date and time("2020-03-05T10:20:30").second`:    30.0,
+			`date and time("2020-03-05T10:20:30.25").second`: 0.25 + 30,
+			// The weekday is the value's own calendar date, at its offset.
+			`date and time("2020-03-08T23:30:00-05:00").weekday`:             7.0,
+			`string(date and time("2020-03-05T10:00:00+02:00").time offset)`: "PT2H",
+			`date and time("2020-03-05T10:00:00+02:00").timezone`:            nil,
+			`date and time("2020-03-05T10:00:00@Europe/Paris").timezone`:     "Europe/Paris",
+			`date and time("2020-03-05T10:00:00").time offset`:               nil,
+			`date and time("2020-03-05T10:00:00").timezone`:                  nil,
+			`date and time("2020-03-05T10:00:00").years`:                     nil,
+		}},
+		{"time", map[string]any{
+			`time("10:20:30").hour`:                      10.0,
+			`time("10:20:30").minute`:                    20.0,
+			`time("10:20:30").second`:                    30.0,
+			`time("10:20:30.5").second`:                  30.5,
+			`string(time("10:20:30-05:00").time offset)`: "-PT5H",
+			`time("10:20:30-05:00").timezone`:            nil,
+			`time("10:20:30@Etc/UTC").timezone`:          "Etc/UTC",
+			`time("10:20:30").time offset`:               nil,
+			`time("10:20:30").timezone`:                  nil,
+			`time("10:20:30").weekday`:                   nil,
+			`time("10:20:30").year`:                      nil,
+		}},
+		{"years and months duration", map[string]any{
+			`duration("P14M").years`:             1.0,
+			`duration("P14M").months`:            2.0,
+			`duration("-P1Y2M").years`:           -1.0,
+			`duration("-P1Y2M").months`:          -2.0,
+			`duration("P1Y2M").days`:             nil,
+			`duration("P1Y2M").hours`:            nil,
+			`duration("P1Y2M").seconds`:          nil,
+			`is defined(duration("P1Y").days)`:   false,
+			`is defined(duration("P1Y").months)`: true,
+		}},
+		{"days and time duration", map[string]any{
+			`duration("P1DT25H").days`:            2.0,
+			`duration("P1DT25H").hours`:           1.0,
+			`duration("PT90M").minutes`:           30.0,
+			`duration("PT1.5S").seconds`:          1.5,
+			`duration("-P1DT2H").days`:            -1.0,
+			`duration("-P1DT2H").hours`:           -2.0,
+			`duration("-PT1.5S").seconds`:         -1.5,
+			`duration("P1D").years`:               nil,
+			`duration("P1D").months`:              nil,
+			`is defined(duration("P1D").years)`:   false,
+			`is defined(duration("P1D").seconds)`: true,
+		}},
+	}
+	for _, kind := range cases {
+		t.Run(kind.kind, func(t *testing.T) {
+			for expr, want := range kind.cases {
+				got := mustEval(t, e, expr, nil)
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("%s = %#v, want %#v", expr, got, want)
+				}
+			}
+		})
+	}
+}
+
 // TestKeyOfSeparatesKinds pins issue #53: KeyOf is the BKM memo key, so two
 // distinct FEEL values must never share one, while identical values must.
 func TestKeyOfSeparatesKinds(t *testing.T) {
@@ -878,6 +2219,72 @@ func TestFromGoKeepsSubSecondTimes(t *testing.T) {
 	}
 }
 
+// TestFromGoKeepsIANAZones pins #68: a Go time whose Location is a real IANA
+// zone reaches FEEL with that zone id (DMN 1.5 §10.3.2.3.5), so `.timezone`
+// reads it back; anything else keeps the offset, which is always lossless.
+func TestFromGoKeepsIANAZones(t *testing.T) {
+	paris, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2024-10-27 02:30 happens twice in Paris, at +02:00 and then +01:00.
+	// `2024-10-27T02:30:00@Europe/Paris` can name only one of them — the one
+	// time.Date picks, as the FEEL parser does — so the other keeps its offset.
+	named := time.Date(2024, 10, 27, 2, 30, 0, 0, paris)
+	other := time.Date(2024, 10, 27, 0, 30, 0, 0, time.UTC).In(paris)
+	if other.Equal(named) {
+		other = time.Date(2024, 10, 27, 1, 30, 0, 0, time.UTC).In(paris)
+	}
+	e, err := NewEvaluator(FEEL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		in   time.Time
+		want string
+		zone any
+	}{
+		{"paris summer", time.Date(2024, 7, 1, 10, 0, 0, 0, paris), "2024-07-01T10:00:00@Europe/Paris", "Europe/Paris"},
+		{"paris winter", time.Date(2024, 1, 15, 10, 0, 0, 0, paris), "2024-01-15T10:00:00@Europe/Paris", "Europe/Paris"},
+		{"paris nanoseconds", time.Date(2024, 7, 1, 10, 0, 0, 123456789, paris), "2024-07-01T10:00:00.123456789@Europe/Paris", "Europe/Paris"},
+		{"DST overlap, the occurrence the id names", named, "2024-10-27T02:30:00@Europe/Paris", "Europe/Paris"},
+		{"DST overlap, the other occurrence", other, other.Format("2006-01-02T15:04:05-07:00"), nil},
+		{"utc", time.Date(2024, 7, 1, 10, 0, 0, 0, time.UTC), "2024-07-01T10:00:00Z", nil},
+		{"unnamed fixed zone", time.Date(2024, 7, 1, 10, 0, 0, 0, time.FixedZone("", 3600)), "2024-07-01T10:00:00+01:00", nil},
+		{"fixed zone named CET in July", time.Date(2024, 7, 1, 10, 0, 0, 0, time.FixedZone("CET", 3600)), "2024-07-01T10:00:00+01:00", nil},
+		{"fixed zone named like an offset", time.Date(2024, 7, 1, 10, 0, 0, 0, time.FixedZone("+01:00", 3600)), "2024-07-01T10:00:00+01:00", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := FromGo(c.in)
+			if got := ToGo(v); got != c.want {
+				t.Errorf("ToGo(FromGo(%v)) = %#v, want %q", c.in, got, c.want)
+			}
+			zone, err := e.EvalText("x.timezone", map[string]any{"x": v})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ToGo(zone) != c.zone {
+				t.Errorf("x.timezone = %#v, want %#v", ToGo(zone), c.zone)
+			}
+			eq, err := e.EvalText(`x = date and time("`+c.in.UTC().Format(time.RFC3339Nano)+`")`, map[string]any{"x": v})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if eq != true {
+				t.Errorf("FromGo(%v) is not the same instant (= gave %#v)", c.in, eq)
+			}
+		})
+	}
+
+	// time.Local names the host's zone, never a zone id, whatever the host is.
+	local := FromGo(time.Date(2024, 7, 1, 10, 0, 0, 0, time.Local))
+	if s, _ := ToGo(local).(string); strings.Contains(s, "@") {
+		t.Errorf("ToGo(FromGo(local time)) = %q, want an offset form", s)
+	}
+}
+
 func mustFEEL(t *testing.T, e *Evaluator, text string) any {
 	t.Helper()
 	v, err := e.EvalText(text, nil)
@@ -885,4 +2292,194 @@ func mustFEEL(t *testing.T, e *Evaluator, text string) any {
 		t.Fatalf("EvalText(%q): %v", text, err)
 	}
 	return v
+}
+
+// TestScopeLeaksAreStillContexts pins the façade backstops for issue #67. The
+// fork no longer hands context variables out as its frame type, Scope, but a
+// Scope that leaks (lists are not normalised when a frame is pushed, and a
+// future re-sync could reintroduce the upstream rewrite) must still be keyed,
+// named and consumed as the context it is.
+func TestScopeLeaksAreStillContexts(t *testing.T) {
+	sc := pfeel.Scope{"x": pfeel.NewNumberFromInt64(1), "n": map[string]any{"y": pfeel.NewNumberFromInt64(2)}}
+	plain := map[string]any{"x": pfeel.NewNumberFromInt64(1), "n": map[string]any{"y": pfeel.NewNumberFromInt64(2)}}
+	ks, ok1 := KeyOf(sc)
+	kp, ok2 := KeyOf(plain)
+	if !ok1 || !ok2 || ks != kp {
+		t.Errorf("KeyOf(Scope) = %q (%v), KeyOf(map) = %q (%v); want one usable key", ks, ok1, kp, ok2)
+	}
+	if got := TypeName(sc); got != "context" {
+		t.Errorf("TypeName(Scope) = %q, want context", got)
+	}
+
+	e := newFEEL(t)
+	vars := map[string]any{"l": []any{pfeel.Scope{"key": "k", "value": pfeel.NewNumberFromInt64(1)}}}
+	for _, expr := range []string{`context(l) = {k: 1}`, `context(l[1]) = {k: 1}`} {
+		if got := mustEval(t, e, expr, vars); got != true {
+			t.Errorf("%s = %#v, want true", expr, got)
+		}
+	}
+}
+
+// stringRoundTrip renders x with string() and evaluates the result as FEEL,
+// returning the text and the value it reads back as.
+func stringRoundTrip(e *Evaluator, x any) (string, any, error) {
+	s, err := e.EvalText("string(x)", map[string]any{"x": FromGo(x)})
+	if err != nil {
+		return "", nil, err
+	}
+	text, _ := ToGo(s).(string)
+	back, err := e.EvalText(text, nil)
+	if err != nil {
+		return text, nil, err
+	}
+	return text, ToGo(back), nil
+}
+
+// TestUnicodeNames: a name is any run of DMN 1.5 §10.3.1.2 grammar rule 28-29
+// characters, so non-ASCII letters, combining marks and `?` resolve as
+// variables, and `?` alone is still the unary-test input.
+func TestUnicodeNames(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"Prénom": FromGo("Ada"), "Größe": FromGo(180), "Approved?": FromGo(true),
+		"имя": FromGo("i"), "اسم": FromGo("s"), "ä b": FromGo(1), "a?": FromGo(4),
+		"Ω₀": FromGo(6), "x·y": FromGo(8), "é": FromGo(9), "in?": FromGo(10),
+	}
+	cases := map[string]any{
+		`Prénom`:                     "Ada",
+		`Größe`:                      180.0,
+		`Approved?`:                  true,
+		`имя`:                        "i",
+		`اسم`:                        "s",
+		`ä b`:                        1.0,
+		`ä   b`:                      1.0,
+		`a? + 1`:                     5.0,
+		`Ω₀`:                         6.0,
+		`x·y`:                        8.0,
+		`in?`:                        10.0,
+		`{é: 1, b: é + 1}.b`:         2.0,
+		`if Approved? then 1 else 0`: 1.0,
+	}
+	for expr, want := range cases {
+		if got := mustEval(t, e, expr, vars); got != want {
+			t.Errorf("%s = %#v, want %v", expr, got, want)
+		}
+	}
+	for _, c := range []struct {
+		entry string
+		input any
+		want  bool
+	}{
+		{`? > 5`, 6, true},
+		{`< 5`, 6, false},
+		{`? = a?`, 4, true},
+		{`Größe`, 180, true},
+		{`?=a?`, 4, true},
+		{`"?"`, "?", true},
+	} {
+		x, err := e.CompileUnaryTest(c.entry)
+		if err != nil {
+			t.Fatalf("CompileUnaryTest(%q): %v", c.entry, err)
+		}
+		got, err := e.EvalUnaryTest(x, FromGo(c.input), vars)
+		if err != nil || got != c.want {
+			t.Errorf("%q against %v = %v (%v), want %v", c.entry, c.input, got, err, c.want)
+		}
+	}
+	// A digit, a combining mark or `·` may continue a name but not start one.
+	for _, bad := range []string{"\u0301a", "·a"} {
+		if _, err := e.Compile(bad); err == nil {
+			t.Errorf("%q compiled, want a syntax error", bad)
+		}
+	}
+}
+
+// TestLongNameScansInLinearTime: the name scanner is a single pass over the
+// runes, so a huge name scans in well under a second.
+func TestLongNameScansInLinearTime(t *testing.T) {
+	name := strings.Repeat("Größe?", 200000)
+	start := time.Now()
+	toks, err := pfeel.NewScanner(name + " + 1").Tokens()
+	if err != nil || len(toks) != 3 || toks[0].Value != name {
+		t.Fatalf("scan: %d tokens, %v", len(toks), err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("scanning a %d-byte name took %v", len(name), d)
+	}
+}
+
+func BenchmarkScanLongName(b *testing.B) {
+	text := strings.Repeat("Größe?", 10000) + " + 1"
+	b.SetBytes(int64(len(text)))
+	for b.Loop() {
+		if _, err := pfeel.NewScanner(text).Tokens(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// TestStringRoundTrip: string() of a list or context writes nested strings
+// and non-name keys as FEEL string literals with only the escapes of DMN 1.5
+// §10.3.1.2 grammar rule 66, so the text reads back as the same value.
+func TestStringRoundTrip(t *testing.T) {
+	e := newFEEL(t)
+	tricky := []string{
+		`say "hi"`, `back\slash`, `\n is not a newline`, `A`, "line\nbreak",
+		"tab\there", "cr\rhere", "bell\a", "nul\x00", "del\x7f", "é", "🐎",
+		"\U0001F600 non-BMP", "\u2028 separator", "\U000E0001 tag", "",
+		`trailing \`, `'single'`,
+	}
+	for _, s := range tricky {
+		for _, x := range []any{[]any{s}, map[string]any{"k": s}, map[string]any{s: 1.0}} {
+			text, back, err := stringRoundTrip(e, x)
+			if err != nil {
+				t.Errorf("string(%#v) = %q does not read back: %v", x, text, err)
+				continue
+			}
+			if !reflect.DeepEqual(back, x) {
+				t.Errorf("string(%#v) = %q reads back as %#v", x, text, back)
+			}
+		}
+	}
+	keys := []string{
+		"a b", "a  b", " a", "a ", "true", "and", "a and b", "for", "null",
+		"?", "a?", "é", "1x", "a.b", "a-b", "x\ny", "not", "between", "date",
+		"Größe", "?x", "in?", "Driver’s Age", "\u0301a", "a\u0301",
+	}
+	for _, k := range keys {
+		x := map[string]any{k: 1.0}
+		text, back, err := stringRoundTrip(e, x)
+		if err != nil || !reflect.DeepEqual(back, x) {
+			t.Errorf("string({%q: 1}) = %q reads back as %#v (%v)", k, text, back, err)
+		}
+	}
+}
+
+// FuzzQuoteRoundTrip: for any valid UTF-8 string s, string([s]) and
+// string({s: 1}) read back as the same list and context.
+func FuzzQuoteRoundTrip(f *testing.F) {
+	for _, s := range []string{
+		"", "a", `"`, `\`, `\\`, `A`, `\U01F600`, "\n\r\t", "\x01\x1f\x7f",
+		"é🐎", "\u2028\u00a0", "\U000E0001", "a  b", "true", "?",
+	} {
+		f.Add(s)
+	}
+	e, err := NewEvaluator(FEEL)
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		if !utf8.ValidString(s) {
+			t.Skip("FEEL text is UTF-8")
+		}
+		for _, x := range []any{[]any{s}, map[string]any{s: 1.0}} {
+			text, back, err := stringRoundTrip(e, x)
+			if err != nil {
+				t.Fatalf("string(%#v) = %q does not read back: %v", x, text, err)
+			}
+			if !reflect.DeepEqual(back, x) {
+				t.Fatalf("string(%#v) = %q reads back as %#v", x, text, back)
+			}
+		}
+	})
 }

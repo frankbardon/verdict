@@ -3,6 +3,7 @@ package dialect
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 )
@@ -931,43 +932,167 @@ func (binop Binop) orOp(intp *Interpreter) (any, error) {
 	}
 }
 
+// listIndex is `L[n]` for a numeric n (DMN 1.5 §10.3.2.5, Table 68): L[1] is
+// the first element and L[-1] the last, L[n] the nth from the start and L[-n]
+// the nth from the end. "If L does not contain n items, then L[n] is null", so
+// 0 and any index past either end is null. Table 68 applies the rule only to
+// an integer (0 scale) index and no rule covers any other number, so a
+// fractional index is null too. found reports whether L holds an nth item —
+// `is defined` asks it, so a null element is told apart from no element.
+//
+// VERDICT DIVERGENCE: upstream raised "index out of range" for 0, a negative
+// index and one past the end, and truncated a fractional index.
+func listIndex(list []any, n *Number) (val any, found bool) {
+	if !n.v.IsInt() {
+		return null, false
+	}
+	i, acc := n.v.Int64()
+	if acc != big.Exact {
+		return null, false
+	}
+	size := int64(len(list))
+	switch {
+	case i > 0 && i <= size:
+		return list[i-1], true
+	case i < 0 && i >= -size:
+		return list[size+i], true
+	default:
+		return null, false
+	}
+}
+
+// indexAtOp is `e1[e2]` (DMN 1.5 §10.3.2.5, Table 68). e2 is first evaluated
+// in the enclosing scope: a number there is an index (row 1, or row 2 for an
+// e1 that is not a list), and a string on a context is the fork's key lookup.
+// Anything else — a boolean, null, or an evaluation error, which is what a
+// filter referencing `item` or an element's entries gives outside the item
+// scope — makes e2 a filter, evaluated once per element under filterScope
+// (rows 3 and 4). Evaluating e2 in the enclosing scope first is how an index
+// expression is told apart from a filter that happens to yield a number; it is
+// what other FEEL engines do too.
+//
+// VERDICT DIVERGENCE: upstream evaluated e2 once in the enclosing scope and
+// had no filter at all, so `[1, 2, 3][item > 1]` raised "non int index"; a
+// non-list e1 other than a context raised "non-indexable value". See
+// NOTICE.md.
 func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-	rightVal, err := binop.Right.Eval(intp)
-	if err != nil {
+	val, _, err := binop.indexInto(intp, leftVal)
+	return val, err
+}
+
+// indexInto is `e1[e2]` for an e1 already evaluated to leftVal. found reports
+// whether an index or a string key selected something that exists — an
+// element the list holds, an entry the context has — which `is defined` asks.
+// A filter, and a selection from null, always count as found: both yield a
+// value (a list, or null on null as a path does) rather than a missing one.
+func (binop Binop) indexInto(intp *Interpreter, leftVal any) (val any, found bool, err error) {
+	if isNullValue(leftVal) {
+		// Every row of Table 68 requires e1 to be a list or not null.
+		return null, true, nil
+	}
+	rightVal, outerErr := binop.Right.Eval(intp)
+	var budgetErr *IterationBudgetExceededError
+	if errors.As(outerErr, &budgetErr) {
+		return nil, false, outerErr
+	}
+	if outerErr == nil {
+		switch r := rightVal.(type) {
+		case *Number:
+			if list, ok := leftVal.([]any); ok {
+				val, found := listIndex(list, r)
+				return val, found, nil
+			}
+			// Row 2: a non-list e1 indexed by 1 is e1 itself.
+			if r.Cmp(NewNumberFromInt64(1)) == 0 {
+				return leftVal, true, nil
+			}
+			return null, false, nil
+		case string:
+			if m, ok := asContext(leftVal); ok {
+				if elem, ok := m[r]; ok {
+					return elem, true, nil
+				}
+				// DMN 1.5 §10.3.2.6: a context without the entry
+				// selects null, as the path `.r` does.
+				return null, false, nil
+			}
+		}
+	}
+	list, ok := leftVal.([]any)
+	if !ok {
+		// Row 4: a non-list e1 filtered as the singleton list [e1].
+		list = []any{leftVal}
+	}
+	val, err = filterList(intp, list, binop.Right)
+	return val, err == nil, err
+}
+
+// filterList keeps the items of list for which filter, evaluated under each
+// item's filterScope, is true (DMN 1.5 §10.3.2.5, Table 68 rows 3 and 4): "a
+// list containing only items where the filter expression is true", so an item
+// whose filter is false, null or of another kind is dropped — the spec's own
+// example `[{x:1, y:2}, {x:null, y:3}][x < 2]` drops the second. When the
+// filter was evaluated at least once and was never a boolean or null, e2 is not
+// a filter at all and no row of Table 68 applies, so the result is null
+// (`[1, 2]["a"]`). Every item is charged against the iteration budget.
+func filterList(intp *Interpreter, list []any, filter Node) (any, error) {
+	if err := intp.chargeIterations(uint64(len(list))); err != nil {
 		return nil, err
 	}
-	switch v := leftVal.(type) {
-	case []any:
-		if nRight, ok := rightVal.(*Number); ok {
-			at := nRight.Int()
-			if at <= 0 || at > len(v) {
-				return nil, NewErrIndex("index out of range")
-			}
-			return v[at-1], nil
-		} else {
-			//return nil, NewEvalError(-3200, "non int index")
-			return nil, NewErrIndex("non int index")
+	kept := make([]any, 0, len(list))
+	filterLike := len(list) == 0
+	for _, item := range list {
+		intp.Push(filterScope(item))
+		res, err := filter.Eval(intp)
+		intp.Pop()
+		if err != nil {
+			return nil, err
 		}
-	case map[string]any:
-		if strRight, ok := rightVal.(string); ok {
-			if elem, ok := v[strRight]; ok {
-				return elem, nil
-			} else {
-				//return nil, NewEvalError(-3201, "key not found")
-				return nil, NewErrKeyNotFound(strRight)
+		switch b := res.(type) {
+		case bool:
+			filterLike = true
+			if b {
+				kept = append(kept, item)
 			}
-		} else {
-			//return nil, NewEvalError(-3200, "non string index")
-			return nil, NewErrIndex("non string index")
+		case *NullValue:
+			filterLike = true
+		case nil:
+			filterLike = true
 		}
-	default:
-		//return nil, NewEvalError(-3202, "non indexable value")
-		return nil, NewErrIndex("non-indexable value")
 	}
+	if !filterLike {
+		return null, nil
+	}
+	return kept, nil
+}
+
+// filterScope is the "special first context" of Table 68 rows 3 and 4: the
+// entry ("item", i) and, when i is a context, all of i's entries. An entry of
+// i named "item" wins, since §10.3.2.5 binds the name item to the element
+// "unless the list element is a context that contains the key item".
+func filterScope(item any) Scope {
+	scope := Scope{"item": item}
+	if m, ok := asContext(item); ok {
+		for key, value := range m {
+			scope[key] = value
+		}
+	}
+	return scope
+}
+
+// asContext reports v as a context in either map spelling.
+func asContext(v any) (map[string]any, bool) {
+	switch m := v.(type) {
+	case map[string]any:
+		return m, true
+	case Scope:
+		return m, true
+	}
+	return nil, false
 }
 
 // inZonedRange is `e in range` when e is a zoned time or date and time and an
@@ -1002,12 +1127,78 @@ func (binop Binop) inOp(intp *Interpreter) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if tests, ok := binop.Right.(*MultiTests); ok {
+		return inTests(intp, leftVal, tests.Elements)
+	}
 	rightVal, err := binop.Right.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
 	return In(leftVal, rightVal)
 }
+
+// inTests is `e in t` and `e in (t1, t2, …)` for positive unary tests, DMN
+// 1.5 grammar rules 49.c and 49.d: the disjunction of `e` against each test,
+// folded three-valued (Table 51) as the list branch of In folds. A `? op x`
+// test (the parser's reading of `= 10`, `< 5`) compares e with x, x being
+// evaluated in the enclosing scope so a `?` inside it keeps its outer meaning;
+// any other test is `e in t` (Table 55), so `5 in (1, [4..6])` is true.
+func inTests(intp *Interpreter, leftVal any, tests []Node) (any, error) {
+	unknown := false
+	for _, test := range tests {
+		var r any
+		if b, ok := test.(*Binop); ok && isTestedValue(b.Left) && isComparisonOp(b.Op) {
+			endpoint, err := b.Right.Eval(intp)
+			if err != nil {
+				return nil, err
+			}
+			cmp := Binop{Op: b.Op, Left: valueNode{leftVal}, Right: valueNode{endpoint}}
+			if r, err = cmp.Eval(intp); err != nil {
+				return nil, err
+			}
+		} else {
+			v, err := test.Eval(intp)
+			if err != nil {
+				return nil, err
+			}
+			if r, err = In(leftVal, v); err != nil {
+				return nil, err
+			}
+		}
+		switch r {
+		case true:
+			return true, nil
+		case false:
+		default:
+			unknown = true
+		}
+	}
+	if unknown {
+		return null, nil
+	}
+	return false, nil
+}
+
+func isTestedValue(n Node) bool {
+	v, ok := n.(*Var)
+	return ok && v.Name == "?"
+}
+
+func isComparisonOp(op string) bool {
+	switch op {
+	case ">", ">=", "<", "<=", "!=", "=":
+		return true
+	}
+	return false
+}
+
+// valueNode is an already-evaluated operand, so inTests can reuse the
+// comparison operators without evaluating the left of `in` once per test.
+type valueNode struct{ v any }
+
+func (n valueNode) Repr() string                   { return fmt.Sprintf("%v", n.v) }
+func (n valueNode) Eval(*Interpreter) (any, error) { return n.v, nil }
+func (n valueNode) TextRange() TextRange           { return TextRange{} }
 
 // In implements FEEL's `e in container` for a range or a list container, or
 // any other value as equality, and yields true, false or null. inOp evaluates its operands and delegates here.
@@ -1051,9 +1242,14 @@ func In(leftVal, rightVal any) (any, error) {
 		// Upstream answered a boolean from valuesEqual, so `"a" in [1, 2]`
 		// was false and `not("a" in [1, 2])` true. A pair the fork cannot
 		// compare at all (two functions) still counts as not equal.
+		//
+		// VERDICT DIVERGENCE: an element that is itself a range is tested
+		// by membership, not `=` (DMN 1.5 Table 55, TCK 0072-feel-in), so
+		// `1 in [[2..4], [1..3]]` is true and `5 in [[1..3], 7]` false where
+		// `5 = [1..3]` made them null. See inListItem.
 		unknown := false
 		for _, kv := range rv {
-			r, err := feelEqual(leftVal, kv)
+			r, err := inListItem(leftVal, kv)
 			if err != nil {
 				continue
 			}
@@ -1075,4 +1271,18 @@ func In(leftVal, rightVal any) (any, error) {
 		// `1 in 1` is true and `1 in "a"` null (TCK 0072-feel-in).
 		return feelEqual(leftVal, rightVal)
 	}
+}
+
+// inListItem is one disjunct of `e in [e1, e2, …]`: `e in ei`. DMN 1.5 Table
+// 55 reads each list element as a positive unary test, so a range element is
+// a membership test (`1 in [1..3]`) and any other element equality. A range
+// input is compared to a range element by `=`, which keeps
+// `[1..2] in [[1..2], 3]` true: the endpoints of [1..3] cannot order a range.
+func inListItem(leftVal, item any) (any, error) {
+	if r, ok := item.(*RangeValue); ok {
+		if _, isRange := leftVal.(*RangeValue); !isRange {
+			return In(leftVal, r)
+		}
+	}
+	return feelEqual(leftVal, item)
 }

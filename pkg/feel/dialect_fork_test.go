@@ -3,6 +3,7 @@ package feel
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -59,6 +60,87 @@ func TestForkedDefects(t *testing.T) {
 		// still admit them.
 		if got := mustEval(t, e, `date and time("2024-03-01T09:00:00").year`, nil); got != 2024.0 {
 			t.Errorf("date and time(...).year = %#v, want 2024", got)
+		}
+	})
+
+	t.Run("a closing brace ends a name", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 grammar rules 27-31 and 57-59: `}` is not a name
+		// character, and a context entry's value may be any expression.
+		// Upstream's name pattern admitted `}`, so `{v: a}` scanned `a}` as one
+		// name and never closed the context.
+		vars := map[string]any{"a": FromGo(map[string]any{"n": 5})}
+		cases := map[string]any{
+			`{v: a.n}.v`:                        5.0,
+			`{v: a}.v.n`:                        5.0,
+			`[{key: "k", value: a.n}][1].value`: 5.0,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("names take every character of grammar rules 28-29", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 grammar rules 25-30. Upstream's name pattern
+		// admitted only ASCII letters and the Han, Greek, Bopomofo and
+		// Hangul scripts, so `Prénom`, `Größe` and `Approved?` failed to
+		// scan, and a keyword ended at RE2's ASCII word boundary, so
+		// `forêt` scanned as `for` followed by `êt`.
+		vars := map[string]any{
+			"Prénom": FromGo("Ada"), "Größe": FromGo(180), "Approved?": FromGo(true),
+			"имя": FromGo("i"), "اسم": FromGo("s"), "ä b": FromGo(1), "forêt": FromGo(2),
+			"?x": FromGo(3), "Driver’s Age": FromGo(30),
+			"a": FromGo(5), "b": FromGo(2), "a-b": FromGo(100), "a.b": FromGo(100),
+		}
+		cases := map[string]any{
+			`Prénom`:           "Ada",
+			`Größe + 1`:        181.0,
+			`Approved? = true`: true,
+			`имя`:              "i",
+			`اسم`:              "s",
+			`ä b`:              1.0,
+			`forêt * 2`:        4.0,
+			`?x`:               3.0,
+			`Driver’s Age`:     30.0,
+			`{Größe: 7}.Größe`: 7.0,
+			// Rule 30's operator symbols stay operators: the scanner has no
+			// scope to tell `a-b` the name from `a-b` the subtraction.
+			`a-b`: 3.0,
+			`a+b`: 7.0,
+			`a*b`: 10.0,
+			`a/b`: 2.5,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+		// A lone `?` is still the unary-test input.
+		x, err := e.CompileUnaryTest(`? = Approved?, < Größe`)
+		if err != nil {
+			t.Fatalf("CompileUnaryTest: %v", err)
+		}
+		for in, want := range map[any]bool{true: true, 170: true, 190: false} {
+			if got, err := e.EvalUnaryTest(x, FromGo(in), vars); err != nil || got != want {
+				t.Errorf("? = Approved?, < Größe against %v = %v (%v), want %v", in, got, err, want)
+			}
+		}
+	})
+
+	t.Run("a context entry sees the entries before it", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.6. Upstream evaluated every entry against the outer
+		// scope alone, so `{c: 1, r: c}` gave r = null, or the outer c.
+		vars := map[string]any{"c": FromGo(9)}
+		cases := map[string]any{
+			`{c: 1, r: c}.r`:            1.0,
+			`{a: 1, b: a + 1}.b`:        2.0,
+			`{a: 2, n: {b: a + 1}}.n.b`: 3.0,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
 		}
 	})
 
@@ -2448,6 +2530,28 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
+	t.Run("string() writes nested strings as rule-66 literals", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 grammar rule 66. Nested strings were quoted
+		// with Go's strconv.Quote, which writes escapes FEEL does not
+		// define (\x01, \a, \v) and an eight-digit \U000e0001 that FEEL's
+		// six-digit \U reads as U+0E00 followed by "01";
+		// keys that are keywords or need `?`, `é` or two spaces printed
+		// bare and did not parse back.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`string(["a\\b"])`, `["a\\b"]`},
+			{`string(["l1\nl2\tx\ry"])`, `["l1\nl2\tx\ry"]`},
+			{`string(["\u0001\u001F\u007F"])`, `["\u0001\u001F\u007F"]`},
+			{`string(["é🐎"])`, `["é🐎"]`},
+			{"string([\"\u2028\"])", `["\u2028"]`},
+			{`string(["\U0E0001"])`, `["\U0E0001"]`},
+			{`string({"x\ny": "q\"q"})`, `{"x\ny": "q\"q"}`},
+			{`string({"true": 1, "a  b": 2, "?": 3, "é": 4, "a b": 5, "a?": 6})`, `{"?": 3, "a  b": 2, a b: 5, a?: 6, "true": 1, é: 4}`},
+		})
+	})
+
 	t.Run("context merge and list contains convert a singleton instead of raising", func(t *testing.T) {
 		// DMN 1.5 §10.3.2.9.4 and §10.3.2.15: a non-list argument to a list
 		// parameter is a singleton list; null is outside the domain. Upstream
@@ -2509,7 +2613,7 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
-	t.Run("a standard built-in called with the wrong arguments is null", func(t *testing.T) {
+	t.Run("a native function called with the wrong arguments is null", func(t *testing.T) {
 		// DMN 1.5 §10.3.4; TCK 1140, 1145, 1155 pin a wrong argument count
 		// and an unknown parameter name as null. Upstream raised on the
 		// first and ignored the second; it also dropped a named variadic
@@ -2532,18 +2636,32 @@ func TestForkedDefects(t *testing.T) {
 			{`string length(string: "ab")`, 2.0},
 			{`count(list: [1, 2])`, 2.0},
 		})
-		// A function that is not a standard built-in still raises.
+		// An application function — how a BKM or decision service is
+		// invoked from FEEL — is null on misfitting arguments too (DMN 1.5
+		// §10.3.2.13.2); it used to raise. Its body is not run, and an
+		// error the body raises still propagates.
+		ran := 0
 		lib := FunctionLibrary{Namespace: "acme", Functions: map[string]Function{
-			"twice": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) { return a["n"], nil }},
+			"twice": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) { ran++; return a["n"], nil }},
+			"fails": {Params: []string{"n"}, Fn: func(map[string]any) (any, error) { return nil, errors.New("boom") }},
 		}}
 		le, err := NewEvaluator(FEEL, WithLibraries(lib))
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, expr := range []string{`acme.twice()`, `acme.twice(1, 2)`, `acme.twice(n: 1, m: 2)`} {
-			if v, err := le.EvalText(expr, nil); err == nil {
-				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
+		for _, expr := range []string{`acme.twice()`, `acme.twice(1, 2)`, `acme.twice(n: 1, m: 2)`, `acme.twice(m: 1)`} {
+			v, err := le.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(v) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(v))
 			}
+		}
+		if ran != 0 {
+			t.Errorf("a misfitting call ran the function body %d times", ran)
+		}
+		if _, err := le.EvalText(`acme.fails(1)`, nil); err == nil {
+			t.Error("acme.fails(1): want the body's error, got none")
 		}
 	})
 
@@ -2752,6 +2870,686 @@ func TestForkedDefects(t *testing.T) {
 				t.Errorf("%s = %#v, want true", expr, got)
 			}
 		}
+	})
+
+	t.Run("context-typed variables are contexts", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.6 and Table 53: a context is a context whether
+		// written as a literal or bound as a variable. Upstream rewrote every
+		// map nested in a pushed scope to its named Scope type, which only
+		// DotOp recognised, so equality, the context built-ins and string()
+		// all failed on an input, an upstream decision or a BKM argument.
+		vars := func() map[string]any {
+			return map[string]any{"a": FromGo(map[string]any{"x": 1, "n": map[string]any{"y": 2}})}
+		}
+		bools := []string{
+			`a = a`,
+			`a.n = a.n`,
+			`a = {x: 1, n: {y: 2}}`,
+			`{x: 1, n: {y: 2}} = a`,
+			`[a.n] = [a.n]`,
+			`not(a != a)`,
+			`a.n.y = 2`,
+			`context put(a, "z", 3) = {x: 1, n: {y: 2}, z: 3}`,
+			`context put(a.n, "z", 3) = {y: 2, z: 3}`,
+			`context merge([a, a.n]) = {x: 1, n: {y: 2}, y: 2}`,
+			`count(get entries(a)) = 2`,
+			`context([{key: "k", value: (a.n)}]) = {k: {y: 2}}`,
+			`context([a.n, {key: "k", value: 1}]) = null`,
+			`string(a) = "{n: {y: 2}, x: 1}"`,
+			`string(a) = string({x: 1, n: {y: 2}})`,
+		}
+		for _, expr := range bools {
+			if got := mustEval(t, e, expr, vars()); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+		// The value itself is a plain context, not the interpreter's frame type.
+		for _, expr := range []string{`a`, `a.n`, `[a.n][1]`, `if true then a else null`} {
+			v, err := e.EvalText(expr, vars())
+			if err != nil {
+				t.Fatalf("%s: %v", expr, err)
+			}
+			if _, ok := v.(map[string]any); !ok {
+				t.Errorf("%s is %T, want map[string]any", expr, v)
+			}
+		}
+	})
+
+	t.Run("get entries is a FEEL list of key-value contexts", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.10 Table 81: get entries(m) is a list of
+		// key-value pair contexts. Upstream returned a Go []map[string]any,
+		// which FEEL did not recognise as a list: indexing it raised
+		// "non-indexable value" and comparing it to a list literal was null.
+		// The entries come in key order, as string() writes a context.
+		vars := map[string]any{"a": FromGo(map[string]any{"x": 1, "n": map[string]any{"y": 2}})}
+		for _, expr := range []string{
+			`get entries({y: 2}) = [{key: "y", value: 2}]`,
+			`get entries({}) = []`,
+			`get entries({b: 1, a: 2}) = [{key: "a", value: 2}, {key: "b", value: 1}]`,
+			`get entries({y: 2})[1].key = "y"`,
+			`get entries({y: 2})[1].value = 2`,
+			`count(get entries({a: 1, b: 2})) = 2`,
+			`get entries(a)[1] = {key: "n", value: {y: 2}}`,
+			`get entries(a)[2].value = 1`,
+			`get entries(a.n) = [{key: "y", value: 2}]`,
+			`context(get entries(a)) = a`,
+			`(for e in get entries({a: 1, b: 2}) return e.key) = ["a", "b"]`,
+		} {
+			if got := mustEval(t, e, expr, vars); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+		v, err := e.EvalText(`get entries({y: 2, z: null})`, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := v.([]any); !ok {
+			t.Fatalf("get entries is %T, want []any", v)
+		}
+		want := []any{
+			map[string]any{"key": "y", "value": 2.0},
+			map[string]any{"key": "z", "value": nil},
+		}
+		if got := ToGo(v); !deepEqualNum(got, want) {
+			t.Errorf("ToGo(get entries({y: 2, z: null})) = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("string literals unescape and lengths count characters", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 grammar rule 66 and §10.3.4.3 Table 73. Upstream
+		// decoded only \n and \", so "\\d" reached a regular expression as
+		// two backslashes, and string length counted UTF-8 bytes.
+		strs := map[string]string{
+			`"a\\b"`:         `a\b`,
+			`"a\tb\rc"`:      "a\tb\rc",
+			`"\'"`:           "'",
+			`"\u0041"`:       "A",
+			`"\uD83D\uDC0E"`: "🐎",
+			`"\U01F40E"`:     "🐎",
+			`"\d"`:           `\d`,
+			`"\uD83Dx"`:      "\uFFFDx",
+			`"\U110000"`:     "\uFFFD",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		bools := []string{
+			`matches("1", "^\\d$")`,
+			`string length("🐎ab") = 3`,
+			`string length("\uD83D\uDC0E") = 1`,
+			`substring("🐎ab", 1, 1) = "🐎"`,
+		}
+		for _, expr := range bools {
+			if got := mustEval(t, e, expr, nil); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+	})
+
+	t.Run("numbers print at 34 significant digits as plain decimals", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.3.1. Upstream printed Text('f', 18), so anything
+		// below 5e-19 was "0" and longer fractions lost their tail. No
+		// exponent form, however extreme the magnitude.
+		for expr, want := range map[string]string{
+			`string(exp(-50)) != "0"`:                      "",
+			`string(0.1000000000000000055511151231257827)`: "0.1000000000000000055511151231257827",
+
+			`string(1/3)`:       "0.3333333333333333333333333333333333",
+			`string(10 ** -40)`: "0.0000000000000000000000000000000000000001",
+			`string(10 ** 40)`:  "10000000000000000000000000000000000000000",
+			`string(-0)`:        "0",
+			`string(25)`:        "25",
+		} {
+			got := mustEval(t, e, expr, nil)
+			if want == "" {
+				if got != true {
+					t.Errorf("%s = %#v, want true", expr, got)
+				}
+				continue
+			}
+			if got != want {
+				t.Errorf("%s = %#v, want %q", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("list aggregates are null outside their domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.4 Table 75, §10.3.2.13.1. Upstream raised on a
+		// null list (count(null) was 1, sum(null) 0), skipped non-numbers
+		// (sum([1, "a"]) was 1), returned 0 and 1 for sum([]) and
+		// product([]), panicked on mean([]), divided stddev by n, took the
+		// wrong pair for an even median, and had no mode.
+		for _, expr := range []string{
+			`count(null) = null`,
+			`count([]) = 0`,
+			`count([1, null]) = 2`,
+			`sum(null) = null`,
+			`sum([]) = null`,
+			`sum([1, null]) = null`,
+			`sum([1, "a"]) = null`,
+			`product([]) = null`,
+			`product([1, 2, null, 4]) = null`,
+			`mean([]) = null`,
+			`median([6, 1, 2, 3]) = 2.5`,
+			`stddev([2, 4, 7, 5]) = 2.081665999466132735282297706979931`,
+			`stddev([47]) = null`,
+			`mode([]) = []`,
+			`mode([6, 1, 9, 6, 1]) = [1, 6]`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+	})
+
+	t.Run("a range element of a list is tested by membership", func(t *testing.T) {
+		// DMN 1.5 Table 55: each element of `e in [e1, e2, …]` is a positive
+		// unary test, so a range element is membership, not `=` (TCK
+		// 0072-feel-in). The fork compared `1 = [2..4]`, a kind mismatch, so
+		// `1 in [[2..4], [1..3]]` was null and `5 in [[1..3], 7]` null (#62).
+		cases := map[string]any{
+			"1 in [[2..4], [1..3]]":      true,
+			"5 in [[1..3], 7]":           false,
+			"2 in [[1..3], 7]":           true,
+			"7 in [[1..3], 7]":           true,
+			`"a" in [[1..3], 7]`:         nil,
+			"null in [[1..3], 7]":        nil,
+			"true in [[false..true]]":    nil,
+			"not(1 in [[2..4], [1..3]])": false,
+			"[1..2] in [[1..2], 3]":      true,
+			"[1..2] in [[1..3]]":         false,
+			`"a" in [1, 2]`:              nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("range relations follow Table 78", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.7 Table 78, rows (b) of overlaps, overlaps before,
+		// overlaps after, starts, started by, finishes and finished by. The
+		// fork tested only whether one endpoint lay in the other range, so
+		// `overlaps([1..10], [3..4])` was false and `finishes([1..10],
+		// [5..10])` true (issues #63, #64). The literals are Table 78's own
+		// examples and the TCK 1130-feel-interval cases that share them.
+		cases := map[string]any{
+			// acceptance: FR-20, FR-21
+			"overlaps([1..10], [3..4])":        true,
+			"overlaps before([3..4], [1..5])":  false,
+			"overlaps after((5..10], [1..5])":  false,
+			"finishes([1..10], [5..10])":       false,
+			"starts([1..10], [1..5])":          false,
+			"started by([1..5], [1..10])":      false,
+			"finished by([5..10], [1..10])":    false,
+			"overlaps([1..5], [5..8])":         true,
+			"overlaps([1..5], (5..8])":         false,
+			"overlaps([1..5), [5..8])":         false,
+			"overlaps([5..8], [1..5])":         true,
+			"overlaps([1..5], [6..8])":         false,
+			"overlaps before([1..5], [3..8])":  true,
+			"overlaps before([1..5], (5..8])":  false,
+			"overlaps before([1..5), (1..5])":  true,
+			"overlaps before([1..5], [1..5])":  false,
+			"overlaps after([3..8], [1..5])":   true,
+			"overlaps after((5..8], [1..5])":   false,
+			"overlaps after((1..5], [1..5))":   true,
+			"overlaps after([1..5], [1..5])":   false,
+			"starts([1..5], [1..10])":          true,
+			"starts((1..5], [1..10])":          false,
+			"starts([1..10), [1..10])":         true,
+			"started by([1..10], [1..5])":      true,
+			"started by([1..10], (1..5])":      false,
+			"started by([1..10], [1..10))":     true,
+			"finishes([5..10], [1..10])":       true,
+			"finishes([5..10), [1..10])":       false,
+			"finishes([5..10), [1..10))":       true,
+			"finishes((1..10], [1..10])":       true,
+			"finished by([1..10], [5..10])":    true,
+			"finished by([1..10], [5..10))":    false,
+			"finished by([1..10], (1..10])":    true,
+			"starts(1, [1..10])":               true,
+			"starts(1, (1..10])":               false,
+			"finished by([1..10], 10)":         true,
+			"overlaps([1..5], [\"a\"..\"z\"])": nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+
+		// Every endpoint value and closedness over endpoints {1, 2, 3}, against
+		// an oracle on point sets rather than on the formulas: a range is its
+		// points on a half-unit grid, so an open endpoint is excluded and a
+		// shared interior point always exists between distinct integers.
+		type rng struct {
+			s, e         int
+			sOpen, eOpen bool
+		}
+		lit := func(r rng) string {
+			l, h := "[", "]"
+			if r.sOpen {
+				l = "("
+			}
+			if r.eOpen {
+				h = ")"
+			}
+			return fmt.Sprintf("%s%d..%d%s", l, r.s, r.e, h)
+		}
+		points := func(r rng) []float64 {
+			var ps []float64
+			for p := float64(r.s); p <= float64(r.e); p += 0.5 {
+				if (p == float64(r.s) && r.sOpen) || (p == float64(r.e) && r.eOpen) {
+					continue
+				}
+				ps = append(ps, p)
+			}
+			return ps
+		}
+		// earlier: a has a point below every point of b; later: above.
+		earlier := func(a, b rng) bool {
+			return slices.Min(points(a)) < slices.Min(points(b))
+		}
+		later := func(a, b rng) bool {
+			return slices.Max(points(a)) > slices.Max(points(b))
+		}
+		meet := func(a, b rng) bool {
+			for _, p := range points(a) {
+				if slices.Contains(points(b), p) {
+					return true
+				}
+			}
+			return false
+		}
+		sameStart := func(a, b rng) bool { return !earlier(a, b) && !earlier(b, a) }
+		sameEnd := func(a, b rng) bool { return !later(a, b) && !later(b, a) }
+		oracle := map[string]func(a, b rng) bool{
+			"overlaps":        meet,
+			"overlaps before": func(a, b rng) bool { return earlier(a, b) && meet(a, b) && !later(a, b) },
+			"overlaps after":  func(a, b rng) bool { return earlier(b, a) && meet(a, b) && !later(b, a) },
+			"starts":          func(a, b rng) bool { return sameStart(a, b) && !later(a, b) },
+			"started by":      func(a, b rng) bool { return sameStart(a, b) && !later(b, a) },
+			"finishes":        func(a, b rng) bool { return sameEnd(a, b) && !earlier(a, b) },
+			"finished by":     func(a, b rng) bool { return sameEnd(a, b) && !earlier(b, a) },
+		}
+		var ranges []rng
+		for s := 1; s <= 3; s++ {
+			for en := s + 1; en <= 3; en++ {
+				for _, so := range []bool{false, true} {
+					for _, eo := range []bool{false, true} {
+						ranges = append(ranges, rng{s, en, so, eo})
+					}
+				}
+			}
+		}
+		for name, want := range oracle {
+			for _, a := range ranges {
+				for _, b := range ranges {
+					expr := fmt.Sprintf("%s(%s, %s)", name, lit(a), lit(b))
+					if got := mustEval(t, e, expr, nil); got != want(a, b) {
+						t.Errorf("%s = %#v, want %v", expr, got, want(a, b))
+					}
+				}
+			}
+		}
+	})
+
+	t.Run("a built-in can call a function value", func(t *testing.T) {
+		// NativeFun.Call dropped the interpreter, so a native built-in could
+		// not apply a function argument and `list replace(list, match,
+		// newItem)` (DMN 1.5 §10.3.4.4) was null (#54). NewNativeFuncI and
+		// CallFunction give it the interpreter, with ordinary argument
+		// binding and the standard null rules.
+		cases := map[string]any{
+			"list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]":            true,
+			"list replace(list: [2,4], match: function(item, newItem) item = 4, newItem: 0) = [2,0]":    true,
+			"list replace([2,4], function(item) true, 5)":                                               nil,
+			"(for t in [3] return list replace([2,4], function(item, newItem) item > t, 0)) = [[2, 0]]": true,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("a negative index counts from the end, out of range is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.5: L[-n] is the nth element from the end, and "if
+		// L does not contain n items, then L[n] is null". Upstream raised
+		// "index out of range" for 0, a negative index and one past the end,
+		// and truncated a fractional index (Table 68 indexes only by an
+		// integer).
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`[1, 2, 3][-1]`, 3.0},
+			{`[1, 2, 3][-3]`, 1.0},
+			{`[1, 2, 3][0]`, nil},
+			{`[1, 2, 3][4]`, nil},
+			{`[1, 2, 3][-4]`, nil},
+			{`[1, 2, 3][1.5]`, nil},
+			{`[][1]`, nil},
+			{`[][-1]`, nil},
+		})
+	})
+
+	t.Run("a boolean filter binds item and a context's entries, a path projects over a list", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.5 and Table 68 rows 2-4. Upstream evaluated the
+		// bracket once in the enclosing scope and had no filter, so
+		// `[1, 2, 3][item > 1]` and `[{a: 1}][a = 1]` raised "non int index",
+		// `[{a: 1}][item.a = 1]` "type mismatch, expect map", a non-list
+		// operand "non-indexable value", and a path on any list "type
+		// mismatch, expect map".
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`[1, 2, 3, 4][item > 2]`, []any{3.0, 4.0}},
+			{`[{a: 1}, {a: 2}][item.a = 2]`, []any{map[string]any{"a": 2.0}}},
+			{`[{a: 1}, {a: 2}][a = 2]`, []any{map[string]any{"a": 2.0}}},
+			{`[{x: 1, y: 2}, {x: null, y: 3}][x < 2]`, []any{map[string]any{"x": 1.0, "y": 2.0}}},
+			{`[{item: 5}, {item: 1}][item > 2]`, []any{map[string]any{"item": 5.0}}},
+			{`[][item > 1]`, []any{}},
+			{`[1, 2]["a"]`, nil},
+			{`5[1]`, 5.0},
+			{`5[2]`, nil},
+			{`5[item > 1]`, []any{5.0}},
+			{`5[item > 9]`, []any{}},
+			{`null[1]`, nil},
+			{`[{a: 1}, {a: 2}].a`, []any{1.0, 2.0}},
+			{`[{x: 1, y: 2}, {x: 2}].y`, []any{2.0, nil}},
+			{`[1, 2, 3][2]`, 2.0},
+			{`[1, 2, 3][-1]`, 3.0},
+		})
+	})
+
+	t.Run("a missing context entry selects null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.6. Upstream raised "key not found" for `{a: 1}.b`
+		// and `{a: 1}["b"]`, and "type mismatch, expect map" for a path on
+		// the resulting null.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`{a: 1}.b`, nil},
+			{`{a: 1}["b"]`, nil},
+			{`{a: 1}.b.c`, nil},
+			{`{a: 1}.a`, 1.0},
+			{`{a: 1}.b = null`, true},
+			{`is defined({a: 1}.b)`, false},
+			{`is defined({a: 1}.a)`, true},
+		})
+	})
+
+	t.Run("a path on a non-context value selects null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.6, Tables 64-65. Upstream raised "key not found"
+		// for `date("2020-01-01").foo`, "type mismatch, expect map" for
+		// `5.x`, and gave a range no properties.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`date("2020-01-01").foo`, nil},
+			{`5.x`, nil},
+			{`"abc".length`, nil},
+			{`true.x`, nil},
+			{`[date("2020-01-01")].foo`, []any{nil}},
+			{`date("2020-01-01").year`, 2020.0},
+			{`[1..5].start`, 1.0},
+			{`[1..5).end included`, false},
+			{`is defined(5.x)`, false},
+			{`is defined(date("2020-01-01").foo)`, false},
+		})
+	})
+
+	t.Run("is defined asks whether an index reaches an element", func(t *testing.T) {
+		// Camunda FEEL `is defined` (8.2 / FEEL Scala 1.16): defined means
+		// exists, null included. Since an out-of-range index is null
+		// (DMN 1.5 §10.3.2.5), `is defined([1, 2][9])` had become true.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`is defined([1, 2][9])`, false},
+			{`is defined([1, 2][-9])`, false},
+			{`is defined([1, 2][2])`, true},
+			{`is defined([1, null][2])`, true},
+			{`is defined({a: [1]}.a[5])`, false},
+			{`is defined({a: {b: 1}}.a.c)`, false},
+			{`is defined(unbound.x)`, false},
+		})
+	})
+
+	t.Run("functions are lexical closures", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.13.2. Upstream kept only a function's parameters
+		// and body, so a call resolved free names at the call site:
+		// `{t: 5, f: function(x) x + t}.f(1)` was null.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`{t: 5, f: function(x) x + t}.f(1)`, 6.0},
+			{`(for t in [1, 2] return function(x) x + t)[1](10)`, 11.0},
+			{`{g: {f: function(x) x + u}.f, r: {u: 1, v: g(1)}.v}.r`, nil},
+		})
+	})
+
+	t.Run("invoking a non-function or misfitting arguments is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.13.2: "If f is not a function, or if the arguments
+		// do not conform to the argument list, the result of the invocation
+		// is null". Upstream raised "type mismatch, expect function", and
+		// raised on a user-defined function's wrong argument count.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`5(1)`, nil},
+			{`null(1)`, nil},
+			{`nofn(1)`, nil},
+			{`sumx([1])`, nil},
+			{`{a: 1}.a(2)`, nil},
+			{`"f"()`, nil},
+			{`(function(x) x)(1, 2)`, nil},
+			{`(function(x, y) x)(1)`, nil},
+			{`(function(x, y) x)(x: 1)`, nil},
+			{`(function(x, y) y)(x: 1, z: 2)`, nil},
+			{`(function(x, y) x)(x: 1, z: 2)`, nil},
+			{`(function(x, y) y)(y: 2, x: 1)`, 2.0},
+			{`(function() 7)()`, 7.0},
+			{`abs(-1)`, 1.0},
+		})
+	})
+
+	t.Run("unary tests parse on the right of in", func(t *testing.T) {
+		// DMN 1.5 grammar rule 49.c and 49.d, TCK 0072-feel-in. Upstream read
+		// the right of `in` as a plain expression, so all four were syntax
+		// errors.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`10 in =10`, true},
+			{`10 in !=10`, false},
+			{`[1,2,3] in =[1,2,3]`, true},
+			{`10 in (1, < 5, >=10)`, true},
+			{`10 in (1, < 5, >10)`, false},
+			{`"a" in (1, < 2)`, nil},
+			{`5 in (1, [4..6])`, true},
+		})
+	})
+
+	t.Run("in binds as a comparison", func(t *testing.T) {
+		// DMN 1.5 grammar rule 49: `in` is a comparison, tighter than `and`
+		// and `or`. Upstream gave it its own level above `or`, so
+		// `x in [5] and b` parsed as `x in ([5] and b)` and was false.
+		vars := map[string]any{"x": FromGo(5), "b": FromGo(true), "f": FromGo(false)}
+		for expr, want := range map[string]any{
+			"x in [5] and b": true, "f or x in [5]": true, "x in [4] or b": true,
+			"x in < 6 and b": true, "x + 1 in [6]": true,
+		} {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("temporals expose every Table 65 property", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15 Tables 65 and 66. Upstream had no `weekday`,
+		// returned `month` as Go's time.Month (the string "January"),
+		// dropped a second's fraction, answered 0 for a duration property
+		// of the other kind and returned a negative duration's magnitude.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`date("2020-01-01").weekday`, 3.0},
+			{`date("2020-01-01").month`, 1.0},
+			{`date and time("2020-01-05T10:00:00").weekday`, 7.0},
+			{`time("10:00:00.5").second`, 0.5},
+			{`duration("P1Y2M").days`, nil},
+			{`duration("P1D").years`, nil},
+			{`duration("-P1Y2M").years`, -1.0},
+			{`is defined(date("2020-01-01").weekday)`, true},
+			{`is defined(duration("P1D").years)`, false},
+		})
+	})
+
+	t.Run("juxtaposed expressions do not compile", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 rules 1-2. Upstream's Parse collected every
+		// expression up to end of input into an ExprList and returned the
+		// last value, so `3 4` was 4 and `x between 1` read the name
+		// `x between` followed by `1`, all with no error.
+		for _, expr := range []string{`3 4`, `3 foo`, `"a" "b"`, `x between 1`, `1; 2`} {
+			_, err := e.Compile(expr)
+			var ce *CompileError
+			if !errors.As(err, &ce) {
+				t.Errorf("%q: error %v, want a *CompileError", expr, err)
+				continue
+			}
+			if !strings.Contains(err.Error(), "expect eof") {
+				t.Errorf("%q: error %q does not report a trailing token", expr, err)
+			}
+		}
+	})
+
+	t.Run("instance of checks FEEL types", func(t *testing.T) {
+		// DMN 1.5 grammar rules 51-52 and Table 61. Upstream had no
+		// `instance of`: `x instance of number` scanned as one variable name
+		// and `5 instance of number` as two juxtaposed expressions, both null.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`5 instance of number`, true},
+			{`null instance of number`, false},
+			{`null instance of Any`, false},
+			{`null instance of Null`, true},
+			{`{a: "123", b: 123} instance of context<a: string>`, true},
+			{`{a: null} instance of context<a: string>`, true},
+			{`[1..10) instance of range<number>`, true},
+			{`(function(a) a) instance of function<Any>->Any`, true},
+			{`123 instance of list`, nil},
+			{`1 + 1 instance of number`, nil},
+			{`-5 instance of number`, true},
+		})
+		vars := map[string]any{
+			"x": FromGo(5), "b": FromGo(true),
+			"a":             FromGo(map[string]any{"x": 1, "n": map[string]any{"y": 2}}),
+			"Date of Birth": FromGo("1990-01-01"),
+		}
+		for expr, want := range map[string]any{
+			"x instance of number and b": true,
+			"a instance of context<>":    true,
+			"Date of Birth":              "1990-01-01",
+		} {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("between is an inclusive comparison", func(t *testing.T) {
+		// DMN 1.5 grammar rule 49.b and Table 55: `e1 between e2 and e3` is
+		// `e1 >= e2 and e1 <= e3`. Upstream did not parse `between`: `3
+		// between 1 and 5` was `3` juxtaposed with the name `between`.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`3 between 1 and 5`, true},
+			{`1 between 1 and 5`, true},
+			{`5 between 1 and 5`, true},
+			{`0 between 1 and 5`, false},
+			{`"a" between 1 and 5`, nil},
+			{`null between 1 and 5`, nil},
+			{`9 between null and 5`, false},
+			{`3 between 1 and 5 and false`, false},
+		})
+		vars := map[string]any{"days between dates": FromGo(7)}
+		if got := mustEval(t, e, "days between dates", vars); got != 7.0 {
+			t.Errorf("days between dates = %#v, want 7", got)
+		}
+		if _, err := e.Compile("3 between 1"); err == nil {
+			t.Error("3 between 1 compiled, want a syntax error")
+		}
+	})
+
+	t.Run("macro built-ins are null on misfitting arguments", func(t *testing.T) {
+		// DMN 1.5 §10.3.4: a built-in invoked outside its domain is null;
+		// §10.3.4.9 Table 80 names sort's parameters list and precedes.
+		// Upstream raised on every misfit below, and named the second
+		// parameter `predicates`.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`sort()`, nil},
+			{`sort(1)`, nil},
+			{`sort([3,1], 5)`, nil},
+			{`sort([3,1], function(x) x)`, nil},
+			{`sort(list: [1], foo: 1)`, nil},
+			{`is defined()`, nil},
+			{`is defined(1, 2)`, nil},
+			{`sort(list: [3,1,4,5,2], precedes: function(x,y) x < y)`, []any{1.0, 2.0, 3.0, 4.0, 5.0}},
+		})
+	})
+
+	t.Run("sort reads a non-boolean precedes result as not before", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.9 Table 80: precedes is a boolean function.
+		// Upstream read its result through boolValue, so `1` or `"x"`
+		// counted as true and reordered the list.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`sort([3,1,2], function(x,y) 1)`, []any{3.0, 1.0, 2.0}},
+			{`sort([3,1,2], function(x,y) "x")`, []any{3.0, 1.0, 2.0}},
+			{`sort([3,1,2], function(x,y) null)`, []any{3.0, 1.0, 2.0}},
+			{`sort([3,1,2], function(x,y) x < y)`, []any{1.0, 2.0, 3.0}},
+		})
+	})
+
+	t.Run("function parameters take a type", func(t *testing.T) {
+		// DMN 1.5 grammar rule 56 and §10.3.2.13.2. Upstream read only a
+		// parameter name, so `function(a: string) a` was a syntax error.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`(function(a: string, b: number) a)("x", 1)`, "x"},
+			{`(function(a, b: number) a)(1, 2)`, 1.0},
+			{`(function(a: string) a)(1)`, nil},
+			{`(function(a: number) a)(null)`, nil},
+			{`(function(a: number) a)([7])`, 7.0},
+			{`(function(a: string) a) instance of function<string>->Any`, true},
+			{`(function(a: number) a) instance of function<string>->Any`, false},
+			{`(function(a) a) instance of function<string>->Any`, true},
+		})
 	})
 }
 

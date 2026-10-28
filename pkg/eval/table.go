@@ -236,11 +236,12 @@ func (p *Program) tableDefault(ec *Context, ct *compiledTable) (any, error) {
 		}
 	}
 	// A collecting policy with no match returns an empty list, not null: the
-	// collection of nothing is the empty collection.
+	// collection of nothing is the empty collection. An aggregating COLLECT
+	// (C+, C<, C>, C#) is null instead: DMN 1.5 §10.3.2.10 settles the no-hit
+	// case — the default output, else null — before any aggregation step, so
+	// C# with no hits is null, not count([]) = 0 (§8.2.11 agrees: the
+	// aggregator applies to the matched rules' outputs).
 	if !hasDefault && !ct.src.HitPolicy.SingleHit() {
-		if ct.src.HitPolicy == model.HitCollect && ct.src.Aggregation == model.AggCount {
-			return feel.FromGo(0), nil
-		}
 		if ct.src.HitPolicy == model.HitCollect && ct.src.Aggregation != model.AggNone {
 			return feel.Null, nil
 		}
@@ -380,68 +381,42 @@ func (p *Program) collectAll(ec *Context, ct *compiledTable, rules []int) (any, 
 	return out, nil
 }
 
-// collectHit implements COLLECT and its aggregators.
+// collectHit implements COLLECT and its aggregators. Only ever called with at
+// least one match; tableDefault owns the no-hit case.
 func (p *Program) collectHit(ec *Context, ct *compiledTable, matches []int) (any, error) {
 	list, err := p.collectAll(ec, ct, matches)
 	if err != nil {
 		return nil, err
 	}
 	values := list.([]any)
-	if ct.src.Aggregation != model.AggNone {
-		ec.trace.Annotate(trace.AnnAggregation, string(ct.src.Aggregation))
-	}
-	switch ct.src.Aggregation {
-	case model.AggNone:
-		return values, nil
-	case model.AggCount:
-		return feel.FromGo(len(values)), nil
-	case model.AggSum, model.AggMin, model.AggMax:
-		return aggregate(ct.src, values)
-	default:
+	if ct.src.Aggregation == model.AggNone {
 		return values, nil
 	}
+	ec.trace.Annotate(trace.AnnAggregation, string(ct.src.Aggregation))
+	return aggregate(ct.src.Aggregation, values), nil
 }
 
-// aggregate folds a collected list. A SUM over non-numeric outputs is an
-// error rather than a silent null, because a silently wrong total is worse
-// than a loud failure. MIN and MAX follow FEEL's min and max instead: outputs
-// FEEL cannot order make the result null.
-func aggregate(t *model.DecisionTable, values []any) (any, error) {
-	if len(values) == 0 {
-		return feel.Null, nil
+// aggregateBuiltin names the §10.3.4.4 built-in each COLLECT aggregator is
+// defined by (DMN 1.5 §10.3.2.10: "sum, count, minimum, maximum").
+var aggregateBuiltin = map[model.Aggregation]string{
+	model.AggSum:   "sum",
+	model.AggCount: "count",
+	model.AggMin:   "min",
+	model.AggMax:   "max",
+}
+
+// aggregate folds a collected list through the FEEL built-in that defines the
+// aggregator, so C+, C#, C< and C> cannot drift from sum, count, min and max.
+// Outputs outside the built-in's domain — a non-number or a null under C+, a
+// boolean, a null or mixed kinds under C< and C> — make the result null, not
+// an error (§10.3.2.13.1). C# counts every hit, a null output included.
+func aggregate(agg model.Aggregation, values []any) any {
+	name, ok := aggregateBuiltin[agg]
+	if !ok {
+		return values
 	}
-	switch t.Aggregation {
-	case model.AggSum:
-		sum := feel.FromGo(0)
-		for _, v := range values {
-			next, err := feel.Add(sum, v)
-			if err != nil {
-				return nil, diag.Errorf(diag.CodeTypeViolation,
-					"COLLECT SUM requires numeric outputs: %v", err).At(t.ExprID(), "")
-			}
-			sum = next
-		}
-		return sum, nil
-	case model.AggMin, model.AggMax:
-		best := values[0]
-		// C< and C> are the minimum and maximum of the collected outputs
-		// (DMN 1.5 §8, hit policy), ordered as FEEL's min and max order them
-		// (§10.3.4.4): an output with no FEEL order (a boolean, a null) or a
-		// pair of different kinds makes the result null, not an error. The
-		// first output is compared with itself so that a lone boolean is
-		// null too, as min([true]) is.
-		for _, v := range values {
-			c, ok := feel.Compare(v, best)
-			if !ok {
-				return feel.Null, nil
-			}
-			if (t.Aggregation == model.AggMin && c < 0) || (t.Aggregation == model.AggMax && c > 0) {
-				best = v
-			}
-		}
-		return best, nil
-	}
-	return values, nil
+	r, _ := feel.Aggregate(name, values)
+	return r
 }
 
 // inputLabel names an input clause for the trace: its label, else its

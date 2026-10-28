@@ -61,6 +61,15 @@ Each string parses back to the same value through `date()`, `time()`,
 `date and time()` or `duration()`. Numbers are narrowed to `float64`; the
 arithmetic inside the evaluator is exact, only the boundary value is not.
 
+A Go `time.Time` coming *in* (an input, a native function's result, `now()`)
+keeps its IANA zone: a time in `Europe/Paris` becomes
+`"...@Europe/Paris"`, and `.timezone` reads `"Europe/Paris"`. A time in UTC is
+`"...Z"`, and any Location that is not a loadable zone whose rules give back the
+same instant — `time.Local`, `time.FixedZone`, a wall clock time repeated when DST
+ends whose zone id would name the other occurrence — keeps only its offset (`"...+01:00"`), for
+which `.timezone` is null. So with `feel.timezone: Europe/Paris`, `now()` prints
+`"...@Europe/Paris"`; under the default UTC it prints `"...Z"`.
+
 Before v0.4.0 temporals were Go `time.Time` values (a date as
 `"2024-03-05T00:00:00Z"`, a time as `"0000-01-01T10:00:00Z"`, a zoneless date
 and time with a `Z`) and a days and time duration was a `time.Duration`

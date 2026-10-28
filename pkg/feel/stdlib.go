@@ -49,9 +49,17 @@ func buildSupplement() {
 		if _, exists := pfeel.GetPrelude().Resolve(name); exists {
 			return
 		}
-		// A supplement built-in is a standard one: a call to it with the
-		// wrong arguments is null (DMN 1.5 §10.3.4), as for the prelude's.
-		supplement[name] = nativeFunc(f).Standard()
+		// A call with the wrong arguments is null (DMN 1.5 §10.3.4), as it
+		// is for every native function.
+		supplement[name] = nativeFunc(f)
+	}
+	// bindNative is bind for a built-in constructed directly on the fork's
+	// NativeFun — one that needs a hook Function does not expose.
+	bindNative := func(name string, nf *pfeel.NativeFun) {
+		if _, exists := pfeel.GetPrelude().Resolve(name); exists {
+			return
+		}
+		supplement[name] = nf
 	}
 
 	// ---- string functions -------------------------------------------------
@@ -200,7 +208,7 @@ func buildSupplement() {
 			q := new(big.Rat).Quo(d, v)
 			fl := new(big.Int).Div(q.Num(), q.Denom()) // Euclidean: floor, since Denom > 0
 			r := new(big.Rat).Sub(d, new(big.Rat).Mul(v, new(big.Rat).SetInt(fl)))
-			return pfeel.NewNumber(r.FloatString(decimalDigits)), nil
+			return decimal128Number(new(big.Float).SetPrec(mathPrec).SetRat(r)), nil
 		},
 	})
 	bind("sqrt", Function{Params: []string{"number"}, Help: "square root, null for negatives",
@@ -209,36 +217,21 @@ func buildSupplement() {
 		Fn: unaryDecimal(decimalLog)})
 	bind("exp", Function{Params: []string{"number"}, Help: "e raised to the given power",
 		Fn: unaryDecimal(decimalExp)})
-	bind("odd", Function{Params: []string{"number"}, Help: "true when the integral value is odd",
+	bind("odd", Function{Params: []string{"number"}, Help: "true when the integer is odd; null for a non-integer",
 		Fn: parity(1)})
-	bind("even", Function{Params: []string{"number"}, Help: "true when the integral value is even",
+	bind("even", Function{Params: []string{"number"}, Help: "true when the integer is even; null for a non-integer",
 		Fn: parity(0)})
 
 	// ---- list functions ---------------------------------------------------
 
-	bind("list replace", Function{
-		Params: []string{"list", "position", "newItem"},
-		Help:   "a copy of list with the position (1-based, negative from the end) replaced; null outside the list",
-		Fn: func(a map[string]any) (any, error) {
-			// DMN 1.5 §10.3.4.4: list is a list (a non-list item converted
-			// to a singleton list, §10.3.2.9.4), position an integer
-			// counted from 1 or, if negative, from the end, and newItem
-			// "any element including null"; anything else is null (TCK
-			// 1155).
-			l, ok := asList(a["list"])
-			if !ok {
-				return Null, nil
-			}
-			idx, ok := listPosition(a["position"], len(l))
-			if !ok {
-				return Null, nil
-			}
-			out := make([]any, len(l))
-			copy(out, l)
-			out[idx] = a["newItem"]
-			return out, nil
-		},
-	})
+	// list replace(list, position, newItem) and list replace(list, match,
+	// newItem), DMN 1.5 §10.3.4.4. The match form calls a function value,
+	// so it is bound through the fork's interpreter-aware hook rather than
+	// Function, whose Fn never sees the interpreter.
+	bindNative("list replace", pfeel.NewNativeFuncI(listReplace).Overloads(
+		[]string{"list", "position", "newItem"},
+		[]string{"list", "match", "newItem"},
+	).Help("a copy of list with the position (1-based, negative from the end), or every item match(item, newItem) holds for, replaced; null outside the list"))
 	bind("duplicate values", Function{
 		Params: []string{"list"},
 		Help:   "the values occurring more than once, in first-occurrence order",
@@ -320,6 +313,8 @@ func buildSupplement() {
 				l = x
 			case map[string]any:
 				l = []any{x}
+			case pfeel.Scope:
+				l = []any{map[string]any(x)}
 			default:
 				return Null, nil
 			}
@@ -332,6 +327,9 @@ func buildSupplement() {
 			out := map[string]any{}
 			for _, e := range l {
 				m, ok := e.(map[string]any)
+				if sc, isScope := e.(pfeel.Scope); isScope {
+					m, ok = sc, true
+				}
 				if !ok {
 					return Null, nil
 				}
@@ -385,6 +383,53 @@ func twoStrings(a map[string]any, k1, k2 string) (string, string, bool) {
 	return s1, s2, ok1 && ok2
 }
 
+// listReplace is `list replace` (DMN 1.5 §10.3.4.4): list is a list (a
+// non-list item converted to a singleton list, §10.3.2.9.4) and newItem "any
+// element including null". The second argument is either a position — an
+// integer counted from 1 or, if negative, from the end — or a match function
+// of (item, newItem), and every item it returns true for is replaced. A
+// positional call binds the position overload, so a function value there is
+// the match form too. A match function of the wrong arity, a position outside
+// the list, or any other second argument is null (TCK 1155); a match result
+// that is not true leaves the item, and an error from its body propagates.
+func listReplace(intp *pfeel.Interpreter, a map[string]any) (any, error) {
+	l, ok := asList(a["list"])
+	if !ok {
+		return Null, nil
+	}
+	sel, isMatch := a["match"]
+	if !isMatch {
+		sel = a["position"]
+	}
+	out := make([]any, len(l))
+	copy(out, l)
+	switch sel.(type) {
+	case *pfeel.FunDef, *pfeel.NativeFun:
+		for i, item := range l {
+			r, ok, err := pfeel.CallFunction(intp, sel, item, a["newItem"])
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return Null, nil
+			}
+			if b, _ := r.(bool); b {
+				out[i] = a["newItem"]
+			}
+		}
+		return out, nil
+	}
+	if isMatch {
+		return Null, nil
+	}
+	idx, ok := listPosition(sel, len(l))
+	if !ok {
+		return Null, nil
+	}
+	out[idx] = a["newItem"]
+	return out, nil
+}
+
 // listPosition resolves a list position — an integer counted from 1 or, if
 // negative, from the end — to a 0-based index into a list of length n; false
 // for a non-integer, 0, or a position outside the list.
@@ -416,13 +461,10 @@ func numberArg(v any) (*pfeel.Number, bool) {
 	return n, ok && n != nil
 }
 
-// decimalDigits is how many fractional digits a decimal argument is read and
-// written at; it matches the precision a *pfeel.Number prints at.
-const decimalDigits = 18
-
 // decimalArg is a numeric argument as an exact rational, read through the
-// number's decimal text so a literal such as 10.1 is exactly 101/10 rather
-// than its nearest binary approximation.
+// number's decimal text (34 significant digits, the precision a *pfeel.Number
+// prints at) so a literal such as 10.1 is exactly 101/10 rather than its
+// nearest binary approximation.
 func decimalArg(v any) (*big.Rat, bool) {
 	n, ok := numberArg(v)
 	if !ok {
@@ -469,7 +511,10 @@ func unaryDecimal(f func(*big.Float) (*big.Float, bool)) func(map[string]any) (a
 
 // parity is odd (rem 1) or even (rem 0), decided on the exact value so an
 // integer above 2^53 is not rounded to its float64 neighbour first. A number
-// that is not an integer is neither.
+// that is not an integer is null. Interpretation: DMN 1.5 §10.3.4.5 Table 76
+// and the TCK (0054, 0055) are silent on odd(1.5); odd and even are defined
+// on integers, so a fraction is treated as outside the domain (§10.3.2.13.1)
+// rather than answered false.
 func parity(rem uint) func(map[string]any) (any, error) {
 	return func(a map[string]any) (any, error) {
 		n, ok := numberArg(a["number"])
@@ -478,7 +523,7 @@ func parity(rem uint) func(map[string]any) (any, error) {
 		}
 		x := n.BigFloat()
 		if x.IsInf() || !x.IsInt() {
-			return false, nil
+			return Null, nil
 		}
 		i, _ := x.Int(nil)
 		return i.Bit(0) == rem, nil

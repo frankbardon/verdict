@@ -299,6 +299,10 @@ func writeKey(b *strings.Builder, v any) bool {
 			b.WriteByte(']')
 		}
 		b.WriteByte(')')
+	case pfeel.Scope:
+		// The fork keeps contexts as map[string]any (issue #67); a Scope here
+		// is a leak, but it is the same context and keys the same way.
+		return writeKey(b, map[string]any(x))
 	case map[string]any:
 		names := make([]string, 0, len(x))
 		for k := range x {
@@ -411,7 +415,7 @@ func TypeName(v any) string {
 		return "date and time"
 	case *pfeel.FEELDuration:
 		return "duration"
-	case map[string]any:
+	case map[string]any, pfeel.Scope:
 		return "context"
 	case []any:
 		return "list"
@@ -421,27 +425,70 @@ func TypeName(v any) string {
 
 // datetimeFromGo builds a FEEL date-and-time from a Go time. The embedded
 // library keeps its temporal fields unexported and offers only string parsing,
-// so the conversion round-trips through the offset-bearing ISO-8601 form it
-// accepts. The fraction of a second is kept to the nanosecond, as a FEEL date
-// and time holds it, so a sub-second input is not silently truncated. The
-// result is always zoned: a time.Time has no zoneless form.
+// so the conversion round-trips through the ISO-8601 form it accepts. The
+// fraction of a second is kept to the nanosecond, as a FEEL date and time holds
+// it, so a sub-second input is not silently truncated. The result is always
+// zoned: a time.Time has no zoneless form.
+//
+// A time whose Location is a real IANA zone keeps it as a zone id
+// (`...@Europe/Paris`, DMN 1.5 §10.3.2.3.5 and Table 72), so `.timezone` reads
+// it back; any other time carries its offset (`Z`, `+01:00`). See ianaZone for
+// what counts as real.
 func datetimeFromGo(t time.Time) any {
-	dt, err := pfeel.ParseDatetime(t.Format("2006-01-02T15:04:05.999999999-07:00"))
+	const local = "2006-01-02T15:04:05.999999999"
+	s := t.Format(local + "-07:00")
+	if id := ianaZone(t); id != "" {
+		s = t.Format(local) + "@" + id
+	}
+	dt, err := pfeel.ParseDatetime(s)
 	if err != nil {
 		return Null
 	}
 	return dt
 }
 
-// Add sums two FEEL values. It exists for the COLLECT SUM aggregator, which
-// needs arithmetic outside an expression context.
-func Add(a, b any) (any, error) {
-	an, aok := a.(*pfeel.Number)
-	bn, bok := b.(*pfeel.Number)
-	if !aok || !bok {
-		return nil, fmt.Errorf("cannot add %s and %s", TypeName(a), TypeName(b))
+// ianaZone is the IANA zone id t's Location names, or "" when writing t with
+// that id would not give back t's instant and offset. A Location's name is
+// whatever its constructor was given, so the name alone proves nothing:
+//
+//   - "UTC" stays the offset form, so the common case prints `Z`, not `@UTC`;
+//     "Local" names the host's zone, which a decision must not depend on (the
+//     FEEL parser rejects it too); "" is an unnamed fixed zone.
+//   - The name must load from the time zone database, which rejects names such
+//     as `+01:00` given to time.FixedZone.
+//   - t's wall clock placed in the loaded zone must be t's instant. That
+//     rejects a fixed zone borrowing a real zone's name (FixedZone("CET", 3600)
+//     in July, when real CET is +02:00), and the one occurrence of a wall
+//     clock time repeated when DST ends that the zone id would not name (the
+//     FEEL parser places `local@zone` with time.Date, as this check does, so
+//     the id reads as the other occurrence) — there only the offset is
+//     lossless.
+func ianaZone(t time.Time) string {
+	name := t.Location().String()
+	switch name {
+	case "", "UTC", "Local":
+		return ""
 	}
-	return an.Add(bn), nil
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return ""
+	}
+	y, mo, d := t.Date()
+	h, mi, sec := t.Clock()
+	if !time.Date(y, mo, d, h, mi, sec, t.Nanosecond(), loc).Equal(t) {
+		return ""
+	}
+	return name
+}
+
+// Aggregate applies the DMN 1.5 §10.3.4.4 list aggregate name (count, min,
+// max, sum, product, mean, median, stddev or mode) to a list of FEEL values,
+// exactly as the FEEL built-in of that name does: a list outside the
+// function's domain gives Null, never an error. ok is false only for an
+// unknown name. It is the door a decision table's COLLECT aggregation, which
+// §10.3.2.10 defines through these built-ins, uses into them.
+func Aggregate(name string, list []any) (result any, ok bool) {
+	return pfeel.Aggregate(name, list)
 }
 
 // ParseTemporal parses a temporal literal into the requested FEEL type. It

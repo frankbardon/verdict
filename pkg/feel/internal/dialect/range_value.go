@@ -8,6 +8,26 @@ type RangeValue struct {
 	End     any
 }
 
+// GetAttr is the range properties of DMN 1.5 Table 65: `start` and `end` are
+// the endpoints, `start included` and `end included` whether each end is
+// closed. `[1..5).end included` is false.
+//
+// VERDICT DIVERGENCE: upstream gave a range no properties, so `[1..5].start`
+// raised "type mismatch, expect map". See NOTICE.md.
+func (rv RangeValue) GetAttr(name string) (interface{}, bool) {
+	switch name {
+	case "start":
+		return rv.Start, true
+	case "end":
+		return rv.End, true
+	case "start included":
+		return !rv.StartOpen, true
+	case "end included":
+		return !rv.EndOpen, true
+	}
+	return nil, false
+}
+
 // HasNullEndpoint reports whether either endpoint is null. A literal such as
 // `[null..10]` has no defined start, and DMN 1.5 §10.3.2.15 makes every ordering
 // comparison against it null, so membership in it, and every range built-in
@@ -177,17 +197,6 @@ func or3(vs ...any) any {
 	return false
 }
 
-// not3 is FEEL's `not`: null stays null.
-func not3(v any) any {
-	switch v {
-	case true:
-		return false
-	case false:
-		return true
-	}
-	return null
-}
-
 // cmps evaluates several rangeCmp comparisons eagerly, so that a kind mismatch
 // in any of them reaches nullOnNullOperand whatever the formula would have
 // short-circuited, as it did when every comparison ran up front.
@@ -273,18 +282,73 @@ func (rv RangeValue) includesRange(c *cmps, other RangeValue) any {
 	return and3(startOK, endOK)
 }
 
-// overlapsBefore keeps upstream's formula: rv's end lies in other, and does
-// not touch other's start through an open end. (It is not Table 78's
-// `overlaps before`; see the follow-up noted in NOTICE.md.)
-func (rv RangeValue) overlapsBefore(c *cmps, other RangeValue) any {
-	return and3(other.within(c, rv.End),
-		not3(and3(rv.EndOpen, c.cmp(rv.End, "=", other.Start))))
+// The range–range relations below are Table 78's formulas, conjunct for
+// conjunct, over the three-valued comparisons. A literal closedness test
+// (`range1.end included`) is a Go boolean, and `=` between two closednesses
+// is plain boolean equality.
+//
+// VERDICT DIVERGENCE: upstream tested only whether one range's endpoint lay
+// in the other, so `overlaps([1..10], [3..4])` was false, `overlaps
+// before([3..4], [1..5])` true and `overlaps after((5..10], [1..5])` true,
+// and `starts`/`started by`/`finishes`/`finished by` over two ranges compared
+// only their shared endpoint (`finishes([1..10], [5..10])` was true). DMN 1.5
+// §10.3.4.7 Table 78 rows (b) of each function give the formulas used here
+// (issues #63, #64).
+
+// startsEarlier is Table 78's `r.start < other.start or (r.start =
+// other.start and r.start included and not(other.start included))`.
+func (rv RangeValue) startsEarlier(c *cmps, other RangeValue) any {
+	return or3(c.cmp(rv.Start, "<", other.Start),
+		and3(c.cmp(rv.Start, "=", other.Start), !rv.StartOpen && other.StartOpen))
 }
 
-// overlapsAfter keeps upstream's formula, as overlapsBefore does.
+// endsNoLater is Table 78's `r.end < other.end or (r.end = other.end and
+// (not(r.end included) or other.end included))`.
+func (rv RangeValue) endsNoLater(c *cmps, other RangeValue) any {
+	return or3(c.cmp(rv.End, "<", other.End),
+		and3(c.cmp(rv.End, "=", other.End), rv.EndOpen || !other.EndOpen))
+}
+
+// reachesStartOf is Table 78's `r.end > other.start or (r.end = other.start
+// and r.end included and other.start included)`.
+func (rv RangeValue) reachesStartOf(c *cmps, other RangeValue) any {
+	return or3(c.cmp(rv.End, ">", other.Start),
+		and3(c.cmp(rv.End, "=", other.Start), !rv.EndOpen && !other.StartOpen))
+}
+
+// overlapsRange is Table 78's `overlaps(range1, range2)`: range1 reaches
+// range2's start and range2 reaches range1's start.
+func (rv RangeValue) overlapsRange(c *cmps, other RangeValue) any {
+	return and3(rv.reachesStartOf(c, other), other.reachesStartOf(c, rv))
+}
+
+// overlapsBefore is Table 78's `overlaps before(range1, range2)`.
+func (rv RangeValue) overlapsBefore(c *cmps, other RangeValue) any {
+	return and3(rv.startsEarlier(c, other), rv.reachesStartOf(c, other), rv.endsNoLater(c, other))
+}
+
+// overlapsAfter is Table 78's `overlaps after(range1, range2)`, which is
+// `overlaps before(range2, range1)` term for term.
 func (rv RangeValue) overlapsAfter(c *cmps, other RangeValue) any {
-	return and3(other.within(c, rv.Start),
-		not3(and3(rv.EndOpen, c.cmp(rv.Start, "=", other.End))))
+	return other.overlapsBefore(c, rv)
+}
+
+// startsRange is Table 78's `starts(range1, range2)`: equal starts of equal
+// closedness, and range1 ends no later than range2.
+func (rv RangeValue) startsRange(c *cmps, other RangeValue) any {
+	return and3(c.cmp(rv.Start, "=", other.Start), rv.StartOpen == other.StartOpen,
+		rv.endsNoLater(c, other))
+}
+
+// finishesRange is Table 78's `finishes(range1, range2)`: equal ends of equal
+// closedness, and range1 starts no earlier than range2 — `range1.start >
+// range2.start or (= and (not(range1.start included) or range2.start
+// included))`. `finished by(range1, range2)` is `finishes(range2, range1)`
+// term for term, as `started by` is `starts` swapped.
+func (rv RangeValue) finishesRange(c *cmps, other RangeValue) any {
+	return and3(rv.EndOpen == other.EndOpen, c.cmp(rv.End, "=", other.End),
+		or3(c.cmp(rv.Start, ">", other.Start),
+			and3(c.cmp(rv.Start, "=", other.Start), rv.StartOpen || !other.StartOpen)))
 }
 
 // rangeFn adapts a three-valued formula to a built-in's return, letting a
@@ -350,7 +414,7 @@ func installRangeFunctions(p *Prelude) {
 
 	prelude.Bind("overlaps", wrapTyped(func(a *RangeValue, b *RangeValue) (any, error) {
 		return rangeFn(func(c *cmps) any {
-			return or3(a.overlapsBefore(c, *b), a.overlapsAfter(c, *b))
+			return a.overlapsRange(c, *b)
 		})
 	}).Required("a", "b"))
 
@@ -365,7 +429,7 @@ func installRangeFunctions(p *Prelude) {
 	prelude.Bind("finishes", wrapTyped(func(a any, b *RangeValue) (any, error) {
 		return rangeFn(func(c *cmps) any {
 			if va, ok := a.(*RangeValue); ok {
-				return and3(c.cmp(va.End, "=", b.End), !b.EndOpen)
+				return va.finishesRange(c, *b)
 			}
 			return and3(c.cmp(a, "=", b.End), !b.EndOpen)
 		})
@@ -374,7 +438,7 @@ func installRangeFunctions(p *Prelude) {
 	prelude.Bind("starts", wrapTyped(func(a any, b *RangeValue) (any, error) {
 		return rangeFn(func(c *cmps) any {
 			if va, ok := a.(*RangeValue); ok {
-				return and3(c.cmp(va.Start, "=", b.Start), va.StartOpen == b.StartOpen)
+				return va.startsRange(c, *b)
 			}
 			return and3(c.cmp(a, "=", b.Start), !b.StartOpen)
 		})
@@ -383,7 +447,7 @@ func installRangeFunctions(p *Prelude) {
 	prelude.Bind("finished by", wrapTyped(func(a *RangeValue, b any) (any, error) {
 		return rangeFn(func(c *cmps) any {
 			if vb, ok := b.(*RangeValue); ok {
-				return and3(c.cmp(vb.End, "=", a.End), !a.EndOpen)
+				return vb.finishesRange(c, *a)
 			}
 			return and3(c.cmp(b, "=", a.End), !a.EndOpen)
 		})
@@ -392,7 +456,7 @@ func installRangeFunctions(p *Prelude) {
 	prelude.Bind("started by", wrapTyped(func(a *RangeValue, b any) (any, error) {
 		return rangeFn(func(c *cmps) any {
 			if vb, ok := b.(*RangeValue); ok {
-				return and3(c.cmp(vb.Start, "=", a.Start), vb.StartOpen == a.StartOpen)
+				return vb.startsRange(c, *a)
 			}
 			return and3(c.cmp(b, "=", a.Start), !a.StartOpen)
 		})

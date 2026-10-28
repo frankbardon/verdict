@@ -66,6 +66,8 @@ for a list-valued input, also `? = [1, 2]` (DMN 1.5 §7.3.2): lists are equal
 when they have the same length and equal elements in order, so `[1, 2]`
 matches `[1, 2]` but not `[2, 1]` (§10.3.2.15, Table 53). `not(["a", "b"])`
 matches `"c"` but not `5`.
+A range item is tested by membership rather than equality (Table 55), so
+`[[1..3], 7]` matches `2` and `7` but not `5`.
 
 Equality is FEEL's `=` everywhere a table compares values — equality cells,
 list cells, ANY agreement, PRIORITY and OUTPUT ORDER ranking — so `1` equals
@@ -118,16 +120,28 @@ as information rather than staying silent.
 | Policy | Behaviour |
 |---|---|
 | `C` COLLECT | A list of every matching rule's output, in rule order |
-| `C+` COLLECT SUM | The sum |
-| `C<` COLLECT MIN | The minimum, as FEEL `min` orders it |
-| `C>` COLLECT MAX | The maximum, as FEEL `max` orders it |
-| `C#` COLLECT COUNT | The number of matches |
+| `C+` COLLECT SUM | FEEL `sum` of the matched outputs |
+| `C<` COLLECT MIN | FEEL `min` of the matched outputs |
+| `C>` COLLECT MAX | FEEL `max` of the matched outputs |
+| `C#` COLLECT COUNT | FEEL `count` of the matched outputs |
 | `R` RULE ORDER | Every match, in rule order |
 | `O` OUTPUT ORDER | Every match, sorted by `outputValues` |
 
 A collecting policy that matches nothing yields the **empty list**, not null —
-except the aggregators, which yield null (`C#` yields `0`). If zero is what you
-mean, say so with a `defaultOutputEntry`.
+except the aggregators, which yield the `defaultOutputEntry` if there is one
+and **null** otherwise. That includes `C#`: a `C#` table with no hits is null,
+not `0`. *Interpretation:* DMN 1.5 §10.3.2.10 resolves "no rule hit" to the
+default output or null before it applies the aggregation, so the letter of the
+spec gives null even though `count([])` is `0`; the TCK does not test the case.
+If zero is what you mean, say so with a `defaultOutputEntry`.
+
+The aggregators are *defined by* the FEEL built-ins (DMN 1.5 §10.3.2.10: "sum,
+count, minimum, maximum", §10.3.4.4), and Verdict evaluates them through the
+same implementation, so a table and the expression `sum(...)` over the same
+outputs always agree. Outputs outside the built-in's domain make the result
+**null, never an error** (§10.3.2.13.1): a `C+` whose matches include a
+non-number (`5` and `"high"`) or a null output is null. `C#` counts every
+match, whatever its kind and null included.
 
 `C<` and `C>` order the matched outputs exactly as FEEL's `min` and `max` do
 (DMN 1.5 §10.3.4.4, ordered by Table 54): numbers, strings, durations of one

@@ -101,6 +101,14 @@ that answers `"42"` for a number is accepted, because the text is unambiguous. A
 model that answers `"high risk"` for an enumeration of `low`/`medium`/`high` is
 rejected, because guessing would be inventing a decision.
 
+A bridge written in Go may answer with typed containers — a `[]int`, a
+`map[string]time.Time`, a struct. Their elements are coerced exactly as the same
+value would be at the top level: a `json.Number` keeps its full decimal, while a
+`time.Time` where a string is declared, or a `time.Duration` where a duration is
+declared, is rejected inside a list just as it is on its own. JSON-decoded
+answers (the HTTP bridge, Nexus) are already plain lists, objects, strings and
+numbers, and are unaffected.
+
 ### 3. The validator is the escape hatch
 
 `validator` is a FEEL expression evaluated with the coerced answer bound to

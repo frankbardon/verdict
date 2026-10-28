@@ -157,8 +157,8 @@ func (p *Program) TopLevelDecisions() []string {
 // converted here: a decision service calls this with its arguments and hands
 // the results straight back to FEEL, so a zoneless date and time, a date, a
 // time, a years-and-months duration or a high-precision number crosses a
-// service with its type and value intact (DMN 1.5 §10.4 decision service
-// semantics). Only Evaluate narrows the results for the outside world, through
+// service with its type and value intact (DMN 1.5 §10.3.2.9 type
+// fidelity). Only Evaluate narrows the results for the outside world, through
 // exportValues.
 func (p *Program) evaluateRoots(ec *Context, pl plan, inputs map[string]any) (map[string]any, error) {
 	slice, err := p.Graph.Slice(pl.evaluate...)
@@ -444,7 +444,7 @@ func (p *Program) bindInputs(ec *Context, slice []string, inputs map[string]any)
 	}
 
 	// Every decision service is callable from FEEL, which is how a large model
-	// decomposes without flattening (DMN 1.5 §7.4).
+	// decomposes without flattening (DMN 1.5 §10.3.2.13.2).
 	for name, fn := range p.bindServices(ec) {
 		if _, taken := vars[name]; !taken {
 			vars[name] = fn

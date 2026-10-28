@@ -226,6 +226,46 @@
       }
     },
     {
+      "id": "collect_sum_mixed", "name": "CollectSumMixed",
+      "required_inputs": ["score"],
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT", "aggregation": "SUM",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "points" }],
+        "rules": [
+          { "id": "csm1", "when": ["> 0"], "then": ["5"] },
+          { "id": "csm2", "when": ["> 10"], "then": ["\"high\""] },
+          { "id": "csm3", "when": ["> 20"], "then": ["null"] }
+        ]
+      }
+    },
+    {
+      "id": "collect_count_null", "name": "CollectCountNull",
+      "required_inputs": ["score"],
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT", "aggregation": "COUNT",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "points" }],
+        "rules": [
+          { "id": "ccn1", "when": ["> 0"], "then": ["\"low\""] },
+          { "id": "ccn2", "when": ["> 10"], "then": ["null"] }
+        ]
+      }
+    },
+    {
+      "id": "collect_count_defaulted", "name": "CollectCountDefaulted",
+      "required_inputs": ["score"],
+      "variable": { "name": "CollectCountDefaulted", "type_ref": "number" },
+      "logic": {
+        "kind": "decisionTable", "hit_policy": "COLLECT", "aggregation": "COUNT",
+        "inputs": [{ "expression": "Score", "type_ref": "number" }],
+        "outputs": [{ "name": "points", "type_ref": "number", "default_value": "0" }],
+        "rules": [
+          { "id": "ccd1", "when": ["> 0"], "then": ["5"] }
+        ]
+      }
+    },
+    {
       "id": "first_table", "name": "First",
       "required_inputs": ["score"],
       "variable": { "name": "First", "type_ref": "string" },

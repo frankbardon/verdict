@@ -99,16 +99,39 @@ func normalizeValue(v any) any {
 	}
 }
 
+// normalizeScope copies a pushed frame, normalising every value in it. Only
+// the frame itself is a Scope — the interpreter's stack needs that type. A
+// context-typed value inside the frame (an input, an upstream decision, a BKM
+// argument) stays a plain map[string]any, the type every context operator and
+// built-in switches on; upstream rewrote nested maps to Scope too, so a
+// context variable was not a context anywhere but DotOp (see NOTICE.md).
 func normalizeScope(scope Scope) Scope {
-	newScope := make(Scope)
+	newScope := make(Scope, len(scope))
 	for key, value := range scope {
-		if nestedScope, ok := value.(map[string]interface{}); ok {
-			newScope[key] = normalizeScope(nestedScope)
-		} else {
-			newScope[key] = normalizeValue(value)
-		}
+		newScope[key] = normalizeEntry(value)
 	}
 	return newScope
+}
+
+// normalizeEntry normalises one frame value, turning a context (either map
+// spelling) into a fresh map[string]any with its own entries normalised.
+func normalizeEntry(value any) any {
+	switch m := value.(type) {
+	case Scope:
+		return normalizeContext(m)
+	case map[string]any:
+		return normalizeContext(m)
+	default:
+		return normalizeValue(value)
+	}
+}
+
+func normalizeContext(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for key, value := range m {
+		out[key] = normalizeEntry(value)
+	}
+	return out
 }
 
 func NewIntepreter() *Interpreter {
@@ -238,18 +261,6 @@ func (arrNode ArrayNode) Eval(intp *Interpreter) (any, error) {
 	return arr, nil
 }
 
-func (exprList ExprList) Eval(intp *Interpreter) (any, error) {
-	var finalRet any = nil
-	for _, elem := range exprList.Elements {
-		v, err := elem.Eval(intp)
-		if err != nil {
-			return nil, err
-		}
-		finalRet = v
-	}
-	return finalRet, nil
-}
-
 func (mt MultiTests) Eval(intp *Interpreter) (any, error) {
 	for _, elem := range mt.Elements {
 		v, err := elem.Eval(intp)
@@ -263,8 +274,17 @@ func (mt MultiTests) Eval(intp *Interpreter) (any, error) {
 	return false, nil
 }
 
+// Eval builds a context literal. DMN 1.5 §10.3.2.6: an entry's value may
+// refer to the entries before it in the same literal, so each finished entry
+// is bound in a frame of its own before the next is evaluated. That frame sits
+// above the caller's scope, so an entry shadows an outer variable of the same
+// name, and nested literals see their enclosing literal's earlier entries.
+// Upstream evaluated every entry against the outer scope alone, so `{c: 1,
+// r: c}` gave r = null.
 func (mapNode MapNode) Eval(intp *Interpreter) (any, error) {
 	mapVal := make(map[string]any)
+	intp.PushEmpty()
+	defer intp.Pop()
 	for _, item := range mapNode.Values {
 
 		v, err := item.Value.Eval(intp)
@@ -272,39 +292,77 @@ func (mapNode MapNode) Eval(intp *Interpreter) (any, error) {
 			return nil, err
 		}
 		mapVal[item.Name] = v
+		intp.Bind(item.Name, v)
 	}
 	return mapVal, nil
 }
 
+// Eval is a path expression on a single value. DMN 1.5 §10.3.2.6 selects
+// the entry named Attr from a context; a context without that entry has
+// nothing to select, so the path is null (`{a: 1}.b` is null), and a path
+// continuing from that null is null too (`{a: 1}.b.c`), as null propagates
+// through every FEEL operator. A date, time, duration or range answers the
+// properties Table 65 lists for its type; any other name on it, and any name
+// on a value with no properties at all (`5.x`, `"abc".length`), selects
+// nothing and is null — see selectProperty.
+//
+// VERDICT DIVERGENCE: upstream raised "key not found" for a missing entry or
+// attribute and "type mismatch, expect map" for a path on null or on a value
+// with no attributes. See NOTICE.md.
 func (dotop DotOp) Eval(intp *Interpreter) (any, error) {
 	leftVal, err := dotop.Left.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-	if mapVal, ok := leftVal.(Scope); ok {
-		if val, found := mapVal[dotop.Attr]; found {
-			return val, nil
-		} else {
-			return nil, NewErrKeyNotFound(dotop.Attr)
-		}
-	} else if mapVal, ok = leftVal.(map[string]interface{}); ok {
-		// todo: consolidate duplicate code as above, same as for 'Scope'
-		if val, found := mapVal[dotop.Attr]; found {
-			return val, nil
-		} else {
-			return nil, NewErrKeyNotFound(dotop.Attr)
-		}
-	} else if obj, ok := leftVal.(HasAttrs); ok {
-		if v, found := obj.GetAttr(dotop.Attr); found {
-			return normalizeValue(v), nil
-		} else {
-			//return nil, NewEvalError(-4001, "attr error", fmt.Sprintf("cannot get attr %s", dotop.Attr))
-			return nil, NewErrKeyNotFound(dotop.Attr)
-
-		}
-	} else {
-		return nil, NewErrTypeMismatch("map")
+	if list, ok := leftVal.([]any); ok {
+		return dotop.project(intp, list)
 	}
+	v, _ := selectProperty(leftVal, dotop.Attr)
+	return v, nil
+}
+
+// project is a path over a list (DMN 1.5 §10.3.2.5): "a selection using the
+// "." operator with a list of contexts on its left hand side returns a list of
+// selections", FEEL(f, c') for each element e' with c' augmented by the entries
+// of e' — so an element without the entry gives null
+// (`[{x:1, y:2}, {x:2}].y = [2, null]`). **Interpretation:** an element that is
+// not a context contributes no entries, so it selects null too, unless it has
+// the attribute (a date's `year`) — the same selectProperty a single value
+// uses. Every element is charged against the iteration budget.
+//
+// VERDICT DIVERGENCE: upstream raised "type mismatch, expect map" for a path
+// on any list. See NOTICE.md.
+func (dotop DotOp) project(intp *Interpreter, list []any) (any, error) {
+	if err := intp.chargeIterations(uint64(len(list))); err != nil {
+		return nil, err
+	}
+	out := make([]any, len(list))
+	for i, elem := range list {
+		out[i], _ = selectProperty(elem, dotop.Attr)
+	}
+	return out, nil
+}
+
+// selectProperty is `v.name` for a v that is not a list: the entry of a
+// context (Table 64) or the named property of a date, time, date and time,
+// duration or range (Table 65). found reports whether v has such an entry or
+// property — `is defined` asks it. A value without one, null and a value with
+// no properties at all included, selects null: DMN 1.5 gives `e.name` no
+// meaning outside those types, and an expression with no meaning is null
+// (§10.3.2.15), as it already was for a missing context entry.
+func selectProperty(v any, name string) (val any, found bool) {
+	if m, ok := asContext(v); ok {
+		if val, found := m[name]; found {
+			return val, true
+		}
+		return null, false
+	}
+	if obj, ok := v.(HasAttrs); ok {
+		if val, found := obj.GetAttr(name); found {
+			return normalizeValue(val), true
+		}
+	}
+	return null, false
 }
 
 func (ifExpr IfExpr) Eval(intp *Interpreter) (any, error) {
@@ -503,6 +561,11 @@ func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 	intp.PushEmpty()
 	results := make([]any, 0)
 	for _, val := range aList {
+		// A fresh frame per element, so a function the body defines closes
+		// over this element's binding, not the frame the next element
+		// overwrites (§10.3.2.13.2): (for t in [1, 2] return function(x)
+		// x + t)[1](10) is 11.
+		intp.ScopeStack[len(intp.ScopeStack)-1] = Scope{}
 		intp.Bind(fe.Varname, val)
 
 		res, err := fe.ReturnExpr.Eval(intp)
@@ -604,25 +667,66 @@ func (ee EveryExpr) Eval(intp *Interpreter) (any, error) {
 	return quantify(intp, ee.Varname, ee.ListExpr, ee.FilterExpr, false)
 }
 
+// Eval makes a function value that closes over the current scope. DMN 1.5
+// §10.3.2.13.2: FEEL(function(X1, ... Xn) body, s) is function(argument list,
+// body, scope: s), and a call evaluates body in insert before(s, 1, c), c
+// being the arguments — so a free name in the body resolves where the
+// function was written, not where it is called. Only the stack's frame
+// pointers are copied (one slice of len(ScopeStack)), never a frame's entries.
+//
+// VERDICT DIVERGENCE: upstream kept only Args and Body, so a call resolved
+// free names at the call site (dynamic scope). See NOTICE.md.
 func (fd FunDef) Eval(intp *Interpreter) (any, error) {
 	return &FunDef{
-		Args: fd.Args,
-		Body: fd.Body,
+		Args:       fd.Args,
+		ParamTypes: fd.ParamTypes,
+		Body:       fd.Body,
+		closure:    append([]Scope(nil), intp.ScopeStack...),
+		textRange:  fd.textRange,
 	}, nil
 }
 
-func (fd FunDef) EvalCall(intp *Interpreter, args []any) (any, error) {
-	if len(args) != len(fd.Args) {
-		return nil, errors.New("eval call argument size mismatch")
+// invoke evaluates the body under the closure with frame — the bound
+// arguments — on top, then restores the caller's stack. The closure is
+// re-sliced to its length so the append always allocates: two calls of one
+// function value, concurrent or nested, never share a backing array, and the
+// captured frames are read, never written. A FunDef without a closure (one
+// not produced by Eval) keeps the caller's stack, as upstream did.
+func (fd *FunDef) invoke(intp *Interpreter, frame Scope) (any, error) {
+	saved := intp.ScopeStack
+	base := saved
+	if fd.closure != nil {
+		base = fd.closure
 	}
-	intp.PushEmpty()
-	defer intp.Pop()
-	for i, argName := range fd.Args {
-		intp.Bind(argName, args[i])
-	}
+	intp.ScopeStack = append(base[:len(base):len(base)], frame)
+	defer func() { intp.ScopeStack = saved }()
 	return fd.Body.Eval(intp)
 }
 
+// EvalCall applies fd to positional arguments, as a built-in such as `sort`
+// does. An argument that does not conform to its parameter's declared type
+// makes the result null without running the body (§10.3.2.13.2).
+func (fd *FunDef) EvalCall(intp *Interpreter, args []any) (any, error) {
+	if len(args) != len(fd.Args) {
+		return nil, errors.New("eval call argument size mismatch")
+	}
+	frame := make(Scope, len(fd.Args))
+	for i, argName := range fd.Args {
+		frame[argName] = normalizeValue(args[i])
+	}
+	if ok, err := fd.conformFrame(intp, frame); !ok || err != nil {
+		return null, err
+	}
+	return fd.invoke(intp, frame)
+}
+
+// Eval invokes the function FunRef evaluates to.
+//
+// VERDICT DIVERGENCE: upstream raised "type mismatch, expect function" when
+// FunRef was not a function — a number (`5(1)`), null (`null(1)`), an unbound
+// name (`nofn(a)`, a misspelt built-in) or a context entry holding a value
+// (`{a: 1}.a(2)`). DMN 1.5 §10.3.2.13.2: "If f is not a function ... the
+// result of the invocation is null". The arguments are not evaluated.
 func (fc FunCall) Eval(intp *Interpreter) (any, error) {
 	v, err := fc.FunRef.Eval(intp)
 	if err != nil {
@@ -636,7 +740,7 @@ func (fc FunCall) Eval(intp *Interpreter) (any, error) {
 	case *Macro:
 		return fc.EvalMacro(intp, r)
 	default:
-		return nil, NewErrTypeMismatch("function")
+		return null, nil
 	}
 }
 
@@ -649,9 +753,13 @@ func (fc FunCall) Eval(intp *Interpreter) (any, error) {
 // absent; a named variadic parameter (`count(list: [1, 2])`) was dropped. DMN
 // 1.5 §10.3.4 makes a standard built-in invoked outside its domain null, and
 // TCK 1140, 1145 and 1155 pin a wrong argument count and an unknown parameter
-// name as null: so a standard built-in (see NativeFun.standard) yields null
-// for any of them, and every other native function raises, unknown names
-// included. A named variadic parameter is passed through as its value.
+// name as null; §10.3.2.13.2 makes any invocation whose arguments do not
+// conform to the parameters null, and an application function — which is how
+// a BKM or decision service is invoked from FEEL — is "equivalent to a FEEL
+// function". So every native function yields null for any of them, unknown
+// names included. A named variadic parameter is passed through as its value.
+// An error evaluating an argument, or raised by the function itself, still
+// propagates.
 func (fc FunCall) EvalNativeFun(intp *Interpreter, funDef *NativeFun) (any, error) {
 	if len(funDef.overloads) > 0 {
 		return fc.evalOverloaded(intp, funDef)
@@ -660,10 +768,7 @@ func (fc FunCall) EvalNativeFun(intp *Interpreter, funDef *NativeFun) (any, erro
 	if err != nil {
 		var bad *argBindingError
 		if errors.As(err, &bad) {
-			if funDef.standard {
-				return null, nil
-			}
-			return nil, bad.err
+			return null, nil
 		}
 		return nil, err
 	}
@@ -741,7 +846,7 @@ func (fc FunCall) bindNativeArgs(intp *Interpreter, funDef *NativeFun) (map[stri
 }
 
 // evalOverloaded calls a built-in declared with NativeFun.Overloads. A call
-// that fits no overload is null for a standard built-in (see EvalNativeFun).
+// that fits no overload is null (see EvalNativeFun).
 func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, error) {
 	var args map[string]any
 	var err error
@@ -752,7 +857,7 @@ func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, err
 		}
 		args, err = funDef.bindOverload(nil, named)
 		if err != nil {
-			return funDef.bindFailure(err)
+			return null, nil
 		}
 	} else {
 		positional := make([]any, len(fc.Args))
@@ -762,7 +867,7 @@ func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, err
 			}
 		}
 		if args, err = funDef.bindOverload(positional, nil); err != nil {
-			return funDef.bindFailure(err)
+			return null, nil
 		}
 	}
 	return funDef.Call(intp, args)
@@ -783,12 +888,30 @@ func (fc FunCall) evalArgsToMap(intp *Interpreter) (map[string]any, error) {
 	return kwArgMap, nil
 }
 
+// EvalMacro binds a call's unevaluated arguments to a macro's parameters and
+// calls it.
+//
+// VERDICT DIVERGENCE: upstream raised on too few or too many arguments and on
+// a missing keyword, and ignored a keyword no parameter had. DMN 1.5 §10.3.4
+// makes a built-in invoked outside its domain null, as EvalNativeFun does for
+// native built-ins: so a standard (prelude) macro — `sort`, `is defined` —
+// yields null for any of them, and an unknown keyword is a misfit too. An
+// error raised by the macro itself, such as one from evaluating an argument
+// or from inside a `sort` predicate's body, still propagates.
 func (fc FunCall) EvalMacro(intp *Interpreter, macro *Macro) (any, error) {
-	if len(macro.requiredArgNames) > len(fc.Args) {
-		return nil, NewErrTooFewArguments(macro.requiredArgNames[len(fc.Args):])
-		//return nil, NewEvalError(-1005, "number of args of macro mismatch")
+	argNodes, varArgs, err := fc.bindMacroArgs(macro)
+	if err != nil {
+		if macro.standard {
+			return null, nil
+		}
+		return nil, err
 	}
+	return macro.fn(intp, argNodes, varArgs)
+}
 
+// bindMacroArgs fits a call's argument nodes to a macro's parameters; an
+// error means they do not fit.
+func (fc FunCall) bindMacroArgs(macro *Macro) (map[string]Node, []Node, error) {
 	argNodes := make(map[string]Node)
 	var varArgs []Node
 	if fc.keywordArgs {
@@ -796,68 +919,71 @@ func (fc FunCall) EvalMacro(intp *Interpreter, macro *Macro) (any, error) {
 		for _, argNode := range fc.Args {
 			kwArgMap[argNode.argName] = argNode.arg
 		}
-
 		for _, argName := range macro.requiredArgNames {
-			if ast, ok := kwArgMap[argName]; ok {
-				argNodes[argName] = ast
-			} else {
-				//return nil, NewEvalError(-5001, "no keyword argument", fmt.Sprintf("no keyword argument %s", argName))
-				return nil, NewErrKeywordArgument(argName)
+			ast, ok := kwArgMap[argName]
+			if !ok {
+				return nil, nil, NewErrKeywordArgument(argName)
 			}
+			argNodes[argName] = ast
 		}
-
 		for _, argName := range macro.optionalArgNames {
 			if ast, ok := kwArgMap[argName]; ok {
 				argNodes[argName] = ast
 			}
 		}
-	} else {
-		if len(fc.Args) < len(macro.requiredArgNames) {
-			//reqArgs := strings.Join(macro.requiredArgNames[len(fc.Args):len(macro.requiredArgNames)], ", ")
-			//return nil, NewEvalError(-5003, "too few arguments", fmt.Sprintf("more arguments required: %s", reqArgs))
-			return nil, NewErrTooFewArguments(macro.requiredArgNames[len(fc.Args):])
-		}
-		for i, argNode := range fc.Args {
-			if i < len(macro.requiredArgNames) {
-				argNodes[macro.requiredArgNames[i]] = argNode.arg
-			} else if i < len(macro.requiredArgNames)+len(macro.optionalArgNames) {
-				argNodes[macro.optionalArgNames[i-len(macro.requiredArgNames)]] = argNode.arg
-			} else if macro.varArgName != "" {
-				varArgs = append(varArgs, argNode.arg)
-			} else {
-				//return nil, NewEvalError(-5002, "too many arguments")
-				return nil, NewErrTooManyArguments()
+		for argName := range kwArgMap {
+			if _, ok := argNodes[argName]; !ok {
+				return nil, nil, NewErrKeywordArgument(argName)
 			}
 		}
+		return argNodes, nil, nil
 	}
-	return macro.fn(intp, argNodes, varArgs)
+	if len(fc.Args) < len(macro.requiredArgNames) {
+		return nil, nil, NewErrTooFewArguments(macro.requiredArgNames[len(fc.Args):])
+	}
+	for i, argNode := range fc.Args {
+		if i < len(macro.requiredArgNames) {
+			argNodes[macro.requiredArgNames[i]] = argNode.arg
+		} else if i < len(macro.requiredArgNames)+len(macro.optionalArgNames) {
+			argNodes[macro.optionalArgNames[i-len(macro.requiredArgNames)]] = argNode.arg
+		} else if macro.varArgName != "" {
+			varArgs = append(varArgs, argNode.arg)
+		} else {
+			return nil, nil, NewErrTooManyArguments()
+		}
+	}
+	return argNodes, varArgs, nil
 }
 
+// EvalFunDef invokes a user-defined function.
+//
+// VERDICT DIVERGENCE: upstream raised on too few or too many arguments, and
+// when the count matched it ignored a named argument no parameter had and
+// bound the parameter it displaced to null, so `function(a, b)` called as
+// `f(a: 1, z: 2)` ran with b null. DMN 1.5 §10.3.2.13.2: if the arguments do
+// not conform to the argument list the result of the invocation is null; so a
+// wrong count, or a name that is not a parameter, is null and the body is not
+// run. An error evaluating an argument still propagates. So, too, is an
+// argument that does not conform to its parameter's declared type (grammar
+// rule 56; see FunDef.conformFrame).
 func (fc FunCall) EvalFunDef(intp *Interpreter, funDef *FunDef) (any, error) {
-	if len(funDef.Args) > len(fc.Args) {
-		//return nil, NewEvalError(-1004, "number of args mismatch")
-		return nil, NewErrTooFewArguments(funDef.Args[len(fc.Args):])
-	} else if len(funDef.Args) < len(fc.Args) {
-		return nil, NewErrTooManyArguments()
+	if len(funDef.Args) != len(fc.Args) {
+		return null, nil
 	}
-	//var args []any
-	intp.PushEmpty()
-	defer intp.Pop()
-
+	// The arguments are evaluated in the caller's scope; only the body runs
+	// under the function's closure (§10.3.2.13.2).
+	frame := make(Scope, len(funDef.Args))
 	if fc.keywordArgs {
 		kwArgMap, err := fc.evalArgsToMap(intp)
 		if err != nil {
 			return nil, err
 		}
-
 		for _, argName := range funDef.Args {
-			if v, ok := kwArgMap[argName]; ok {
-				//argVals = append(argVals, v)
-				intp.Bind(argName, v)
-			} else {
-				//return nil, NewEvalError(-5001, "no keyword argument", fmt.Sprintf("no keyword argument %s", argName))
-				intp.Bind(argName, null)
+			v, ok := kwArgMap[argName]
+			if !ok {
+				return null, nil
 			}
+			frame[argName] = normalizeValue(v)
 		}
 	} else {
 		for i, argNode := range fc.Args {
@@ -865,11 +991,13 @@ func (fc FunCall) EvalFunDef(intp *Interpreter, funDef *FunDef) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			intp.Bind(funDef.Args[i], a)
+			frame[funDef.Args[i]] = normalizeValue(a)
 		}
 	}
-	ret, err := funDef.Body.Eval(intp)
-	return ret, err
+	if ok, err := funDef.conformFrame(intp, frame); !ok || err != nil {
+		return null, err
+	}
+	return funDef.invoke(intp, frame)
 }
 
 func EvalString(input string) (any, error) {

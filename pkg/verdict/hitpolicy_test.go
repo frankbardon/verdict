@@ -87,9 +87,28 @@ func TestHitPolicies(t *testing.T) {
 		{"collect_max_mixed", 25, nil},
 		{"collect_max_mixed", 5, 5.0},
 
+		// C+ is FEEL sum (DMN 1.5 §10.3.2.10): a non-number or a null output
+		// is outside sum's domain, so the result is null, not an error.
+		{"collect_sum_mixed", 5, 5.0},
+		{"collect_sum_mixed", 15, nil},
+		{"collect_sum_mixed", 25, nil},
+
+		// C# is FEEL count: every hit counts, whatever its kind, null included.
+		{"collect_count_null", 5, 1.0},
+		{"collect_count_null", 15, 2.0},
+
 		// An empty collect is the empty list, not null.
 		{"collect_table", -1, []any{}},
-		{"collect_count", -1, 0.0},
+
+		// An aggregating collect with no hit is the default output, else null:
+		// §10.3.2.10 settles the no-hit case before aggregating, so C# with
+		// no hits is null, not count([]) = 0.
+		{"collect_sum", -1, nil},
+		{"collect_min", -1, nil},
+		{"collect_max", -1, nil},
+		{"collect_count", -1, nil},
+		{"collect_count_defaulted", -1, 0.0},
+		{"collect_count_defaulted", 5, 1.0},
 
 		// A defaulted table falls back rather than erroring.
 		{"defaulted", 5, "low"},

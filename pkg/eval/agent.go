@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -338,7 +339,8 @@ func coerceToType(v any, spec model.TypeSpec) (any, error) {
 			return nil, fmt.Errorf("expected an object with fields %s, got %T", fieldNames(spec.Components), v)
 		}
 		out := make(map[string]any, len(spec.Components))
-		for name, comp := range spec.Components {
+		for _, name := range sortedFieldNames(spec.Components) {
+			comp := spec.Components[name]
 			raw, present := obj[name]
 			if !present {
 				return nil, fmt.Errorf("missing field %q", name)
@@ -355,6 +357,12 @@ func coerceToType(v any, spec model.TypeSpec) (any, error) {
 	if len(spec.Enumeration) > 0 {
 		s, ok := v.(string)
 		if !ok {
+			// A non-string answer is matched by its boundary text, the form
+			// every JSON surface and Request.Inputs give a value (feel.ToGo):
+			// 0.1 reads "0.1" rather than the full binary expansion a FEEL
+			// number made from a float64 prints, and nil reads "<nil>". This
+			// is a rendering, not a coercion, so it stays the one place a
+			// value passes through ToGo on the way in.
 			s = fmt.Sprint(feel.ToGo(feel.FromGo(v)))
 		}
 		s = strings.TrimSpace(s)
@@ -478,6 +486,9 @@ func coerceTemporal(v any, want string) (any, error) {
 	return nil, fmt.Errorf("expected %s, got %T", want, v)
 }
 
+// toSlice and toMap accept any Go list or map shape. A typed container is
+// converted once, by feel.FromGo, and each element is then coerced by
+// coerceToType exactly as it would be at the top level (#69).
 func toSlice(v any) ([]any, bool) {
 	switch x := v.(type) {
 	case []any:
@@ -485,7 +496,7 @@ func toSlice(v any) ([]any, bool) {
 	case nil:
 		return nil, false
 	}
-	if converted, ok := feel.ToGo(feel.FromGo(v)).([]any); ok {
+	if converted, ok := feel.FromGo(v).([]any); ok {
 		return converted, true
 	}
 	return nil, false
@@ -506,16 +517,27 @@ func toMap(v any) (map[string]any, bool) {
 	case nil:
 		return nil, false
 	}
-	if converted, ok := feel.ToGo(feel.FromGo(v)).(map[string]any); ok {
+	if converted, ok := feel.FromGo(v).(map[string]any); ok {
 		return converted, true
 	}
 	return nil, false
 }
 
+// fieldNames lists a structured output's field names for an error message.
+// TypeSpec.Components is a map, so the declared order is not kept; the names
+// are sorted so the message is the same on every run.
 func fieldNames(components map[string]model.TypeSpec) string {
+	return strings.Join(sortedFieldNames(components), ", ")
+}
+
+// sortedFieldNames returns the component names in sorted order, so that
+// field checks run, and report the first failing field, the same way on
+// every run.
+func sortedFieldNames(components map[string]model.TypeSpec) []string {
 	names := make([]string, 0, len(components))
 	for k := range components {
 		names = append(names, k)
 	}
-	return strings.Join(names, ", ")
+	sort.Strings(names)
+	return names
 }

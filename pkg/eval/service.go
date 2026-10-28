@@ -12,7 +12,7 @@ import (
 // bindServices exposes every decision service in the model as a callable FEEL
 // function.
 //
-// DMN 1.5 §7.4 makes a decision service invocable from an expression, and that
+// DMN 1.5 §10.3.2.13.2 makes a decision service invocable from an expression, and that
 // is how large models decompose without flattening: a service is a named,
 // contract-bearing slice of the graph, and a decision in another slice invokes
 // it by name rather than reaching into its internals.

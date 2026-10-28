@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 )
 
@@ -213,11 +214,52 @@ func (n Number) Compare(other Number) int {
 	return n.v.Cmp(other.v)
 }
 
+// significantDigits is how many significant digits a Number prints at:
+// decimal128's 34 (DMN 1.5 §10.3.2.3.1).
+const significantDigits = 34
+
+// String prints the number rounded to 34 significant digits as a plain
+// decimal, never in exponent form, with trailing fractional zeros and a
+// trailing point trimmed: 10 is "10", 1.50 is "1.5", 10 ** -40 is
+// "0.0000000000000000000000000000000000000001". Zero, negative zero
+// included, is "0".
 func (n Number) String() string {
-	s := n.v.Text('f', 18)
-	s = strings.TrimRight(s, "0")
-	s = strings.TrimRight(s, ".")
-	return s
+	if n.v.IsInf() {
+		return n.v.Text('g', 10)
+	}
+	if n.v.Sign() == 0 {
+		return "0"
+	}
+	// 'e' rounds the exact binary value to the requested significant
+	// digits: "-d.ddd…e±XX".
+	s := n.v.Text('e', significantDigits-1)
+	neg := s[0] == '-'
+	if neg {
+		s = s[1:]
+	}
+	mant, exps, _ := strings.Cut(s, "e")
+	exp, _ := strconv.Atoi(exps)
+	digits := strings.TrimRight(strings.Replace(mant, ".", "", 1), "0")
+	// The value is 0.digits × 10^point.
+	point := exp + 1
+	var b strings.Builder
+	if neg {
+		b.WriteByte('-')
+	}
+	switch {
+	case point <= 0:
+		b.WriteString("0.")
+		b.WriteString(strings.Repeat("0", -point))
+		b.WriteString(digits)
+	case point >= len(digits):
+		b.WriteString(digits)
+		b.WriteString(strings.Repeat("0", point-len(digits)))
+	default:
+		b.WriteString(digits[:point])
+		b.WriteByte('.')
+		b.WriteString(digits[point:])
+	}
+	return b.String()
 }
 
 func (n Number) MarshalJSON() ([]byte, error) {

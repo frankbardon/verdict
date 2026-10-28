@@ -130,7 +130,7 @@ Pick the policy that says what you mean; do not encode it in the rules.
 | `P` PRIORITY | Most-preferred output wins, ranked by `outputValues` | Precedence is about *outcomes*, not row order |
 | `F` FIRST | First matching rule in row order | Precedence is genuinely positional, e.g. a catch-all last row |
 | `C` COLLECT | List of every match | Collecting reasons, flags, applicable rules |
-| `C+` `C<` `C>` `C#` | Collect and sum / min / max / count. `C<`/`C>` order as FEEL `min`/`max`: null over booleans, mixed kinds or a null output | Stacking discounts, worst-case limits, counting hits |
+| `C+` `C<` `C>` `C#` | FEEL `sum` / `min` / `max` / `count` of the matches: null (never an error) outside the built-in's domain — `C+` over a non-number or null output, `C<`/`C>` over booleans, mixed kinds or a null. No hits: the default output, else null (`C#` too) | Stacking discounts, worst-case limits, counting hits |
 | `R` RULE ORDER | Every match, in row order | The order rules were written is meaningful |
 | `O` OUTPUT ORDER | Every match, ranked by `outputValues` | A ranked list of outcomes |
 
@@ -166,23 +166,55 @@ Applicant.credit_score >= 740                     // comparison
 -balance   rate ** years                          // negation, exponentiation
 if x then "a" else "b"                            // conditional
 value in ["low", "medium", "high"]                // membership
+x in (1, < 5, >= 10)   x in != 0                  // in takes unary tests; binds like =, so x in [5] and b is (x in [5]) and b
 decimal(amount * 1.2, 2)                          // round to 2 places
 modulo(-10.1, 4.5) = 3.4   sqrt(-1) = null           // numeric fns: exact decimals; null on null, non-number or out-of-domain args
 sqrt(2)   log(10)   exp(1)   odd(9007199254740993)  // 34 significant digits; odd/even exact on any integer
+odd(1.5) = null   even(2.5) = null                  // odd/even of a non-integer is null (interpretation; spec silent)
+string(1/3) = "0.3333333333333333333333333333333333"   // numbers print at 34 significant digits, plain decimal (never 1E-40), zeros trimmed
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
+count([]) = 0   mode([]) = []   sum([]) = null   mean([]) = null   // empty list: null for sum/product/mean/median/stddev/min/max
+sum([1, null]) = null   count([1, null]) = 2   sum(null) = null   // null/non-number item: arithmetic aggregates null; count counts it
+median([6, 1, 2, 3]) = 2.5   stddev([2, 4, 7, 5])   mode([6, 1, 9, 6, 1]) = [1, 6]   // stddev is the sample deviation; mode ascending
 date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
 number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
 date(2026, 2, 28)   time(10, 30, 0)   time(10, 30, 0, duration("PT2H"))   // components; bad ones null
 date(dt)   time(dt)   date and time(d, t)   number("1.000,5", ".", ",")   // Table 72 overloads
 [1..10]  [1..10)  [1..10[  (1..10]  ]1..10]           // both bracket spellings
+overlaps([1..10], [3..4]) = true   overlaps before([3..4], [1..5]) = false   // range relations: DMN Table 78 formulas
+overlaps after((5..10], [1..5]) = false   finishes([1..10], [5..10]) = false   // open/closed endpoints count
+starts([1..10), [1..10]) = true   finished by([1..10], (1..10]) = true   // starts/started by: same start, ends no later; finishes/finished by mirrored
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
-string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; strings nested in lists/contexts quoted
+matches(s, "^\\d+$")   "a\tb"   "\u00e9"   "\uD83D\uDC0E"   // escapes \' \" \\ \n \r \t \uXXXX \UXXXXXX decode; others stay verbatim
+string length("🐎ab") = 3                         // lengths and positions count characters (code points), not bytes
+string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; nested strings and non-name keys as FEEL literals, so the result parses back
 context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key; context put/merge override instead
+{c: 1, r: c + 1} = {c: 1, r: 2}   {a: 2, n: {b: a + 1}}.n.b = 3   // an entry sees earlier entries of its literal; shadows outer names
 context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list
+context put(Applicant, "k", 1)   Applicant = {name: "A", age: 30}   // a context input is a context to =, built-ins, string()
+get entries({b: 1, a: 2}) = [{key: "a", value: 2}, {key: "b", value: 1}]   get entries(m)[1].key   // a FEEL list, entries in key order
 list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, negative from the end
+xs[1]   xs[-1]   [1, 2, 3][4] = null   [1, 2, 3][0] = null   // index from 1, negative from the end; out of range or fractional: null
+is defined([1, 2][9]) = false   is defined([1, null][2]) = true   is defined(x.y) = false   // exists, null included; x unbound or without y: false
+xs[item > 2]   people[age >= 18]   people[item.age >= 18]   // filter: item bound, a context's entries by name; false/null drops
+people.name = ["A", "B"]   get entries(m)[key = "y"].value   // a path on a list of contexts projects; missing entry: null
+{a: 1}.b = null   {a: 1}["b"] = null   {a: 1}.b.c = null   // a missing context entry selects null, never an error; is defined({a: 1}.b) = false
+[1..5].start = 1   [1..5).end included = false   5.x = null   date("2020-01-01").foo = null   // range properties; a property a value lacks is null
+list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]   // match form: replace each item match(item, newItem) is true for
+{t: 5, f: function(x) x + t}.f(1) = 6   (for t in [1, 2] return function(x) x + t)[2](10) = 12   // functions close over where they are defined, not where they are called
+function(a: string, b) a   (function(a: number) a)("x") = null   (function(a: number) a)([7]) = 7   // typed params: a non-conforming argument (after singleton-list/date conversion) is null; null conforms to any type; an itemDefinition type name is not checked
+sort(list: xs, precedes: function(x, y) x < y)   sort([3,1], function(x) x) = null   sort() = null   is defined(1, 2) = null   // built-ins (sort, is defined too) are null on a wrong argument count, unknown name or out-of-domain arg; an error inside a predicate still fails; a non-boolean precedes result is not-before (sort([3,1,2], function(x,y) 1) = [3,1,2])
+5(1) = null   nofn(x) = null   sumx([1]) = null   (function(x) x)(1, 2) = null   // calling a non-function (a misspelt built-in too) or misfitting a function's parameters — a BKM, decision service or library function too — is null, not an error
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
 all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null
 1 in 1   "a" in "a"                                   // a non-list, non-range right side is `=`
+x instance of number   d instance of date and time   // type check; binds tighter than arithmetic: 1 + 1 instance of number is 1 + (true) = null
+xs instance of list<number>   r instance of range<date>   f instance of function<number, number>->Any   // functions: arity, then each declared param type Ti must accept Si; untyped params are Any
+m instance of context<age: number>   m instance of context<>   // extra entries allowed; context<> is any context
+null instance of number = false   null instance of Any = false   null instance of Null = true   // only Null admits null; [null] instance of list<number> = true
+123 instance of list = null   x instance of tMyType = null   // an unparameterised generic or an itemDefinition name maps to no type: null
+x between 1 and 5   d between date("2020-01-01") and date("2020-12-31")   // e >= lo and e <= hi, inclusive; a comparison, so x between 1 and 5 and b is (x between 1 and 5) and b
+"a" between 1 and 5 = null   null between 1 and 5 = null   9 between null and 5 = false   // exactly `>= and <=`: incomparable is null, but one definite false wins
 ```
 
 String, list and context built-ins return **null**, never an error, outside
@@ -196,14 +228,29 @@ elements and treats a null delimiter as none. A non-matching `substring before`
 
 Names may contain spaces (`Credit Rating`) but **not reserved words** — `and`,
 `or`, `in`, `if`, `then`, `else`, `for`, `some`, `every`, `return`, `satisfies`.
-`Rent and Rates` will not resolve; rename it.
+`Rent and Rates` will not resolve; rename it. `instance` and `of` are not
+reserved (`Date of Birth` resolves), but `instance of` together ends a name.
+`between` is not reserved either (`days between dates` resolves), but a name
+ends where `between <expression> and` follows.
+
+Name characters follow DMN 1.5 grammar rules 28-29 (XML 1.0 name characters plus
+`?`): `Prénom`, `Größe`, `имя`, `Approved?` and `Driver’s Age` all resolve. A
+lone `?` is still the unary-test input (`? = Approved?`). `-`, `+`, `*`, `/` and
+`.` are always operators, never part of a name: `a-b` is `a` minus `b`, so name
+a variable `a_b` or `a b` instead.
+
+A cell or literal expression is **one** expression: `3 4`, `"a" "b"`, `x between 1`
+or `1; 2` is a syntax error (`VERDICT_LOAD_013`), not the last value. Lists of
+unary tests use commas (`1, 2, 3`, `not(1, 2)`).
 
 Two dialects, selected per model with `conformanceLevel`:
 
 - `s-feel` (Conformance Level 2) — literals, arithmetic, comparisons, ranges,
-  lists, `and`/`or`, qualified names. Rejects `if`, `for`, `some`, `every` and
-  inline functions **at parse time**. Use it for decision-table-only models that
-  must interoperate with Level 2 tooling.
+  lists, `and`/`or`, qualified names. Rejects `if`, `for`, `some`, `every`,
+  `instance of`, `between`, the `in` operator and inline functions **at parse
+  time** (unary-test cells such as `[1..5]`, `1, 2` and `not(3)` stay
+  allowed). Use it for decision-table-only models that must interoperate with
+  Level 2 tooling.
 - `feel` (Conformance Level 3, the default) — the full language.
 
 ## Authoring: agent decisions
@@ -291,7 +338,8 @@ opens as an empty canvas.
   output clause binds `"excellent"`; two or more bind `{credit rating: ..., fee: ...}`.
 - **`PRIORITY` ranks by `outputValues` order**, not row order. First in the list
   wins.
-- **A COLLECT SUM table that matches nothing** yields null, not zero. Give it
+- **A COLLECT SUM or COUNT table that matches nothing** yields null, not zero
+  (DMN 1.5 §10.3.2.10 resolves no-hit before aggregating). Give it
   `<defaultOutputEntry>0</defaultOutputEntry>` unless null is what you mean.
 - **`/` is decimal division.** `1 / 3` is `0.333…`, not `0`. Dividing by zero is
   null, not an error.
@@ -343,6 +391,8 @@ opens as an empty canvas.
 - **`x in [list]` is `x = e1 or x = e2 or …`, three-valued.** `3 in [1, 2]` is
   false and `1 in [1, "a"]` true, but `"a" in [1, 2]` is null (each `=` is
   null), so `not("a" in [1, 2])` is null too. `null in [1, null]` is true.
+  A range element is membership, not `=`: `1 in [[2..4], [1..3]]` is true and
+  `5 in [[1..3], 7]` false; a range input still matches an equal range element.
 - **`min` and `max` need comparable items of one kind.** Numbers, strings,
   temporals or durations of one kind: `max(3, 1, 2)` is `3`. An empty list, a
   null item, a mixed list (`min([1, "a"])`) or items with no order (booleans,
@@ -433,8 +483,22 @@ opens as an empty canvas.
   likewise for `time`. A fraction of a second prints only when it is non-zero,
   with trailing zeros trimmed: `string(time("10:00:00.500"))` is `"10:00:00.5"`,
   `string(time("10:00:00.000"))` is `"10:00:00"`.
+- **Temporal properties are DMN Table 65's, as numbers.** A date has `.year`,
+  `.month`, `.day`, `.weekday` (ISO 8601: 1 is Monday, 7 is Sunday, so
+  `date("2020-01-01").weekday` is 3); a date and time adds `.hour`, `.minute`,
+  `.second` (a decimal: `time("10:00:00.5").second` is 0.5), `.time offset`
+  and `.timezone`; a time has the last five. A years and months duration has
+  `.years`/`.months`, a days and time one `.days`/`.hours`/`.minutes`/`.seconds`,
+  normalised and signed (`duration("-P1Y2M").years` is -1). Any other name —
+  `duration("P1D").years`, `date(...).hour` — is null, and `is defined` of it
+  is false.
 - **`today()` is the UTC date**, not the host's: with `feel.timezone` set (the
   engine clock's zone, UTC by default) it is the date in that zone.
+- **`now()` and Go `time.Time` inputs keep their IANA zone.** Under
+  `feel.timezone: Europe/Paris`, `now()` is `...@Europe/Paris` and
+  `now().timezone` is `"Europe/Paris"`; under UTC it is `...Z` and `.timezone`
+  is null. A Go time in `time.Local`, a `time.FixedZone`, or the occurrence of a
+  DST fall-back hour the id cannot name carries its offset only (`.timezone` null).
 - **`some` / `every` are booleans.** `some h in xs satisfies h > 1` is true,
   false or null — null when no element decides it and some condition was null.
   `some` over `[]` is false, `every` over `[]` is true. Several iteration
@@ -468,6 +532,12 @@ opens as an empty canvas.
   duration stays a duration and a number keeps every decimal digit. Only
   `Result.Outputs` and the trace are narrowed to plain Go/JSON (temporals and
   durations as FEEL lexical strings, numbers as `float64`).
+- **A misfitting BKM or service call from FEEL is null, not an error.** Too
+  many or too few arguments, or an unknown or missing parameter name
+  (`Scale(2)`, `Echo(5, 6)`, `Scale(n: 2, extra: 1)`), gives null and the body
+  does not run, so a service called that way leaves no `decisionService` trace
+  node. An error raised inside the body (budget, recursion depth) still fails
+  the evaluation (DMN 1.5 §10.3.2.13.2).
 - **An empty cell means `-`** (any), not "equals empty string".
 - **`itemDefinition` is an `xsd:choice`.** A type is *either* a constrained
   simple type (`typeRef` + `allowedValues`) *or* a structure (`itemComponent`)

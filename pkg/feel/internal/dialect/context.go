@@ -1,6 +1,9 @@
 package dialect
 
-import "reflect"
+import (
+	"reflect"
+	"sort"
+)
 
 func contextGetByKeys(ctx map[string]any, keys []string) (any, bool) {
 	for i, key := range keys {
@@ -97,14 +100,25 @@ func installContextFunctions(prelude *Prelude) {
 		}
 	}).Required("context", "key"))
 
-	prelude.Bind("get entries", wrapTyped(func(ctx map[string]any) ([](map[string]any), error) {
-		entries := make([](map[string]any), 0)
-		for k, v := range ctx {
-			ent := map[string]any{
+	// VERDICT DIVERGENCE: upstream returned a Go []map[string]any, which is
+	// not a FEEL list, so `get entries(m)[1]` raised "non-indexable value" and
+	// `get entries({y: 2}) = [{key: "y", value: 2}]` was null; it also
+	// listed the entries in Go's random map order. DMN 1.5 §10.3.4.10 Table 81:
+	// the result is a list of key-value pair contexts. The fork's contexts do
+	// not keep insertion order, so the entries come in key order, as string()
+	// writes a context.
+	prelude.Bind("get entries", wrapTyped(func(ctx map[string]any) ([]any, error) {
+		keys := make([]string, 0, len(ctx))
+		for k := range ctx {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		entries := make([]any, 0, len(keys))
+		for _, k := range keys {
+			entries = append(entries, map[string]any{
 				"key":   k,
-				"value": v,
-			}
-			entries = append(entries, ent)
+				"value": dereferencePtr(ctx[k]),
+			})
 		}
 		return entries, nil
 	}).Required("context"))

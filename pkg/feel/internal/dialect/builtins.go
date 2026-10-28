@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
+	"unicode/utf8"
 
 	"github.com/mitchellh/mapstructure"
 )
@@ -102,29 +102,6 @@ func decodeKWArgs(input map[string]any, output any) error {
 		return err
 	}
 	return decoder.Decode(input)
-}
-
-func extractList(args map[string]any, argName string) ([]any, error) {
-	if v, ok := args[argName]; ok {
-		if listV, ok := v.([]any); ok {
-			if len(listV) == 1 {
-				elem := listV[0]
-				rv := reflect.ValueOf(elem)
-				if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
-					result := make([]any, rv.Len())
-					for i := 0; i < rv.Len(); i++ {
-						result[i] = rv.Index(i).Interface()
-					}
-					return result, nil
-				}
-			}
-			return listV, nil
-		} else {
-			return nil, NewErrTypeMismatch("list")
-		}
-	} else {
-		return nil, NewErrKeyNotFound(argName)
-	}
 }
 
 // booleanItems binds the `list` parameter of all/any (and the fork's
@@ -318,30 +295,27 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return null, nil
 	}).Required("from"))
 
+	// `is defined` is not a DMN built-in; it is the Camunda FEEL extension
+	// upstream ported, with the semantics Camunda documented up to 8.2 (FEEL
+	// Scala 1.16): "A value is defined if it exists, and it is an instance of
+	// one of the FEEL data types including null" — so a name, entry,
+	// property or list element holding null is defined, one that does not
+	// exist is not. See definedLookup.
 	prelude.Bind("is defined", NewMacro(func(intp *Interpreter, args map[string]Node, varArgs []Node) (any, error) {
-		if varNode, ok := args["value"].(*Var); ok {
-			if _, ok := intp.Resolve(varNode.Name); !ok {
-				return false, nil
-			}
-		} else {
-			_, err := args["value"].Eval(intp)
-			if err != nil {
-				var evalErr *EvalError
-				if errors.As(err, &evalErr) {
-					if evalErr.Short == "key not found" || evalErr.Short == "index error" {
-						return false, nil
-					}
-				}
-				return false, err
-			}
+		_, found, err := definedLookup(intp, args["value"])
+		if err != nil {
+			return false, err
 		}
-		// TODO: more condition tests
-		return true, nil
+		return found, nil
 	}).Required("value"))
 
 	// string functions
+	// VERDICT DIVERGENCE: upstream returned len(s), the number of UTF-8
+	// bytes. DMN 1.5 §10.3.4.3 Table 73: string length is the number of
+	// characters, and a character is a code point (footnote 1), so
+	// string length("🐎ab") is 3.
 	prelude.Bind("string length", wrapTyped(func(s string) (int, error) {
-		return len(s), nil
+		return utf8.RuneCountInString(s), nil
 	}).Required("string"))
 
 	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure,
@@ -404,135 +378,13 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return false, nil
 	}).Required("list", "element"))
 
-	prelude.Bind("count", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		return len(list), nil
-	}).Vararg("list"))
-
-	prelude.Bind("min", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		return extremum(list, 1), nil
-	}).Vararg("list"))
-
-	prelude.Bind("max", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		return extremum(list, -1), nil
-	}).Vararg("list"))
-
-	prelude.Bind("sum", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		sum := Zero
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				sum = sum.Add(numEntry)
-			}
-		}
-		return sum, nil
-	}).Vararg("list"))
-
-	prelude.Bind("product", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		sum := N(1)
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				sum = sum.Mul(numEntry)
-			}
-		}
-		return sum, nil
-	}).Vararg("list"))
-
-	prelude.Bind("mean", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		sum := Zero
-		cnt := 0
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				sum = sum.Add(numEntry)
-				cnt++
-			}
-		}
-		r := sum.FloatDiv(N(cnt))
-		return r, nil
-	}).Vararg("list"))
-
-	prelude.Bind("stddev", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		sum := 0.0
-		cnt := 0
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				//sum = sum.Add(numEntry)
-				sum += numEntry.Float64()
-				cnt++
-			}
-		}
-		if cnt == 0 {
-			return 0, nil
-		}
-
-		avg := sum / float64(cnt)
-
-		dev := 0.0
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				n := numEntry.Float64()
-				dev += (n - avg) * (n - avg)
-			}
-		}
-
-		return math.Sqrt(dev / float64(cnt)), nil
-	}).Vararg("list"))
-
-	prelude.Bind("median", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		var numberList []*Number
-
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				numberList = append(numberList, numEntry)
-			}
-		}
-		if len(numberList) == 0 {
-			return nil, nil
-		} else if len(numberList) == 1 {
-			return numberList[0], nil
-		}
-
-		sort.Slice(numberList, func(i, j int) bool {
-			return numberList[i].Compare(*numberList[j]) == -1
-		})
-
-		if len(numberList)%2 == 1 {
-			return numberList[len(numberList)/2], nil
-		} else {
-			medPos := (len(numberList) / 2)
-			return numberList[medPos+1].Add(numberList[medPos]).Mul(N("0.5")), nil
-		}
-	}).Vararg("list"))
+	// VERDICT DIVERGENCE: upstream raised on a null list, skipped items that
+	// were not numbers, returned 0 for sum([]) and 1 for product([]), panicked
+	// on mean([]), divided stddev by n and median's even case picked the wrong
+	// pair, and had no mode. DMN 1.5 §10.3.4.4 Table 75; see Aggregate.
+	for _, name := range aggregateNames {
+		prelude.Bind(name, NewNativeFunc(aggregateBuiltin(name)).Vararg("list"))
+	}
 
 	// VERDICT DIVERGENCE: upstream coerced each item through boolValue, so
 	// `all([true, null])` was false and `any([123])` true, and raised on a
@@ -710,43 +562,72 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return flattened, nil
 	}).Required("list"))
 
+	// VERDICT DIVERGENCE: upstream named the second parameter `predicates`,
+	// raised on a list argument that was not a list, on a second argument
+	// that was not a user-defined function, and ("eval call argument size
+	// mismatch") on a function that did not take two arguments. DMN 1.5
+	// §10.3.4.9 Table 80: sort(list, precedes), precedes a boolean function
+	// of 2 arguments; §10.3.4 makes a parameter outside its domain null. So a
+	// null list, a non-function or a function of any other arity is null; a
+	// non-list value is a singleton list (§10.3.2.9.4, as listArg); any
+	// function value — a FunDef or a native one such as a BKM — is called
+	// through CallFunction. An error raised inside the function's body
+	// propagates. Only a boolean true means "before": upstream read the
+	// result through boolValue, so `1` or `"x"` counted as true; a
+	// non-boolean or null result is "not before", like false, as
+	// `list replace` reads a non-boolean match result as no match. The sort
+	// is stable, so a predicate whose result is never true leaves the list as
+	// it was (the spec fixes no order then).
 	prelude.Bind("sort", NewMacro(func(intp *Interpreter, args map[string]Node, varargs []Node) (any, error) {
 		vlist, err := args["list"].Eval(intp)
 		if err != nil {
 			return nil, err
 		}
-		list, ok := vlist.([]any)
-		if !ok {
-			//return nil, NewEvalError(-4080, "the first argument is not list")
-			return nil, NewErrTypeMismatch("list")
-		}
-
-		vpred, err := args["predicates"].Eval(intp)
+		vpred, err := args["precedes"].Eval(intp)
 		if err != nil {
 			return nil, err
 		}
-		predicates, ok := vpred.(*FunDef)
+		list, ok := listArg(vlist)
 		if !ok {
-			//return nil, NewEvalError(-4080, "the second argument is not function")
-			return nil, NewErrTypeMismatch("function")
+			return null, nil
+		}
+		switch p := vpred.(type) {
+		case *FunDef:
+			if len(p.Args) != 2 {
+				return null, nil
+			}
+		case *NativeFun:
+		default:
+			return null, nil
 		}
 
 		newList := append([]any{}, list...)
 		var sortErr error
-		sort.Slice(newList, func(i, j int) bool {
-			r, err := predicates.EvalCall(intp, []any{newList[i], newList[j]})
+		misfit := false
+		sort.SliceStable(newList, func(i, j int) bool {
+			if sortErr != nil || misfit {
+				return false
+			}
+			r, ok, err := CallFunction(intp, vpred, newList[i], newList[j])
 			if err != nil {
-				//panic(err)
 				sortErr = err
 				return false
 			}
-			return boolValue(r)
+			if !ok {
+				misfit = true
+				return false
+			}
+			before, isBool := r.(bool)
+			return isBool && before
 		})
 		if sortErr != nil {
 			return nil, sortErr
 		}
+		if misfit {
+			return null, nil
+		}
 		return newList, nil
-	}).Required("list", "predicates"))
+	}).Required("list", "precedes"))
 
 	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure,
 	// so a null delimiter raised, and it took two further optional arguments
@@ -886,11 +767,12 @@ func position(v any, n int) (int, bool) {
 // feelString renders a value as string() does for anything but a top-level
 // string or null (DMN 1.5 §10.3.4.1 Table 72: "convert from to a string"):
 // in FEEL's own lexical form, so true is `true`, a list `[1, "a", null]` and
-// a context `{a: 1, b: "x"}`. Strings inside a list or context are quoted and
-// escaped; temporals and durations print in their lexical form, unquoted, as
+// a context `{a: 1, b: "x"}`. Strings inside a list or context are written
+// as FEEL string literals (quoteString), so they read back as the same
+// string; temporals and durations print in their lexical form, unquoted, as
 // a top-level one does; ranges print with their endpoints. A context's
 // entries print in key order: the fork holds contexts as Go maps, which keep
-// none of their own. A key that is not a FEEL name is quoted.
+// none of their own. A key that is not a FEEL name is quoted the same way.
 //
 // VERDICT DIVERGENCE: fork-only; upstream formatted with fmt's %s.
 func feelString(v any) string {
@@ -904,7 +786,7 @@ func writeFEEL(b *strings.Builder, v any) {
 	case nil, *NullValue:
 		b.WriteString("null")
 	case string:
-		b.WriteString(strconv.Quote(x))
+		quoteString(b, x)
 	case bool:
 		b.WriteString(strconv.FormatBool(x))
 	case *Number:
@@ -932,7 +814,7 @@ func writeFEEL(b *strings.Builder, v any) {
 			if isFEELName(k) {
 				b.WriteString(k)
 			} else {
-				b.WriteString(strconv.Quote(k))
+				quoteString(b, k)
 			}
 			b.WriteString(": ")
 			writeFEEL(b, x[k])
@@ -961,21 +843,73 @@ func writeFEEL(b *strings.Builder, v any) {
 	}
 }
 
-// isFEELName reports whether a context key can be written unquoted: a FEEL
-// name start character followed by name characters, with no leading or
-// trailing space (DMN 1.5 §10.3.1.2 grammar rules 27-30, restricted to the
-// unambiguous subset).
+// isFEELName reports whether a context key can be written unquoted and read
+// back as the same key: one or more words separated by single spaces, each
+// of which this fork's scanner reads as one name token. That is the
+// unambiguous subset of DMN 1.5 §10.3.1.2 grammar rules 27-30 that the
+// scanner admits: a keyword (`true`, `and`, `for`) is not a name, a run of
+// spaces would read back as one, and a word the scanner splits or reads as
+// something else (`?` alone is the unary-test input; `a-b` and `a.b` are
+// operators; `1x` starts with a digit) would not parse. Names such as `é`,
+// `a?` and `Größe` print bare. Any other key is written as a string literal,
+// which always reads back.
 func isFEELName(k string) bool {
-	if k == "" || strings.TrimSpace(k) != k {
+	if k == "" {
 		return false
 	}
-	for i, r := range k {
-		switch {
-		case r == '_' || r == '?' || unicode.IsLetter(r):
-		case i > 0 && (unicode.IsDigit(r) || r == ' '):
-		default:
+	for _, word := range strings.Split(k, " ") {
+		if word == "" {
+			return false
+		}
+		tokens, err := NewScanner(word).Tokens()
+		if err != nil || len(tokens) != 1 || tokens[0].Kind != TokenName || tokens[0].Value != word {
 			return false
 		}
 	}
 	return true
+}
+
+// definedLookup evaluates node for `is defined` and reports whether what it
+// selects exists. Upstream answered from the "key not found" and "index
+// error" a missing entry or index raised; both are null now (DMN 1.5
+// §10.3.2.5-6), so existence is asked structurally, recursing through chains
+// of names, paths and indexes (`{a: [1]}.a[5]`, `xs[5].a`, `{a: {b: 1}}.a.c`):
+//
+//   - a name exists when it is bound;
+//   - `e.name` exists when e does and selectProperty finds the entry or
+//     property on it — a path over a list, or on null, is defined;
+//   - `e1[e2]` exists when e1 does and indexInto finds the element or string
+//     key — an index the list does not reach is undefined, a null element
+//     defined, and a filter (a list) defined;
+//   - anything else is defined when it evaluates without error.
+func definedLookup(intp *Interpreter, node Node) (val any, found bool, err error) {
+	switch n := node.(type) {
+	case *Var:
+		v, ok := intp.Resolve(n.Name)
+		return v, ok, nil
+	case *DotOp:
+		left, found, err := definedLookup(intp, n.Left)
+		if err != nil || !found {
+			return null, false, err
+		}
+		if list, isList := left.([]any); isList {
+			v, err := n.project(intp, list)
+			return v, err == nil, err
+		}
+		if isNullValue(left) {
+			return null, true, nil
+		}
+		v, found := selectProperty(left, n.Attr)
+		return v, found, nil
+	case *Binop:
+		if n.Op == "[]" {
+			left, found, err := definedLookup(intp, n.Left)
+			if err != nil || !found {
+				return null, false, err
+			}
+			return n.indexInto(intp, left)
+		}
+	}
+	v, err := node.Eval(intp)
+	return v, err == nil, err
 }

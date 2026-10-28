@@ -97,30 +97,23 @@ func (p *Parser) Parse() (Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	var exps []Node
-
-	for !p.CurrentToken().Expect(TokenEOF) {
-		if p.CurrentToken().Expect(";") {
-			err = p.scanner.Next()
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			exp, err := p.parseUnaryTest()
-			if err != nil {
-				return nil, err
-			}
-			exps = append(exps, exp)
-		}
+	// Verdict: a textual expression is exactly one expression (DMN 1.5
+	// §10.3.1.2, rules 1-2) or one comma-separated unary-tests list. Upstream
+	// looped here, collecting juxtaposed or `;`-separated expressions into an
+	// ExprList that evaluated each and kept the last, so `3 4` was 4 and
+	// `x between 1` was the name `x between` followed by `1`. Anything after
+	// the one expression is now an unexpected token. Empty input stays null.
+	if p.CurrentToken().Expect(TokenEOF) {
+		return &NullNode{}, nil
 	}
-
-	if len(exps) == 1 {
-		return exps[0], nil
-	} else {
-		return &ExprList{
-			Elements: exps,
-		}, nil
+	exp, err := p.parseUnaryTest()
+	if err != nil {
+		return nil, err
 	}
+	if !p.CurrentToken().Expect(TokenEOF) {
+		return nil, p.Unexpected(TokenEOF)
+	}
+	return exp, nil
 }
 
 func (p Parser) startTextRange() TextRange {
@@ -181,7 +174,7 @@ func (p *Parser) parseUnaryTest() (Node, error) {
 }
 
 func (p *Parser) expression() (Node, error) {
-	return p.inOp()
+	return p.logicOrOp()
 }
 
 type astFunc func() (Node, error)
@@ -236,13 +229,6 @@ func (p *Parser) binopKeywords(ops []string, subfunc astFunc) (Node, error) {
 }
 
 // pase chains
-func (p *Parser) inOp() (Node, error) {
-	return p.binopKeywords(
-		[]string{"in"},
-		p.logicOrOp,
-	)
-}
-
 func (p *Parser) logicOrOp() (Node, error) {
 	return p.binopKeywords(
 		[]string{"or"},
@@ -257,11 +243,170 @@ func (p *Parser) logicAndOp() (Node, error) {
 	)
 }
 
+// compareOp parses a comparison, DMN 1.5 FEEL grammar rule 49: the ordering
+// and equality operators (49.a) and `in` (49.c, 49.d), all at one precedence
+// level between conjunction and arithmetic, left associative, and `between`
+// (49.b).
+//
+// VERDICT DIVERGENCE: upstream parsed `in` as its own level above `or`, so
+// `x in [5] and b` was `x in ([5] and b)`, and read the right of `in` as a
+// plain expression, so `10 in =10` and `10 in (1, < 5, >= 10)` were syntax
+// errors. The right of `in` is now a positive unary test or a parenthesised
+// list of them (see inRight). Upstream did not parse `between` (49.b) at all;
+// see betweenRest. Rule 51 (`instance of`) binds tighter than arithmetic, so
+// it is not a comparison (see instanceOfOp).
 func (p *Parser) compareOp() (Node, error) {
-	return p.binop(
-		[]string{">", ">=", "<", "<=", "!=", "="},
-		p.addOrSubOp,
-	)
+	left, err := p.addOrSubOp()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		tok := p.CurrentToken()
+		switch {
+		case tok.Expect(">", ">=", "<", "<=", "!=", "="):
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+			right, err := p.addOrSubOp()
+			if err != nil {
+				return nil, err
+			}
+			left = &Binop{Op: tok.Kind, Left: left, Right: right, textRange: TextRange{Start: left.TextRange().Start, End: p.CurrentToken().Pos}}
+		case tok.ExpectKeywords("in"):
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+			right, err := p.inRight()
+			if err != nil {
+				return nil, err
+			}
+			left = &Binop{Op: "in", Left: left, Right: right, textRange: TextRange{Start: left.TextRange().Start, End: p.CurrentToken().Pos}}
+		case tok.Kind == TokenName && tok.Value == "between":
+			left, err = p.betweenRest(left)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			return left, nil
+		}
+	}
+}
+
+// inRight parses the right of `in`: a positive unary test (rule 49.c) or a
+// parenthesised, comma-separated list of them (rule 49.d). A test led by a
+// comparison operator (`= 10`, `< 5`) and a parenthesised list come back as
+// MultiTests, whose `? op x` elements Binop.inOp applies to the left operand;
+// anything else is an ordinary operand, so `x in [1..5]`, `x in (1..5)`,
+// `x in xs` and `x in (a)` parse exactly as before.
+//
+// `(` is ambiguous between an interval or parenthesised expression and a list
+// of tests, so it is first read as an ordinary operand and, only if that fails
+// (`(1, < 5)`, `(< 5)`), re-read from the same token as a list of tests.
+func (p *Parser) inRight() (Node, error) {
+	textRange := p.startTextRange()
+	if p.CurrentToken().Expect(">", ">=", "<", "<=", "!=", "=") {
+		op := p.CurrentToken().Kind
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		endpoint, err := p.addOrSubOp()
+		if err != nil {
+			return nil, err
+		}
+		textRange.End = p.CurrentToken().Pos
+		test := &Binop{Left: &Var{Name: "?"}, Op: op, Right: endpoint, textRange: textRange}
+		return &MultiTests{Elements: []Node{test}, textRange: textRange}, nil
+	}
+	if !p.CurrentToken().Expect("(") {
+		return p.addOrSubOp()
+	}
+	saved, savedNoIndex := *p.scanner, p.noIndex
+	operand, err := p.addOrSubOp()
+	if err == nil {
+		return operand, nil
+	}
+	*p.scanner, p.noIndex = saved, savedNoIndex
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	tests, err := p.delimited(p.parseUnaryTest)
+	if err != nil {
+		return nil, err
+	}
+	if !p.CurrentToken().Expect(")") {
+		return nil, p.Unexpected(",", ")")
+	}
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	textRange.End = p.CurrentToken().Pos
+	if mt, ok := tests.(*MultiTests); ok {
+		return &MultiTests{Elements: mt.Elements, textRange: textRange}, nil
+	}
+	return &MultiTests{Elements: []Node{tests}, textRange: textRange}, nil
+}
+
+// betweenRest parses `between e2 and e3` after the left operand, DMN 1.5
+// grammar rule 49.b. Both bounds are arithmetic expressions (addOrSubOp), so
+// the `and` separating them is consumed here and never read as conjunction:
+// `x between 1 and 5 and b` is `(x between 1 and 5) and b`, and a bound that
+// needs a lower-precedence operator must be parenthesised.
+//
+// A name cannot start with `between` (§10.3.1.4: a name start is never a
+// literal terminal), so after a complete operand the word can only be the
+// operator, and a malformed `3 between 1` is a syntax error.
+//
+// VERDICT DIVERGENCE: upstream had no `between`. It is not a scanner keyword:
+// `between` stays an ordinary name word so a name that merely contains it
+// (`days between dates`) still resolves; see atBetween.
+func (p *Parser) betweenRest(left Node) (Node, error) {
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	low, err := p.addOrSubOp()
+	if err != nil {
+		return nil, err
+	}
+	if !p.CurrentToken().ExpectKeywords("and") {
+		return nil, p.Unexpected("and")
+	}
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	high, err := p.addOrSubOp()
+	if err != nil {
+		return nil, err
+	}
+	return &Between{Expr: left, Low: low, High: high, textRange: TextRange{Start: left.TextRange().Start, End: p.CurrentToken().Pos}}, nil
+}
+
+// atBetween reports, for parseName, whether the name word `between` starts a
+// rule 49.b `between`: it is followed by an arithmetic expression and the
+// keyword `and`. It parses ahead speculatively and restores the scanner, as
+// inRight backtracks.
+//
+// Interpretation: DMN 1.5 §10.3.1.4 lets a name part (not a name start) be a
+// literal terminal such as `between`, and resolves the ambiguity against the
+// names in scope. The fork resolves names without scope, so it reads `between`
+// as the operator exactly when `between e and` follows; otherwise the word
+// stays part of the name (`days between dates`), and so a malformed `between`
+// after a name (`x between 1`) reads as the name `x between` followed by a
+// juxtaposed `1`, as any other juxtaposition does. A name containing
+// `between e and` (`gap between rows and columns`) cannot be written.
+func (p *Parser) atBetween() bool {
+	tok := p.CurrentToken()
+	if tok.Kind != TokenName || tok.Value != "between" {
+		return false
+	}
+	saved, savedNoIndex := *p.scanner, p.noIndex
+	defer func() { *p.scanner, p.noIndex = saved, savedNoIndex }()
+	if err := p.scanner.Next(); err != nil {
+		return false
+	}
+	if _, err := p.addOrSubOp(); err != nil {
+		return false
+	}
+	return p.CurrentToken().ExpectKeywords("and")
 }
 
 func (p *Parser) addOrSubOp() (Node, error) {
@@ -288,8 +433,228 @@ func (p *Parser) mulOrDivOp() (Node, error) {
 func (p *Parser) powOp() (Node, error) {
 	return p.binop(
 		[]string{"**"},
-		p.negationOp,
+		p.instanceOfOp,
 	)
+}
+
+// instanceOfOp parses `e instance of type`, DMN 1.5 grammar rule 51.
+//
+// VERDICT DIVERGENCE: upstream had no `instance of`; `x instance of number`
+// scanned as one variable name and was null. Rule 2 orders the alternatives of
+// a textual expression from lowest to highest precedence (§10.3.1.2, additional
+// syntax rules) and puts `instance of` (2.f) after arithmetic (2.e) and before
+// path, filter and invocation (2.g), so it binds tighter than every arithmetic
+// operator and looser than a path: `1 + 1 instance of number` is
+// `1 + (1 instance of number)`, and `a.b instance of number` checks `a.b`.
+// Negation is the exception: it binds tighter, as the fork's negation already
+// does against `**`, because rule 35 lets a numeric literal carry its own
+// minus, so `-5 instance of number` is true.
+//
+// `instance` and `of` are not keywords, so names containing either word
+// (`Date of Birth`, `instance count`) still parse; parseName ends a name only
+// where `instance` is directly followed by `of`.
+func (p *Parser) instanceOfOp() (Node, error) {
+	left, err := p.negationOp()
+	if err != nil {
+		return nil, err
+	}
+	for p.atInstanceOf() {
+		for i := 0; i < 2; i++ {
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+		}
+		t, err := p.parseType()
+		if err != nil {
+			return nil, err
+		}
+		left = &InstanceOf{Expr: left, Type: t, textRange: TextRange{Start: left.TextRange().Start, End: p.CurrentToken().Pos}}
+	}
+	return left, nil
+}
+
+// atInstanceOf reports whether the next two tokens are the names `instance`
+// and `of`. It looks ahead on a copy of the scanner, as inRight backtracks.
+func (p *Parser) atInstanceOf() bool {
+	tok := p.CurrentToken()
+	if tok.Kind != TokenName || tok.Value != "instance" {
+		return false
+	}
+	ahead := *p.scanner
+	if err := ahead.Next(); err != nil {
+		return false
+	}
+	next := ahead.Current()
+	return next.Kind == TokenName && next.Value == "of"
+}
+
+// parseType parses a type, DMN 1.5 grammar rule 52. A generic name written
+// without its parameters (`list`, `context`, `function`) is kept as a plain
+// name, which maps to no lattice node, so the check is null (Table 61:
+// "123 instance of list is null as a list type requires parameters").
+//
+// Interpretation: rule 52 as printed requires at least one context entry, but
+// TCK 0070 writes `context<>`; it parses as the context type with no entries,
+// to which every context conforms.
+func (p *Parser) parseType() (*TypeExpr, error) {
+	tok := p.CurrentToken()
+	if tok.ExpectKeywords("function") {
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		if !p.CurrentToken().Expect("<") {
+			return &TypeExpr{Kind: TypeKindName, Name: "function"}, nil
+		}
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		var params []*TypeExpr
+		for !p.CurrentToken().Expect(">") {
+			param, err := p.parseType()
+			if err != nil {
+				return nil, err
+			}
+			params = append(params, param)
+			if p.CurrentToken().Expect(",") {
+				if err := p.scanner.Next(); err != nil {
+					return nil, err
+				}
+			} else if !p.CurrentToken().Expect(">") {
+				return nil, p.Unexpected(",", ">")
+			}
+		}
+		for _, want := range []string{">", "-", ">"} {
+			if !p.CurrentToken().Expect(want) {
+				return nil, p.Unexpected("->")
+			}
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+		}
+		result, err := p.parseType()
+		if err != nil {
+			return nil, err
+		}
+		return &TypeExpr{Kind: TypeKindFunction, Params: params, Result: result}, nil
+	}
+	if tok.Kind != TokenName {
+		return nil, p.Unexpected("type")
+	}
+	name, err := p.parseTypeName()
+	if err != nil {
+		return nil, err
+	}
+	if p.CurrentToken().Expect("<") {
+		switch name {
+		case TypeKindList, TypeKindRange:
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+			elem, err := p.parseType()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectTypeClose(); err != nil {
+				return nil, err
+			}
+			return &TypeExpr{Kind: name, Elem: elem}, nil
+		case TypeKindContext:
+			return p.parseContextType()
+		}
+	}
+	for p.CurrentToken().Expect(".") {
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		part, err := p.parseTypeName()
+		if err != nil {
+			return nil, err
+		}
+		name += "." + part
+	}
+	return &TypeExpr{Kind: TypeKindName, Name: name}, nil
+}
+
+func (p *Parser) parseContextType() (*TypeExpr, error) {
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	t := &TypeExpr{Kind: TypeKindContext}
+	for !p.CurrentToken().Expect(">") {
+		key, err := p.parseMapKey()
+		if err != nil {
+			return nil, err
+		}
+		if !p.CurrentToken().Expect(":") {
+			return nil, p.Unexpected(":")
+		}
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		field, err := p.parseType()
+		if err != nil {
+			return nil, err
+		}
+		t.Keys = append(t.Keys, key)
+		t.Fields = append(t.Fields, field)
+		if p.CurrentToken().Expect(",") {
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+		} else if !p.CurrentToken().Expect(">") {
+			return nil, p.Unexpected(",", ">")
+		}
+	}
+	if err := p.expectTypeClose(); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (p *Parser) expectTypeClose() error {
+	if !p.CurrentToken().Expect(">") {
+		return p.Unexpected(">")
+	}
+	return p.scanner.Next()
+}
+
+// parseTypeName parses one segment of a type's qualified name. It is
+// parseName, except that a keyword taken in as part of `date and time`, `days
+// and time duration` or `years and months duration` is given back unless the
+// whole of one of those names follows: `x instance of date and y` is
+// `(x instance of date) and y`, not a check against the type `date and y`.
+func (p *Parser) parseTypeName() (string, error) {
+	var names []string
+	var saved *Scanner
+	savedLen := 0
+	for p.CurrentToken().Expect(TokenName, TokenKeyword) {
+		tok := p.CurrentToken()
+		if len(names) > 0 && p.atInstanceOf() {
+			break
+		}
+		if tok.Kind == TokenKeyword {
+			if len(names) == 0 || !keywordNamePrefixes[strings.Join(append(names, tok.Value), " ")] {
+				break
+			}
+			if saved == nil {
+				s := *p.scanner
+				saved, savedLen = &s, len(names)
+			}
+		}
+		names = append(names, tok.Value)
+		if err := p.scanner.Next(); err != nil {
+			return "", err
+		}
+	}
+	if len(names) == 0 {
+		return "", p.Unexpected(TokenName)
+	}
+	name := strings.Join(names, " ")
+	if _, primitive := primitiveTypes[name]; saved != nil && !primitive {
+		*p.scanner = *saved
+		name = strings.Join(names[:savedLen], " ")
+	}
+	return name, nil
 }
 
 func (p *Parser) negationOp() (Node, error) {
@@ -589,6 +954,11 @@ func (p *Parser) parseName(stopKeywords ...string) (string, error) {
 
 	for p.CurrentToken().Expect(TokenName, TokenKeyword) {
 		if p.CurrentToken().Kind == TokenName {
+			// `instance of` ends a name (see instanceOfOp), as does a
+			// `between e and` (see atBetween).
+			if len(names) > 0 && (p.atInstanceOf() || p.atBetween()) {
+				break
+			}
 			names = append(names, p.CurrentToken().Value)
 			if err := p.scanner.Next(); err != nil {
 				return "", err
@@ -1106,8 +1476,10 @@ func (p *Parser) parseFunDef() (Node, error) {
 		return nil, err
 	}
 
-	// parse var list
+	// parse the formal parameters, grammar rule 56: parameter name [":" type]
 	var args []string
+	var types []*TypeExpr
+	typed := false
 	for !p.CurrentToken().Expect(")") {
 		argName, err := p.parseName()
 		if err != nil {
@@ -1115,6 +1487,18 @@ func (p *Parser) parseFunDef() (Node, error) {
 		}
 
 		args = append(args, argName)
+
+		var argType *TypeExpr
+		if p.CurrentToken().Expect(":") {
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+			if argType, err = p.parseType(); err != nil {
+				return nil, err
+			}
+			typed = true
+		}
+		types = append(types, argType)
 
 		if p.CurrentToken().Expect(",") {
 			err = p.scanner.Next()
@@ -1141,9 +1525,13 @@ func (p *Parser) parseFunDef() (Node, error) {
 		return nil, err
 	}
 	rng.End = p.CurrentToken().Pos
+	if !typed {
+		types = nil
+	}
 	return &FunDef{
-		Args:      args,
-		Body:      exp,
-		textRange: rng,
+		Args:       args,
+		ParamTypes: types,
+		Body:       exp,
+		textRange:  rng,
 	}, nil
 }

@@ -71,7 +71,7 @@ func TestBoxedExpressions(t *testing.T) {
 
 		{"affordable", "Affordable", true},
 
-		// A decision service is callable from an expression (DMN 1.5 §7.4).
+		// A decision service is callable from an expression (DMN 1.5 §10.3.2.13.2).
 		{"service_caller", "Service Caller", "senior"},
 	}
 
@@ -236,6 +236,56 @@ func TestMemoKeysKeepTemporalKindsApart(t *testing.T) {
 	}
 	if len(hits) == 0 {
 		t.Errorf("no BKM invocation hit the cache; the identical S1/S2 pair should")
+	}
+}
+
+// TestMemoKeysCoverContextArguments pins issue #67: a context-typed input
+// reached the BKM binding as the FEEL fork's internal Scope type, which KeyOf
+// did not key, so a BKM invoked with a context argument never hit the cache.
+func TestMemoKeysCoverContextArguments(t *testing.T) {
+	call := func(id string, after []string, arg string) string {
+		req := `"required_inputs":["ctx"],`
+		if len(after) > 0 {
+			req += `"required_decisions":["` + strings.Join(after, `","`) + `"],`
+		}
+		return fmt.Sprintf(`{"id":%q,"name":%q,%s"required_knowledge":["show"],
+		  "variable":{"name":%q},
+		  "logic":{"kind":"invocation","called":"Show","bindings":[
+		    {"parameter":{"name":"x"},"value":{"kind":"literalExpression","text":%q}}]}}`,
+			id, id, req, id, arg)
+	}
+	doc := `{"vdj":"1.0","id":"memo_ctx","conformance_level":"feel",
+	  "input_data":[{"id":"ctx","name":"Ctx","variable":{"name":"Ctx"}}],
+	  "business_knowledge_models":[{"id":"show","name":"Show",
+	    "encapsulated_logic":{"kind":"functionDefinition","parameters":[{"name":"x"}],
+	      "body":{"kind":"literalExpression","text":"string(x)"}}}],
+	  "decisions":[` + call("C1", nil, "Ctx") + `,` +
+		call("C2", []string{"C1"}, "if C1 = null then null else Ctx") + `]}`
+
+	e, err := verdict.NewEngine(verdict.WithMemoization(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	in := verdict.Inputs{"Ctx": map[string]any{"x": 1, "n": map[string]any{"y": 2}}}
+	res, err := e.Evaluate(context.Background(), m.ID, in)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if got := res.Outputs["C2"]; got != "{n: {y: 2}, x: 1}" {
+		t.Errorf("C2 = %#v, want %q", got, "{n: {y: 2}, x: 1}")
+	}
+	hit := false
+	res.Trace.Walk(func(n *trace.Node) {
+		if n.Annotations[trace.AnnCacheHit] == true {
+			hit = true
+		}
+	})
+	if !hit {
+		t.Errorf("a BKM invoked twice with the same context argument never hit the cache")
 	}
 }
 

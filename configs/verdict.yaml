@@ -12,13 +12,16 @@ verdict:
   feel:
     # "feel" is DMN Conformance Level 3 — the full language.
     # "s-feel" is Level 2: decision tables and simple expressions only, with
-    # iteration, conditionals and inline functions rejected at parse time.
+    # iteration, conditionals, `between`, `in` and inline functions rejected at
+    # parse time.
     # A model that declares its own conformanceLevel overrides this for itself.
     dialect: feel
 
     # The location now(), today() and date arithmetic resolve against. UTC by
     # default: a decision that means something different depending on where it
-    # ran is not auditable.
+    # ran is not auditable. An IANA zone here also names now()'s zone:
+    # `Europe/Paris` makes now() `...@Europe/Paris` with
+    # now().timezone = "Europe/Paris"; UTC makes it `...Z`, .timezone null.
     timezone: UTC
 
     # The iteration budget of one request: the total number of elements every
