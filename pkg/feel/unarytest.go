@@ -39,7 +39,8 @@ type unaryAlt struct {
 	// the result interpreter.
 	literalBool bool
 	// comparison marks an alternative whose top-level node is an ordering
-	// comparison or a membership test (`< 10`, `? >= 5`, `? in [1..10]`). Such
+	// comparison or a membership test (`< 10`, `? >= 5`, `? in [1..10]`,
+	// `? between 1 and 5`). Such
 	// a test yields null when the input is null (DMN 1.5 §10.3.2.15), and a null
 	// outcome is "not satisfied" — it must not fall through to the equality
 	// branch, where null would equal a null input.
@@ -136,6 +137,9 @@ func isBoolLiteral(x *Expr) bool {
 }
 
 func isOrderingComparison(x *Expr) bool {
+	if _, ok := x.node.(*pfeel.Between); ok {
+		return true
+	}
 	b, ok := x.node.(*pfeel.Binop)
 	if !ok {
 		return false

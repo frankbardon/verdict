@@ -9,7 +9,9 @@ import pfeel "github.com/frankbardon/verdict/pkg/feel/internal/dialect"
 // string, boolean, date/time and duration literals; arithmetic, comparison and
 // range operators; conjunction and disjunction; list literals; and qualified
 // names. Iteration (`for`/`some`/`every`), conditionals (`if`), type checks
-// (`instance of`) and inline function definitions belong to full FEEL only.
+// (`instance of`), `between` (S-FEEL's comparison, grammar rule 35 of clause
+// 9.2, has only the six operators) and inline function definitions belong to
+// full FEEL only.
 //
 // The embedded parser hides the argument list of a FunCall behind an unexported
 // type, so an offending construct nested inside a call argument — `f(for x in
@@ -33,6 +35,8 @@ func violatesSFEEL(n pfeel.Node) string {
 		return "inline function definitions are a FEEL construct; S-FEEL admits only simple expressions"
 	case *pfeel.InstanceOf:
 		return "`instance of` is a FEEL construct; S-FEEL admits only simple expressions"
+	case *pfeel.Between:
+		return "`between` is a FEEL construct; S-FEEL comparisons are = != < <= > >= only"
 	case *pfeel.Binop:
 		if r := violatesSFEEL(v.Left); r != "" {
 			return r

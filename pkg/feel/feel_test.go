@@ -261,6 +261,8 @@ func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 		"function(a) a + 1",
 		"-(if 1 > 0 then 1 else 2)",
 		"5 instance of number",
+		"3 between 1 and 5",
+		"x between 1 and 5 and x > 2",
 	}
 	for _, src := range rejected {
 		if _, err := e.Compile(src); err == nil {
@@ -1440,6 +1442,95 @@ func TestInstanceOf(t *testing.T) {
 	for _, bad := range []string{`5 instance of`, `5 instance of list<number`, `5 instance of context<a number>`, `5 instance of function<number>number`} {
 		if _, err := e.Compile(bad); err == nil {
 			t.Errorf("%s compiled, want a syntax error", bad)
+		}
+	}
+}
+
+// TestBetween pins DMN 1.5 grammar rule 49.b and Table 55: `e1 between e2 and
+// e3` is `e1 >= e2 and e1 <= e3`, inclusive at both ends, a comparison at the
+// precedence of `=` and `in`, and null wherever the equivalent expression is.
+func TestBetween(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"x":                  FromGo(3),
+		"b":                  FromGo(false),
+		"lo":                 FromGo(1),
+		"hi":                 FromGo(5),
+		"days between dates": FromGo(7),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Numbers, inclusive at both ends.
+		{`3 between 1 and 5`, true},
+		{`0 between 1 and 5`, false},
+		{`6 between 1 and 5`, false},
+		{`1 between 1 and 5`, true},
+		{`5 between 1 and 5`, true},
+		{`3 between 5 and 1`, false},
+		{`x between lo and hi`, true},
+		{`x + 3 between lo * 2 and hi + 1`, true},
+		// Strings, dates, times, durations.
+		{`"b" between "a" and "c"`, true},
+		{`"d" between "a" and "c"`, false},
+		{`date("2020-06-01") between date("2020-01-01") and date("2020-12-31")`, true},
+		{`date("2021-06-01") between date("2020-01-01") and date("2020-12-31")`, false},
+		{`time("10:00:00") between time("09:00:00") and time("17:00:00")`, true},
+		{`duration("P2D") between duration("P1D") and duration("P3D")`, true},
+		{`duration("P1Y") between duration("P6M") and duration("P2Y")`, true},
+		// Incomparable and null operands: null, as `>=`/`<=` and `and` give.
+		{`"a" between 1 and 5`, nil},
+		{`3 between "a" and "z"`, nil},
+		{`true between false and true`, nil},
+		{`null between 1 and 5`, nil},
+		{`3 between null and 5`, nil},
+		{`3 between 1 and null`, nil},
+		// Table 55 is the letter: one definite false makes the `and` false.
+		{`9 between null and 5`, false},
+		{`0 between 1 and "z"`, false},
+		// Precedence: a comparison; the inner `and` belongs to `between`.
+		{`x between 1 and 5 and b`, false},
+		{`x between 1 and 5 and true`, true},
+		{`b or x between 1 and 5`, true},
+		{`(x between 1 and 5) = true`, true},
+		{`x between 1 and 5 = true`, true}, // comparisons chain left to right
+		{`if x between 1 and 5 then "in" else "out"`, "in"},
+		{`[x between 1 and 2, 1]`, []any{false, 1.0}},
+		{`not(x between 1 and 5)`, false},
+		// A name merely containing the word still resolves.
+		{`days between dates`, 7.0},
+		{`days between dates between 1 and 10`, true},
+		{`days between dates + 1`, 8.0},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+	for _, bad := range []string{`3 between 1`, `3 between 1 or 5`, `3 between and 5`, `3 between 1 and`} {
+		if _, err := e.Compile(bad); err == nil {
+			t.Errorf("%s compiled, want a syntax error", bad)
+		}
+	}
+	// In a unary-test cell, `? between a and b` is a comparison: a null input
+	// is not satisfied, rather than falling through to equality with null.
+	cell, err := e.CompileUnaryTest(`? between 1 and 5`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[any]bool{3: true, 0: false, 5: true, nil: false} {
+		got, err := e.EvalUnaryTest(cell, FromGo(in), nil)
+		if err != nil {
+			t.Fatalf("? between 1 and 5 against %v: %v", in, err)
+		}
+		if got != want {
+			t.Errorf("? between 1 and 5 against %v = %v, want %v", in, got, want)
 		}
 	}
 }

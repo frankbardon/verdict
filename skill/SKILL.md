@@ -211,6 +211,8 @@ xs instance of list<number>   r instance of range<date>   f instance of function
 m instance of context<age: number>   m instance of context<>   // extra entries allowed; context<> is any context
 null instance of number = false   null instance of Any = false   null instance of Null = true   // only Null admits null; [null] instance of list<number> = true
 123 instance of list = null   x instance of tMyType = null   // an unparameterised generic or an itemDefinition name maps to no type: null
+x between 1 and 5   d between date("2020-01-01") and date("2020-12-31")   // e >= lo and e <= hi, inclusive; a comparison, so x between 1 and 5 and b is (x between 1 and 5) and b
+"a" between 1 and 5 = null   null between 1 and 5 = null   9 between null and 5 = false   // exactly `>= and <=`: incomparable is null, but one definite false wins
 ```
 
 String, list and context built-ins return **null**, never an error, outside
@@ -226,12 +228,14 @@ Names may contain spaces (`Credit Rating`) but **not reserved words** — `and`,
 `or`, `in`, `if`, `then`, `else`, `for`, `some`, `every`, `return`, `satisfies`.
 `Rent and Rates` will not resolve; rename it. `instance` and `of` are not
 reserved (`Date of Birth` resolves), but `instance of` together ends a name.
+`between` is not reserved either (`days between dates` resolves), but a name
+ends where `between <expression> and` follows.
 
 Two dialects, selected per model with `conformanceLevel`:
 
 - `s-feel` (Conformance Level 2) — literals, arithmetic, comparisons, ranges,
   lists, `and`/`or`, qualified names. Rejects `if`, `for`, `some`, `every`,
-  `instance of` and inline functions **at parse time**. Use it for decision-table-only models that
+  `instance of`, `between` and inline functions **at parse time**. Use it for decision-table-only models that
   must interoperate with Level 2 tooling.
 - `feel` (Conformance Level 3, the default) — the full language.
 

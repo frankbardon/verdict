@@ -252,15 +252,16 @@ func (p *Parser) logicAndOp() (Node, error) {
 
 // compareOp parses a comparison, DMN 1.5 FEEL grammar rule 49: the ordering
 // and equality operators (49.a) and `in` (49.c, 49.d), all at one precedence
-// level between conjunction and arithmetic, left associative.
+// level between conjunction and arithmetic, left associative, and `between`
+// (49.b).
 //
 // VERDICT DIVERGENCE: upstream parsed `in` as its own level above `or`, so
 // `x in [5] and b` was `x in ([5] and b)`, and read the right of `in` as a
 // plain expression, so `10 in =10` and `10 in (1, < 5, >= 10)` were syntax
 // errors. The right of `in` is now a positive unary test or a parenthesised
-// list of them (see inRight). Rule 49.b (`between`) is not parsed yet; it
-// belongs in this loop as a further keyword case. Rule 51 (`instance of`)
-// binds tighter than arithmetic, so it is not a comparison (see instanceOfOp).
+// list of them (see inRight). Upstream did not parse `between` (49.b) at all;
+// see betweenRest. Rule 51 (`instance of`) binds tighter than arithmetic, so
+// it is not a comparison (see instanceOfOp).
 func (p *Parser) compareOp() (Node, error) {
 	left, err := p.addOrSubOp()
 	if err != nil {
@@ -287,6 +288,11 @@ func (p *Parser) compareOp() (Node, error) {
 				return nil, err
 			}
 			left = &Binop{Op: "in", Left: left, Right: right, textRange: TextRange{Start: left.TextRange().Start, End: p.CurrentToken().Pos}}
+		case tok.Kind == TokenName && tok.Value == "between":
+			left, err = p.betweenRest(left)
+			if err != nil {
+				return nil, err
+			}
 		default:
 			return left, nil
 		}
@@ -345,6 +351,69 @@ func (p *Parser) inRight() (Node, error) {
 		return &MultiTests{Elements: mt.Elements, textRange: textRange}, nil
 	}
 	return &MultiTests{Elements: []Node{tests}, textRange: textRange}, nil
+}
+
+// betweenRest parses `between e2 and e3` after the left operand, DMN 1.5
+// grammar rule 49.b. Both bounds are arithmetic expressions (addOrSubOp), so
+// the `and` separating them is consumed here and never read as conjunction:
+// `x between 1 and 5 and b` is `(x between 1 and 5) and b`, and a bound that
+// needs a lower-precedence operator must be parenthesised.
+//
+// A name cannot start with `between` (§10.3.1.4: a name start is never a
+// literal terminal), so after a complete operand the word can only be the
+// operator, and a malformed `3 between 1` is a syntax error.
+//
+// VERDICT DIVERGENCE: upstream had no `between`. It is not a scanner keyword:
+// `between` stays an ordinary name word so a name that merely contains it
+// (`days between dates`) still resolves; see atBetween.
+func (p *Parser) betweenRest(left Node) (Node, error) {
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	low, err := p.addOrSubOp()
+	if err != nil {
+		return nil, err
+	}
+	if !p.CurrentToken().ExpectKeywords("and") {
+		return nil, p.Unexpected("and")
+	}
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	high, err := p.addOrSubOp()
+	if err != nil {
+		return nil, err
+	}
+	return &Between{Expr: left, Low: low, High: high, textRange: TextRange{Start: left.TextRange().Start, End: p.CurrentToken().Pos}}, nil
+}
+
+// atBetween reports, for parseName, whether the name word `between` starts a
+// rule 49.b `between`: it is followed by an arithmetic expression and the
+// keyword `and`. It parses ahead speculatively and restores the scanner, as
+// inRight backtracks.
+//
+// Interpretation: DMN 1.5 §10.3.1.4 lets a name part (not a name start) be a
+// literal terminal such as `between`, and resolves the ambiguity against the
+// names in scope. The fork resolves names without scope, so it reads `between`
+// as the operator exactly when `between e and` follows; otherwise the word
+// stays part of the name (`days between dates`), and so a malformed `between`
+// after a name (`x between 1`) reads as the name `x between` followed by a
+// juxtaposed `1`, as any other juxtaposition does. A name containing
+// `between e and` (`gap between rows and columns`) cannot be written.
+func (p *Parser) atBetween() bool {
+	tok := p.CurrentToken()
+	if tok.Kind != TokenName || tok.Value != "between" {
+		return false
+	}
+	saved, savedNoIndex := *p.scanner, p.noIndex
+	defer func() { *p.scanner, p.noIndex = saved, savedNoIndex }()
+	if err := p.scanner.Next(); err != nil {
+		return false
+	}
+	if _, err := p.addOrSubOp(); err != nil {
+		return false
+	}
+	return p.CurrentToken().ExpectKeywords("and")
 }
 
 func (p *Parser) addOrSubOp() (Node, error) {
@@ -892,8 +961,9 @@ func (p *Parser) parseName(stopKeywords ...string) (string, error) {
 
 	for p.CurrentToken().Expect(TokenName, TokenKeyword) {
 		if p.CurrentToken().Kind == TokenName {
-			// `instance of` ends a name (see instanceOfOp).
-			if len(names) > 0 && p.atInstanceOf() {
+			// `instance of` ends a name (see instanceOfOp), as does a
+			// `between e and` (see atBetween).
+			if len(names) > 0 && (p.atInstanceOf() || p.atBetween()) {
 				break
 			}
 			names = append(names, p.CurrentToken().Value)

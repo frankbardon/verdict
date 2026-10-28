@@ -3371,6 +3371,32 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("between is an inclusive comparison", func(t *testing.T) {
+		// DMN 1.5 grammar rule 49.b and Table 55: `e1 between e2 and e3` is
+		// `e1 >= e2 and e1 <= e3`. Upstream did not parse `between`: `3
+		// between 1 and 5` was `3` juxtaposed with the name `between`.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`3 between 1 and 5`, true},
+			{`1 between 1 and 5`, true},
+			{`5 between 1 and 5`, true},
+			{`0 between 1 and 5`, false},
+			{`"a" between 1 and 5`, nil},
+			{`null between 1 and 5`, nil},
+			{`9 between null and 5`, false},
+			{`3 between 1 and 5 and false`, false},
+		})
+		vars := map[string]any{"days between dates": FromGo(7)}
+		if got := mustEval(t, e, "days between dates", vars); got != 7.0 {
+			t.Errorf("days between dates = %#v, want 7", got)
+		}
+		if _, err := e.Compile("3 between 1"); err == nil {
+			t.Error("3 between 1 compiled, want a syntax error")
+		}
+	})
 }
 
 func approx(a, b float64) bool {

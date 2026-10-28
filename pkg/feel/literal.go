@@ -74,6 +74,8 @@ func literalsOf(n pfeel.Node) []Literal {
 		return append(literalsOf(v.Start), literalsOf(v.End)...)
 	case *pfeel.Binop:
 		return append(literalsOf(v.Left), literalsOf(v.Right)...)
+	case *pfeel.Between:
+		return literalsOfAll([]pfeel.Node{v.Expr, v.Low, v.High})
 	case *pfeel.ArrayNode:
 		return literalsOfAll(v.Elements)
 	case *pfeel.MultiTests:
