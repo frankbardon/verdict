@@ -201,6 +201,7 @@ people.name = ["A", "B"]   get entries(m)[key = "y"].value   // a path on a list
 [1..5].start = 1   [1..5).end included = false   5.x = null   date("2020-01-01").foo = null   // range properties; a property a value lacks is null
 list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]   // match form: replace each item match(item, newItem) is true for
 {t: 5, f: function(x) x + t}.f(1) = 6   (for t in [1, 2] return function(x) x + t)[2](10) = 12   // functions close over where they are defined, not where they are called
+5(1) = null   nofn(x) = null   sumx([1]) = null   (function(x) x)(1, 2) = null   // calling a non-function (a misspelt built-in too) or misfitting a function's parameters is null, not an error
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
 all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null
 1 in 1   "a" in "a"                                   // a non-list, non-range right side is `=`

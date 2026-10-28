@@ -725,6 +725,13 @@ func (fd *FunDef) EvalCall(intp *Interpreter, args []any) (any, error) {
 	return fd.invoke(intp, frame)
 }
 
+// Eval invokes the function FunRef evaluates to.
+//
+// VERDICT DIVERGENCE: upstream raised "type mismatch, expect function" when
+// FunRef was not a function — a number (`5(1)`), null (`null(1)`), an unbound
+// name (`nofn(a)`, a misspelt built-in) or a context entry holding a value
+// (`{a: 1}.a(2)`). DMN 1.5 §10.3.2.13.2: "If f is not a function ... the
+// result of the invocation is null". The arguments are not evaluated.
 func (fc FunCall) Eval(intp *Interpreter) (any, error) {
 	v, err := fc.FunRef.Eval(intp)
 	if err != nil {
@@ -738,7 +745,7 @@ func (fc FunCall) Eval(intp *Interpreter) (any, error) {
 	case *Macro:
 		return fc.EvalMacro(intp, r)
 	default:
-		return nil, NewErrTypeMismatch("function")
+		return null, nil
 	}
 }
 
@@ -935,12 +942,18 @@ func (fc FunCall) EvalMacro(intp *Interpreter, macro *Macro) (any, error) {
 	return macro.fn(intp, argNodes, varArgs)
 }
 
+// EvalFunDef invokes a user-defined function.
+//
+// VERDICT DIVERGENCE: upstream raised on too few or too many arguments, and
+// when the count matched it ignored a named argument no parameter had and
+// bound the parameter it displaced to null, so `function(a, b)` called as
+// `f(a: 1, z: 2)` ran with b null. DMN 1.5 §10.3.2.13.2: if the arguments do
+// not conform to the argument list the result of the invocation is null; so a
+// wrong count, or a name that is not a parameter, is null and the body is not
+// run. An error evaluating an argument still propagates.
 func (fc FunCall) EvalFunDef(intp *Interpreter, funDef *FunDef) (any, error) {
-	if len(funDef.Args) > len(fc.Args) {
-		//return nil, NewEvalError(-1004, "number of args mismatch")
-		return nil, NewErrTooFewArguments(funDef.Args[len(fc.Args):])
-	} else if len(funDef.Args) < len(fc.Args) {
-		return nil, NewErrTooManyArguments()
+	if len(funDef.Args) != len(fc.Args) {
+		return null, nil
 	}
 	// The arguments are evaluated in the caller's scope; only the body runs
 	// under the function's closure (§10.3.2.13.2).
@@ -950,13 +963,12 @@ func (fc FunCall) EvalFunDef(intp *Interpreter, funDef *FunDef) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-
 		for _, argName := range funDef.Args {
-			if v, ok := kwArgMap[argName]; ok {
-				frame[argName] = normalizeValue(v)
-			} else {
-				frame[argName] = null
+			v, ok := kwArgMap[argName]
+			if !ok {
+				return null, nil
 			}
+			frame[argName] = normalizeValue(v)
 		}
 	} else {
 		for i, argNode := range fc.Args {

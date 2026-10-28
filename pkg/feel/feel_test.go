@@ -1,6 +1,7 @@
 package feel
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -959,10 +960,16 @@ func TestListReplaceMatchFunction(t *testing.T) {
 		}
 	}
 
-	// An error inside the predicate propagates, as it does from sort's. A
-	// path on a number is null (§10.3.2.6), so call the number instead.
-	if _, err := e.EvalText(`list replace([1,2], function(a, b) a(1), 5)`, nil); err == nil {
-		t.Error("a failing predicate: want an evaluation error, got none")
+	// An error inside the predicate propagates, as it does from sort's. Most
+	// FEEL mistakes are null rather than errors (a path on a number,
+	// §10.3.2.6; calling a number, §10.3.2.13.2), so the predicate overruns
+	// the iteration budget, which is an error by design.
+	capped, err := NewEvaluator(FEEL, WithMaxIterations(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capped.EvalText(`list replace([1,2], function(a, b) count(for i in 1..100 return i) > 0, 5)`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("a failing predicate: error %v, want ErrIterationBudgetExceeded", err)
 	}
 }
 
@@ -1219,6 +1226,68 @@ func TestFunctionLibraryIsNamespaced(t *testing.T) {
 		if _, err := NewEvaluator(FEEL, WithLibraries(FunctionLibrary{Namespace: ns})); err == nil {
 			t.Errorf("NewEvaluator accepted namespace %q", ns)
 		}
+	}
+}
+
+// TestInvokingANonFunction pins DMN 1.5 §10.3.2.13.2: invoking something
+// that is not a function, or a user-defined function with arguments that do
+// not conform to its parameters, is null rather than an error. Built-ins,
+// closures and library functions are unchanged; a library function (as a
+// BKM or decision service is) still raises on a wrong argument count.
+func TestInvokingANonFunction(t *testing.T) {
+	lib := FunctionLibrary{
+		Namespace: "acme",
+		Functions: map[string]Function{
+			"one": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) { return 1, nil }},
+		},
+	}
+	e, err := NewEvaluator(FEEL, WithLibraries(lib))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]any{"a": FromGo(3), "k": FromGo(map[string]any{"a": 1})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`5(1)`, nil},
+		{`nofn(a)`, nil},
+		{`{a: 1}.a(2)`, nil},
+		{`k.a(2)`, nil},
+		{`null(1)`, nil},
+		{`sumx([1])`, nil},
+		{`acme.nofn(1)`, nil},
+		{`5(1) = null`, true},
+		{`(function(x) x)(1, 2)`, nil},
+		{`(function(x, y) x)(1)`, nil},
+		{`(function(x) x)(y: 1)`, nil},
+		{`(function(x) x)(x: 1)`, 1.0},
+		{`abs(-1)`, 1.0},
+		{`abs(1, 2)`, nil},
+		{`acme.one(1)`, 1.0},
+		{`{t: 5, f: function(x) x + t}.f(1)`, 6.0},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+	// An application function's arity mismatch still raises (NOTICE: the
+	// EvalNativeFun row), and an error evaluating an argument propagates.
+	if _, err := e.EvalText(`acme.one(1, 2)`, nil); err == nil {
+		t.Error("acme.one(1, 2): want an error, got none")
+	}
+	capped, err := NewEvaluator(FEEL, WithMaxIterations(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capped.EvalText(`(function(x) x)(count(for i in 1..100 return i))`, nil); !errors.Is(err, ErrIterationBudgetExceeded) {
+		t.Errorf("argument overrunning the budget: error %v, want ErrIterationBudgetExceeded", err)
 	}
 }
 

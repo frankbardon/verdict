@@ -3256,6 +3256,32 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
+	t.Run("invoking a non-function or misfitting arguments is null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.13.2: "If f is not a function, or if the arguments
+		// do not conform to the argument list, the result of the invocation
+		// is null". Upstream raised "type mismatch, expect function", and
+		// raised on a user-defined function's wrong argument count.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`5(1)`, nil},
+			{`null(1)`, nil},
+			{`nofn(1)`, nil},
+			{`sumx([1])`, nil},
+			{`{a: 1}.a(2)`, nil},
+			{`"f"()`, nil},
+			{`(function(x) x)(1, 2)`, nil},
+			{`(function(x, y) x)(1)`, nil},
+			{`(function(x, y) x)(x: 1)`, nil},
+			{`(function(x, y) y)(x: 1, z: 2)`, nil},
+			{`(function(x, y) x)(x: 1, z: 2)`, nil},
+			{`(function(x, y) y)(y: 2, x: 1)`, 2.0},
+			{`(function() 7)()`, 7.0},
+			{`abs(-1)`, 1.0},
+		})
+	})
+
 	t.Run("temporals expose every Table 65 property", func(t *testing.T) {
 		// DMN 1.5 §10.3.2.15 Tables 65 and 66. Upstream had no `weekday`,
 		// returned `month` as Go's time.Month (the string "January"),
