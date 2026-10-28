@@ -420,23 +420,6 @@ func (arrNode ArrayNode) Repr() string {
 	return fmt.Sprintf("[%s]", strings.Join(s, ", "))
 }
 
-// ExprList Expression List
-type ExprList struct {
-	Elements  []Node
-	textRange TextRange
-}
-
-func (exprList ExprList) TextRange() TextRange {
-	return exprList.textRange
-}
-func (exprList ExprList) Repr() string {
-	s := make([]string, 0)
-	for _, elem := range exprList.Elements {
-		s = append(s, elem.Repr())
-	}
-	return fmt.Sprintf("(explist %s)", strings.Join(s, " "))
-}
-
 type MultiTests struct {
 	Elements  []Node
 	textRange TextRange

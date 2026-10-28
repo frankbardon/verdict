@@ -1677,7 +1677,7 @@ func TestBetween(t *testing.T) {
 			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
 		}
 	}
-	for _, bad := range []string{`3 between 1`, `3 between 1 or 5`, `3 between and 5`, `3 between 1 and`} {
+	for _, bad := range []string{`3 between 1`, `3 between 1 or 5`, `3 between and 5`, `3 between 1 and`, `x between 1`} {
 		if _, err := e.Compile(bad); err == nil {
 			t.Errorf("%s compiled, want a syntax error", bad)
 		}
@@ -1695,6 +1695,55 @@ func TestBetween(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("? between 1 and 5 against %v = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// DMN 1.5 §10.3.1.2 rules 1-2: a textual expression is one expression, so
+// juxtaposition is a syntax error, while comma lists of unary tests and
+// multi-word names are unaffected.
+func TestJuxtapositionIsASyntaxError(t *testing.T) {
+	e := newFEEL(t)
+	for _, bad := range []string{`3 4`, `3 foo`, `"a" "b"`, `x between 1`, `1; 2`, `1 "a"`} {
+		_, err := e.Compile(bad)
+		var ce *CompileError
+		if !errors.As(err, &ce) {
+			t.Errorf("%q: error %v, want a *CompileError", bad, err)
+		}
+	}
+	vars := map[string]any{"Date of Birth": FromGo("1990-01-01"), "days between dates": FromGo(7)}
+	for expr, want := range map[string]any{
+		`Date of Birth`:          "1990-01-01",
+		`days between dates`:     7.0,
+		`days between dates + 1`: 8.0,
+		``:                       nil,
+		`  `:                     nil,
+	} {
+		if got := mustEval(t, e, expr, vars); !deepEqualNum(got, want) {
+			t.Errorf("%q = %#v, want %#v", expr, got, want)
+		}
+	}
+	for _, c := range []struct {
+		entry string
+		input any
+		want  bool
+	}{
+		{`1, 2, 3`, 2, true},
+		{`1, 2, 3`, 4, false},
+		{`not(1, 2)`, 1, false},
+		{`not(1, 2)`, 3, true},
+		{`< 5, > 10`, 11, true},
+	} {
+		x, err := e.CompileUnaryTest(c.entry)
+		if err != nil {
+			t.Fatalf("CompileUnaryTest(%q): %v", c.entry, err)
+		}
+		got, err := e.EvalUnaryTest(x, FromGo(c.input), nil)
+		if err != nil {
+			t.Fatalf("EvalUnaryTest(%q, %v): %v", c.entry, c.input, err)
+		}
+		if got != c.want {
+			t.Errorf("%q against %v = %v, want %v", c.entry, c.input, got, c.want)
 		}
 	}
 }

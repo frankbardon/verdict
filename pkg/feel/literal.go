@@ -80,8 +80,6 @@ func literalsOf(n pfeel.Node) []Literal {
 		return literalsOfAll(v.Elements)
 	case *pfeel.MultiTests:
 		return literalsOfAll(v.Elements)
-	case *pfeel.ExprList:
-		return literalsOfAll(v.Elements)
 	default:
 		return nil
 	}

@@ -3350,6 +3350,24 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
+	t.Run("juxtaposed expressions do not compile", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 rules 1-2. Upstream's Parse collected every
+		// expression up to end of input into an ExprList and returned the
+		// last value, so `3 4` was 4 and `x between 1` read the name
+		// `x between` followed by `1`, all with no error.
+		for _, expr := range []string{`3 4`, `3 foo`, `"a" "b"`, `x between 1`, `1; 2`} {
+			_, err := e.Compile(expr)
+			var ce *CompileError
+			if !errors.As(err, &ce) {
+				t.Errorf("%q: error %v, want a *CompileError", expr, err)
+				continue
+			}
+			if !strings.Contains(err.Error(), "expect eof") {
+				t.Errorf("%q: error %q does not report a trailing token", expr, err)
+			}
+		}
+	})
+
 	t.Run("instance of checks FEEL types", func(t *testing.T) {
 		// DMN 1.5 grammar rules 51-52 and Table 61. Upstream had no
 		// `instance of`: `x instance of number` scanned as one variable name

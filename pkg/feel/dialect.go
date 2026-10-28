@@ -53,8 +53,6 @@ func violatesSFEEL(n pfeel.Node) string {
 		return violatesSFEEL(v.End)
 	case *pfeel.ArrayNode:
 		return violatesSFEELAll(v.Elements)
-	case *pfeel.ExprList:
-		return violatesSFEELAll(v.Elements)
 	case *pfeel.MultiTests:
 		return violatesSFEELAll(v.Elements)
 	case *pfeel.MapNode:

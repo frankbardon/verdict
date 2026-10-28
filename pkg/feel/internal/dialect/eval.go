@@ -261,18 +261,6 @@ func (arrNode ArrayNode) Eval(intp *Interpreter) (any, error) {
 	return arr, nil
 }
 
-func (exprList ExprList) Eval(intp *Interpreter) (any, error) {
-	var finalRet any = nil
-	for _, elem := range exprList.Elements {
-		v, err := elem.Eval(intp)
-		if err != nil {
-			return nil, err
-		}
-		finalRet = v
-	}
-	return finalRet, nil
-}
-
 func (mt MultiTests) Eval(intp *Interpreter) (any, error) {
 	for _, elem := range mt.Elements {
 		v, err := elem.Eval(intp)

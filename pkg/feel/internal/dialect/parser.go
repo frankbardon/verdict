@@ -97,30 +97,23 @@ func (p *Parser) Parse() (Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	var exps []Node
-
-	for !p.CurrentToken().Expect(TokenEOF) {
-		if p.CurrentToken().Expect(";") {
-			err = p.scanner.Next()
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			exp, err := p.parseUnaryTest()
-			if err != nil {
-				return nil, err
-			}
-			exps = append(exps, exp)
-		}
+	// Verdict: a textual expression is exactly one expression (DMN 1.5
+	// §10.3.1.2, rules 1-2) or one comma-separated unary-tests list. Upstream
+	// looped here, collecting juxtaposed or `;`-separated expressions into an
+	// ExprList that evaluated each and kept the last, so `3 4` was 4 and
+	// `x between 1` was the name `x between` followed by `1`. Anything after
+	// the one expression is now an unexpected token. Empty input stays null.
+	if p.CurrentToken().Expect(TokenEOF) {
+		return &NullNode{}, nil
 	}
-
-	if len(exps) == 1 {
-		return exps[0], nil
-	} else {
-		return &ExprList{
-			Elements: exps,
-		}, nil
+	exp, err := p.parseUnaryTest()
+	if err != nil {
+		return nil, err
 	}
+	if !p.CurrentToken().Expect(TokenEOF) {
+		return nil, p.Unexpected(TokenEOF)
+	}
+	return exp, nil
 }
 
 func (p Parser) startTextRange() TextRange {
