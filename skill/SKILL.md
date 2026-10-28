@@ -130,7 +130,7 @@ Pick the policy that says what you mean; do not encode it in the rules.
 | `P` PRIORITY | Most-preferred output wins, ranked by `outputValues` | Precedence is about *outcomes*, not row order |
 | `F` FIRST | First matching rule in row order | Precedence is genuinely positional, e.g. a catch-all last row |
 | `C` COLLECT | List of every match | Collecting reasons, flags, applicable rules |
-| `C+` `C<` `C>` `C#` | Collect and sum / min / max / count. `C<`/`C>` order as FEEL `min`/`max`: null over booleans, mixed kinds or a null output | Stacking discounts, worst-case limits, counting hits |
+| `C+` `C<` `C>` `C#` | FEEL `sum` / `min` / `max` / `count` of the matches: null (never an error) outside the built-in's domain — `C+` over a non-number or null output, `C<`/`C>` over booleans, mixed kinds or a null. No hits: the default output, else null (`C#` too) | Stacking discounts, worst-case limits, counting hits |
 | `R` RULE ORDER | Every match, in row order | The order rules were written is meaningful |
 | `O` OUTPUT ORDER | Every match, ranked by `outputValues` | A ranked list of outcomes |
 
@@ -299,7 +299,8 @@ opens as an empty canvas.
   output clause binds `"excellent"`; two or more bind `{credit rating: ..., fee: ...}`.
 - **`PRIORITY` ranks by `outputValues` order**, not row order. First in the list
   wins.
-- **A COLLECT SUM table that matches nothing** yields null, not zero. Give it
+- **A COLLECT SUM or COUNT table that matches nothing** yields null, not zero
+  (DMN 1.5 §10.3.2.10 resolves no-hit before aggregating). Give it
   `<defaultOutputEntry>0</defaultOutputEntry>` unless null is what you mean.
 - **`/` is decimal division.** `1 / 3` is `0.333…`, not `0`. Dividing by zero is
   null, not an error.

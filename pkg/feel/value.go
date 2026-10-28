@@ -437,17 +437,6 @@ func datetimeFromGo(t time.Time) any {
 	return dt
 }
 
-// Add sums two FEEL values. It exists for the COLLECT SUM aggregator, which
-// needs arithmetic outside an expression context.
-func Add(a, b any) (any, error) {
-	an, aok := a.(*pfeel.Number)
-	bn, bok := b.(*pfeel.Number)
-	if !aok || !bok {
-		return nil, fmt.Errorf("cannot add %s and %s", TypeName(a), TypeName(b))
-	}
-	return an.Add(bn), nil
-}
-
 // Aggregate applies the DMN 1.5 §10.3.4.4 list aggregate name (count, min,
 // max, sum, product, mean, median, stddev or mode) to a list of FEEL values,
 // exactly as the FEEL built-in of that name does: a list outside the
