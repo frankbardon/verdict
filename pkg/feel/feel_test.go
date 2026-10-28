@@ -1013,6 +1013,14 @@ func TestMacroBuiltinArguments(t *testing.T) {
 		{`sort([], function(x, y) x < y)`, []any{}},
 		{`sort(5, function(x, y) x < y)`, []any{5.0}},
 		{`sort(["b", "a"], function(x: string, y: string) x < y)`, []any{"a", "b"}},
+		// Only a boolean true is "before" (Table 80: precedes is a boolean
+		// function); a non-boolean or null result is not-before, like false,
+		// so the stable sort keeps the input order.
+		{`sort([3,1,2], function(x, y) 1)`, []any{3.0, 1.0, 2.0}},
+		{`sort([3,1,2], function(x, y) "x")`, []any{3.0, 1.0, 2.0}},
+		{`sort([3,1,2], function(x, y) null)`, []any{3.0, 1.0, 2.0}},
+		{`sort([3,1,2], function(x, y) [true])`, []any{3.0, 1.0, 2.0}},
+		{`sort([3,1,2], function(x, y) x < y)`, []any{1.0, 2.0, 3.0}},
 		{`is defined(xs)`, true},
 		{`is defined(value: xs)`, true},
 		{`is defined(nope)`, false},

@@ -3432,6 +3432,21 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
+	t.Run("sort reads a non-boolean precedes result as not before", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.9 Table 80: precedes is a boolean function.
+		// Upstream read its result through boolValue, so `1` or `"x"`
+		// counted as true and reordered the list.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`sort([3,1,2], function(x,y) 1)`, []any{3.0, 1.0, 2.0}},
+			{`sort([3,1,2], function(x,y) "x")`, []any{3.0, 1.0, 2.0}},
+			{`sort([3,1,2], function(x,y) null)`, []any{3.0, 1.0, 2.0}},
+			{`sort([3,1,2], function(x,y) x < y)`, []any{1.0, 2.0, 3.0}},
+		})
+	})
+
 	t.Run("function parameters take a type", func(t *testing.T) {
 		// DMN 1.5 grammar rule 56 and §10.3.2.13.2. Upstream read only a
 		// parameter name, so `function(a: string) a` was a syntax error.

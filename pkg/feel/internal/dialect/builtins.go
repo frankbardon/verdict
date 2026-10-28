@@ -573,8 +573,12 @@ func installBuiltinFunctions(prelude *Prelude) {
 	// non-list value is a singleton list (§10.3.2.9.4, as listArg); any
 	// function value — a FunDef or a native one such as a BKM — is called
 	// through CallFunction. An error raised inside the function's body
-	// propagates. The sort is stable, so a predicate whose result is never
-	// true leaves the list as it was (the spec fixes no order then).
+	// propagates. Only a boolean true means "before": upstream read the
+	// result through boolValue, so `1` or `"x"` counted as true; a
+	// non-boolean or null result is "not before", like false, as
+	// `list replace` reads a non-boolean match result as no match. The sort
+	// is stable, so a predicate whose result is never true leaves the list as
+	// it was (the spec fixes no order then).
 	prelude.Bind("sort", NewMacro(func(intp *Interpreter, args map[string]Node, varargs []Node) (any, error) {
 		vlist, err := args["list"].Eval(intp)
 		if err != nil {
@@ -614,7 +618,8 @@ func installBuiltinFunctions(prelude *Prelude) {
 				misfit = true
 				return false
 			}
-			return boolValue(r)
+			before, isBool := r.(bool)
+			return isBool && before
 		})
 		if sortErr != nil {
 			return nil, sortErr
