@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/frankbardon/nexus v0.29.0
-	github.com/frankbardon/verdict v0.2.0
+	github.com/frankbardon/verdict v0.4.0
 )
 
 require (
