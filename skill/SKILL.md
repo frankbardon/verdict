@@ -180,6 +180,9 @@ number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
 date(2026, 2, 28)   time(10, 30, 0)   time(10, 30, 0, duration("PT2H"))   // components; bad ones null
 date(dt)   time(dt)   date and time(d, t)   number("1.000,5", ".", ",")   // Table 72 overloads
 [1..10]  [1..10)  [1..10[  (1..10]  ]1..10]           // both bracket spellings
+overlaps([1..10], [3..4]) = true   overlaps before([3..4], [1..5]) = false   // range relations: DMN Table 78 formulas
+overlaps after((5..10], [1..5]) = false   finishes([1..10], [5..10]) = false   // open/closed endpoints count
+starts([1..10), [1..10]) = true   finished by([1..10], (1..10]) = true   // starts/started by: same start, ends no later; finishes/finished by mirrored
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
 matches(s, "^\\d+$")   "a\tb"   "\u00e9"   "\uD83D\uDC0E"   // escapes \' \" \\ \n \r \t \uXXXX \UXXXXXX decode; others stay verbatim
 string length("🐎ab") = 3                         // lengths and positions count characters (code points), not bytes

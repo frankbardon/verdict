@@ -82,6 +82,62 @@ func TestUnaryTests(t *testing.T) {
 	}
 }
 
+// TestRangeRelationsInExpressionsAndCells holds the Table 78 range relations
+// (DMN 1.5 §10.3.4.7) both as expressions and as decision-table input entries
+// over a range-valued input, where `?` is the tested range (issues #63, #64).
+func TestRangeRelationsInExpressionsAndCells(t *testing.T) {
+	e := newFEEL(t)
+	exprs := map[string]any{
+		"overlaps([1..10], [3..4])":       true,
+		"overlaps before([3..4], [1..5])": false,
+		"overlaps after((5..10], [1..5])": false,
+		"finishes([1..10], [5..10])":      false,
+		"starts([1..10), [1..10])":        true,
+		"started by([1..10], [1..5))":     true,
+		"finished by([1..10], (1..10])":   true,
+	}
+	for expr, want := range exprs {
+		if got := mustEval(t, e, expr, nil); got != want {
+			t.Errorf("%s = %#v, want %#v", expr, got, want)
+		}
+	}
+	cells := []struct {
+		entry, input string
+		want         bool
+	}{
+		{"overlaps(?, [3..4])", "[1..10]", true},
+		{"overlaps(?, [11..20])", "[1..10]", false},
+		{"overlaps before(?, [1..5])", "[3..4]", false},
+		{"overlaps before(?, [3..8])", "[1..5]", true},
+		{"overlaps after(?, [1..5])", "(5..10]", false},
+		{"overlaps after(?, [1..5])", "[3..8]", true},
+		{"starts(?, [1..10])", "[1..5]", true},
+		{"starts(?, [1..10])", "(1..5]", false},
+		{"started by(?, [1..5])", "[1..10]", true},
+		{"finishes(?, [5..10])", "[1..10]", false},
+		{"finishes(?, [1..10])", "[5..10]", true},
+		{"finished by(?, [5..10))", "[1..10]", false},
+		{"not(overlaps(?, [3..4]))", "[1..10]", false},
+	}
+	for _, c := range cells {
+		x, err := e.CompileUnaryTest(c.entry)
+		if err != nil {
+			t.Fatalf("CompileUnaryTest(%q): %v", c.entry, err)
+		}
+		in, err := e.EvalText(c.input, nil)
+		if err != nil {
+			t.Fatalf("EvalText(%q): %v", c.input, err)
+		}
+		got, err := e.EvalUnaryTest(x, in, nil)
+		if err != nil {
+			t.Fatalf("EvalUnaryTest(%q, %s): %v", c.entry, c.input, err)
+		}
+		if got != c.want {
+			t.Errorf("cell %q against %s = %v, want %v", c.entry, c.input, got, c.want)
+		}
+	}
+}
+
 func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 	e, err := NewEvaluator(SFEEL)
 	if err != nil {

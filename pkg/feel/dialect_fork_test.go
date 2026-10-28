@@ -3,6 +3,7 @@ package feel
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2906,6 +2907,135 @@ func TestForkedDefects(t *testing.T) {
 		for expr, want := range cases {
 			if got := mustEval(t, e, expr, nil); got != want {
 				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
+
+	t.Run("range relations follow Table 78", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.7 Table 78, rows (b) of overlaps, overlaps before,
+		// overlaps after, starts, started by, finishes and finished by. The
+		// fork tested only whether one endpoint lay in the other range, so
+		// `overlaps([1..10], [3..4])` was false and `finishes([1..10],
+		// [5..10])` true (issues #63, #64). The literals are Table 78's own
+		// examples and the TCK 1130-feel-interval cases that share them.
+		cases := map[string]any{
+			// acceptance: FR-20, FR-21
+			"overlaps([1..10], [3..4])":        true,
+			"overlaps before([3..4], [1..5])":  false,
+			"overlaps after((5..10], [1..5])":  false,
+			"finishes([1..10], [5..10])":       false,
+			"starts([1..10], [1..5])":          false,
+			"started by([1..5], [1..10])":      false,
+			"finished by([5..10], [1..10])":    false,
+			"overlaps([1..5], [5..8])":         true,
+			"overlaps([1..5], (5..8])":         false,
+			"overlaps([1..5), [5..8])":         false,
+			"overlaps([5..8], [1..5])":         true,
+			"overlaps([1..5], [6..8])":         false,
+			"overlaps before([1..5], [3..8])":  true,
+			"overlaps before([1..5], (5..8])":  false,
+			"overlaps before([1..5), (1..5])":  true,
+			"overlaps before([1..5], [1..5])":  false,
+			"overlaps after([3..8], [1..5])":   true,
+			"overlaps after((5..8], [1..5])":   false,
+			"overlaps after((1..5], [1..5))":   true,
+			"overlaps after([1..5], [1..5])":   false,
+			"starts([1..5], [1..10])":          true,
+			"starts((1..5], [1..10])":          false,
+			"starts([1..10), [1..10])":         true,
+			"started by([1..10], [1..5])":      true,
+			"started by([1..10], (1..5])":      false,
+			"started by([1..10], [1..10))":     true,
+			"finishes([5..10], [1..10])":       true,
+			"finishes([5..10), [1..10])":       false,
+			"finishes([5..10), [1..10))":       true,
+			"finishes((1..10], [1..10])":       true,
+			"finished by([1..10], [5..10])":    true,
+			"finished by([1..10], [5..10))":    false,
+			"finished by([1..10], (1..10])":    true,
+			"starts(1, [1..10])":               true,
+			"starts(1, (1..10])":               false,
+			"finished by([1..10], 10)":         true,
+			"overlaps([1..5], [\"a\"..\"z\"])": nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+
+		// Every endpoint value and closedness over endpoints {1, 2, 3}, against
+		// an oracle on point sets rather than on the formulas: a range is its
+		// points on a half-unit grid, so an open endpoint is excluded and a
+		// shared interior point always exists between distinct integers.
+		type rng struct {
+			s, e         int
+			sOpen, eOpen bool
+		}
+		lit := func(r rng) string {
+			l, h := "[", "]"
+			if r.sOpen {
+				l = "("
+			}
+			if r.eOpen {
+				h = ")"
+			}
+			return fmt.Sprintf("%s%d..%d%s", l, r.s, r.e, h)
+		}
+		points := func(r rng) []float64 {
+			var ps []float64
+			for p := float64(r.s); p <= float64(r.e); p += 0.5 {
+				if (p == float64(r.s) && r.sOpen) || (p == float64(r.e) && r.eOpen) {
+					continue
+				}
+				ps = append(ps, p)
+			}
+			return ps
+		}
+		// earlier: a has a point below every point of b; later: above.
+		earlier := func(a, b rng) bool {
+			return slices.Min(points(a)) < slices.Min(points(b))
+		}
+		later := func(a, b rng) bool {
+			return slices.Max(points(a)) > slices.Max(points(b))
+		}
+		meet := func(a, b rng) bool {
+			for _, p := range points(a) {
+				if slices.Contains(points(b), p) {
+					return true
+				}
+			}
+			return false
+		}
+		sameStart := func(a, b rng) bool { return !earlier(a, b) && !earlier(b, a) }
+		sameEnd := func(a, b rng) bool { return !later(a, b) && !later(b, a) }
+		oracle := map[string]func(a, b rng) bool{
+			"overlaps":        meet,
+			"overlaps before": func(a, b rng) bool { return earlier(a, b) && meet(a, b) && !later(a, b) },
+			"overlaps after":  func(a, b rng) bool { return earlier(b, a) && meet(a, b) && !later(b, a) },
+			"starts":          func(a, b rng) bool { return sameStart(a, b) && !later(a, b) },
+			"started by":      func(a, b rng) bool { return sameStart(a, b) && !later(b, a) },
+			"finishes":        func(a, b rng) bool { return sameEnd(a, b) && !earlier(a, b) },
+			"finished by":     func(a, b rng) bool { return sameEnd(a, b) && !earlier(b, a) },
+		}
+		var ranges []rng
+		for s := 1; s <= 3; s++ {
+			for en := s + 1; en <= 3; en++ {
+				for _, so := range []bool{false, true} {
+					for _, eo := range []bool{false, true} {
+						ranges = append(ranges, rng{s, en, so, eo})
+					}
+				}
+			}
+		}
+		for name, want := range oracle {
+			for _, a := range ranges {
+				for _, b := range ranges {
+					expr := fmt.Sprintf("%s(%s, %s)", name, lit(a), lit(b))
+					if got := mustEval(t, e, expr, nil); got != want(a, b) {
+						t.Errorf("%s = %#v, want %v", expr, got, want(a, b))
+					}
+				}
 			}
 		}
 	})
