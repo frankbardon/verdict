@@ -320,6 +320,8 @@ func buildSupplement() {
 				l = x
 			case map[string]any:
 				l = []any{x}
+			case pfeel.Scope:
+				l = []any{map[string]any(x)}
 			default:
 				return Null, nil
 			}
@@ -332,6 +334,9 @@ func buildSupplement() {
 			out := map[string]any{}
 			for _, e := range l {
 				m, ok := e.(map[string]any)
+				if sc, isScope := e.(pfeel.Scope); isScope {
+					m, ok = sc, true
+				}
 				if !ok {
 					return Null, nil
 				}

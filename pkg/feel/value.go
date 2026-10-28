@@ -299,6 +299,10 @@ func writeKey(b *strings.Builder, v any) bool {
 			b.WriteByte(']')
 		}
 		b.WriteByte(')')
+	case pfeel.Scope:
+		// The fork keeps contexts as map[string]any (issue #67); a Scope here
+		// is a leak, but it is the same context and keys the same way.
+		return writeKey(b, map[string]any(x))
 	case map[string]any:
 		names := make([]string, 0, len(x))
 		for k := range x {
@@ -411,7 +415,7 @@ func TypeName(v any) string {
 		return "date and time"
 	case *pfeel.FEELDuration:
 		return "duration"
-	case map[string]any:
+	case map[string]any, pfeel.Scope:
 		return "context"
 	case []any:
 		return "list"

@@ -99,16 +99,39 @@ func normalizeValue(v any) any {
 	}
 }
 
+// normalizeScope copies a pushed frame, normalising every value in it. Only
+// the frame itself is a Scope — the interpreter's stack needs that type. A
+// context-typed value inside the frame (an input, an upstream decision, a BKM
+// argument) stays a plain map[string]any, the type every context operator and
+// built-in switches on; upstream rewrote nested maps to Scope too, so a
+// context variable was not a context anywhere but DotOp (see NOTICE.md).
 func normalizeScope(scope Scope) Scope {
-	newScope := make(Scope)
+	newScope := make(Scope, len(scope))
 	for key, value := range scope {
-		if nestedScope, ok := value.(map[string]interface{}); ok {
-			newScope[key] = normalizeScope(nestedScope)
-		} else {
-			newScope[key] = normalizeValue(value)
-		}
+		newScope[key] = normalizeEntry(value)
 	}
 	return newScope
+}
+
+// normalizeEntry normalises one frame value, turning a context (either map
+// spelling) into a fresh map[string]any with its own entries normalised.
+func normalizeEntry(value any) any {
+	switch m := value.(type) {
+	case Scope:
+		return normalizeContext(m)
+	case map[string]any:
+		return normalizeContext(m)
+	default:
+		return normalizeValue(value)
+	}
+}
+
+func normalizeContext(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for key, value := range m {
+		out[key] = normalizeEntry(value)
+	}
+	return out
 }
 
 func NewIntepreter() *Interpreter {

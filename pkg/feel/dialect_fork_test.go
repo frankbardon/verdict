@@ -2753,6 +2753,49 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("context-typed variables are contexts", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.6 and Table 53: a context is a context whether
+		// written as a literal or bound as a variable. Upstream rewrote every
+		// map nested in a pushed scope to its named Scope type, which only
+		// DotOp recognised, so equality, the context built-ins and string()
+		// all failed on an input, an upstream decision or a BKM argument.
+		vars := func() map[string]any {
+			return map[string]any{"a": FromGo(map[string]any{"x": 1, "n": map[string]any{"y": 2}})}
+		}
+		bools := []string{
+			`a = a`,
+			`a.n = a.n`,
+			`a = {x: 1, n: {y: 2}}`,
+			`{x: 1, n: {y: 2}} = a`,
+			`[a.n] = [a.n]`,
+			`not(a != a)`,
+			`a.n.y = 2`,
+			`context put(a, "z", 3) = {x: 1, n: {y: 2}, z: 3}`,
+			`context put(a.n, "z", 3) = {y: 2, z: 3}`,
+			`context merge([a, a.n]) = {x: 1, n: {y: 2}, y: 2}`,
+			`count(get entries(a)) = 2`,
+			`context([{key: "k", value: (a.n)}]) = {k: {y: 2}}`,
+			`context([a.n, {key: "k", value: 1}]) = null`,
+			`string(a) = "{n: {y: 2}, x: 1}"`,
+			`string(a) = string({x: 1, n: {y: 2}})`,
+		}
+		for _, expr := range bools {
+			if got := mustEval(t, e, expr, vars()); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+		// The value itself is a plain context, not the interpreter's frame type.
+		for _, expr := range []string{`a`, `a.n`, `[a.n][1]`, `if true then a else null`} {
+			v, err := e.EvalText(expr, vars())
+			if err != nil {
+				t.Fatalf("%s: %v", expr, err)
+			}
+			if _, ok := v.(map[string]any); !ok {
+				t.Errorf("%s is %T, want map[string]any", expr, v)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {

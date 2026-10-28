@@ -239,6 +239,56 @@ func TestMemoKeysKeepTemporalKindsApart(t *testing.T) {
 	}
 }
 
+// TestMemoKeysCoverContextArguments pins issue #67: a context-typed input
+// reached the BKM binding as the FEEL fork's internal Scope type, which KeyOf
+// did not key, so a BKM invoked with a context argument never hit the cache.
+func TestMemoKeysCoverContextArguments(t *testing.T) {
+	call := func(id string, after []string, arg string) string {
+		req := `"required_inputs":["ctx"],`
+		if len(after) > 0 {
+			req += `"required_decisions":["` + strings.Join(after, `","`) + `"],`
+		}
+		return fmt.Sprintf(`{"id":%q,"name":%q,%s"required_knowledge":["show"],
+		  "variable":{"name":%q},
+		  "logic":{"kind":"invocation","called":"Show","bindings":[
+		    {"parameter":{"name":"x"},"value":{"kind":"literalExpression","text":%q}}]}}`,
+			id, id, req, id, arg)
+	}
+	doc := `{"vdj":"1.0","id":"memo_ctx","conformance_level":"feel",
+	  "input_data":[{"id":"ctx","name":"Ctx","variable":{"name":"Ctx"}}],
+	  "business_knowledge_models":[{"id":"show","name":"Show",
+	    "encapsulated_logic":{"kind":"functionDefinition","parameters":[{"name":"x"}],
+	      "body":{"kind":"literalExpression","text":"string(x)"}}}],
+	  "decisions":[` + call("C1", nil, "Ctx") + `,` +
+		call("C2", []string{"C1"}, "if C1 = null then null else Ctx") + `]}`
+
+	e, err := verdict.NewEngine(verdict.WithMemoization(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.LoadModel(verdict.FromBytes([]byte(doc)))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	in := verdict.Inputs{"Ctx": map[string]any{"x": 1, "n": map[string]any{"y": 2}}}
+	res, err := e.Evaluate(context.Background(), m.ID, in)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if got := res.Outputs["C2"]; got != "{n: {y: 2}, x: 1}" {
+		t.Errorf("C2 = %#v, want %q", got, "{n: {y: 2}, x: 1}")
+	}
+	hit := false
+	res.Trace.Walk(func(n *trace.Node) {
+		if n.Annotations[trace.AnnCacheHit] == true {
+			hit = true
+		}
+	})
+	if !hit {
+		t.Errorf("a BKM invoked twice with the same context argument never hit the cache")
+	}
+}
+
 // invokeShow is a VDJ decision named name that invokes the Show BKM with the
 // FEEL text arg, after the decisions in after.
 func invokeShow(id, name string, after []string, arg string) string {

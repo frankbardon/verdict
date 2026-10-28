@@ -886,3 +886,29 @@ func mustFEEL(t *testing.T, e *Evaluator, text string) any {
 	}
 	return v
 }
+
+// TestScopeLeaksAreStillContexts pins the façade backstops for issue #67. The
+// fork no longer hands context variables out as its frame type, Scope, but a
+// Scope that leaks (lists are not normalised when a frame is pushed, and a
+// future re-sync could reintroduce the upstream rewrite) must still be keyed,
+// named and consumed as the context it is.
+func TestScopeLeaksAreStillContexts(t *testing.T) {
+	sc := pfeel.Scope{"x": pfeel.NewNumberFromInt64(1), "n": map[string]any{"y": pfeel.NewNumberFromInt64(2)}}
+	plain := map[string]any{"x": pfeel.NewNumberFromInt64(1), "n": map[string]any{"y": pfeel.NewNumberFromInt64(2)}}
+	ks, ok1 := KeyOf(sc)
+	kp, ok2 := KeyOf(plain)
+	if !ok1 || !ok2 || ks != kp {
+		t.Errorf("KeyOf(Scope) = %q (%v), KeyOf(map) = %q (%v); want one usable key", ks, ok1, kp, ok2)
+	}
+	if got := TypeName(sc); got != "context" {
+		t.Errorf("TypeName(Scope) = %q, want context", got)
+	}
+
+	e := newFEEL(t)
+	vars := map[string]any{"l": []any{pfeel.Scope{"key": "k", "value": pfeel.NewNumberFromInt64(1)}}}
+	for _, expr := range []string{`context(l) = {k: 1}`, `context(l[1]) = {k: 1}`} {
+		if got := mustEval(t, e, expr, vars); got != true {
+			t.Errorf("%s = %#v, want true", expr, got)
+		}
+	}
+}

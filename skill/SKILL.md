@@ -179,6 +179,7 @@ substring before(s, "@")   matches(s, "^ab")   split(s, ",")
 string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; strings nested in lists/contexts quoted
 context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key; context put/merge override instead
 context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list
+context put(Applicant, "k", 1)   Applicant = {name: "A", age: 30}   // a context input is a context to =, built-ins, string()
 list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, negative from the end
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
 all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null
