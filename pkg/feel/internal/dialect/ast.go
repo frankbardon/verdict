@@ -3,6 +3,8 @@ package dialect
 import (
 	"fmt"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 type Scope map[string]interface{}
@@ -198,11 +200,105 @@ func (stringNode StringNode) TextRange() TextRange {
 }
 func (stringNode StringNode) Content() string {
 	// trim leading and trailing quotes
-	s := stringNode.Value[1 : len(stringNode.Value)-1]
+	return unescapeString(stringNode.Value[1 : len(stringNode.Value)-1])
+}
 
-	s = strings.ReplaceAll(s, "\\n", "\n")
-	s = strings.ReplaceAll(s, "\\\"", "\"")
-	return s
+// unescapeString decodes the escape sequences of a string literal's body.
+//
+// VERDICT DIVERGENCE: upstream replaced only \n and \", so "\\d" reached a
+// regular expression as \\d (a literal backslash, then d) and "\t", "\r",
+// "\'", "\\" and "\u0041" were kept verbatim. DMN 1.5 §10.3.1.2 grammar rule
+// 66 (string literal) admits the escapes \', \", \\, \n, \r, \t and the
+// code points \uXXXX and \UXXXXXX; a \uXXXX high surrogate followed by a
+// \uXXXX low surrogate is one code point. Interpretation, where the grammar
+// is silent: an escape it does not define (\d, \3, a short \u) is kept
+// verbatim, backslash included, so a regular expression written with single
+// backslashes keeps working; a lone surrogate or an out-of-range \U decodes
+// to U+FFFD, the only thing a Go string can hold in its place.
+func unescapeString(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '\\' || i+1 == len(s) {
+			b.WriteByte(c)
+			continue
+		}
+		switch s[i+1] {
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case '\'', '"', '\\':
+			b.WriteByte(s[i+1])
+		case 'u':
+			r, ok := hexRune(s[i+2:], 4)
+			if !ok {
+				b.WriteByte(c)
+				continue
+			}
+			n := 6
+			if utf16.IsSurrogate(r) {
+				hi := r
+				r = utf8.RuneError
+				if strings.HasPrefix(s[i+6:], `\u`) {
+					if lo, ok := hexRune(s[i+8:], 4); ok {
+						if pair := utf16.DecodeRune(hi, lo); pair != utf8.RuneError {
+							r, n = pair, 12
+						}
+					}
+				}
+			}
+			b.WriteRune(r)
+			i += n - 1
+			continue
+		case 'U':
+			r, ok := hexRune(s[i+2:], 6)
+			if !ok {
+				b.WriteByte(c)
+				continue
+			}
+			if !utf8.ValidRune(r) {
+				r = utf8.RuneError
+			}
+			b.WriteRune(r)
+			i += 7
+			continue
+		default:
+			b.WriteByte(c)
+			continue
+		}
+		i++
+	}
+	return b.String()
+}
+
+// hexRune reads exactly n hexadecimal digits from the start of s.
+func hexRune(s string, n int) (rune, bool) {
+	if len(s) < n {
+		return 0, false
+	}
+	var r rune
+	for _, c := range []byte(s[:n]) {
+		var d byte
+		switch {
+		case c >= '0' && c <= '9':
+			d = c - '0'
+		case c >= 'a' && c <= 'f':
+			d = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			d = c - 'A' + 10
+		default:
+			return 0, false
+		}
+		r = r<<4 | rune(d)
+	}
+	return r, true
 }
 
 type mapItem struct {

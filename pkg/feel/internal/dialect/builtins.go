@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mitchellh/mapstructure"
 )
@@ -340,8 +341,12 @@ func installBuiltinFunctions(prelude *Prelude) {
 	}).Required("value"))
 
 	// string functions
+	// VERDICT DIVERGENCE: upstream returned len(s), the number of UTF-8
+	// bytes. DMN 1.5 §10.3.4.3 Table 73: string length is the number of
+	// characters, and a character is a code point (footnote 1), so
+	// string length("🐎ab") is 3.
 	prelude.Bind("string length", wrapTyped(func(s string) (int, error) {
-		return len(s), nil
+		return utf8.RuneCountInString(s), nil
 	}).Required("string"))
 
 	// VERDICT DIVERGENCE: upstream decoded its arguments through mapstructure,

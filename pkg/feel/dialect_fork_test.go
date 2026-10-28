@@ -2796,6 +2796,39 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("string literals unescape and lengths count characters", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 grammar rule 66 and §10.3.4.3 Table 73. Upstream
+		// decoded only \n and \", so "\\d" reached a regular expression as
+		// two backslashes, and string length counted UTF-8 bytes.
+		strs := map[string]string{
+			`"a\\b"`:         `a\b`,
+			`"a\tb\rc"`:      "a\tb\rc",
+			`"\'"`:           "'",
+			`"\u0041"`:       "A",
+			`"\uD83D\uDC0E"`: "🐎",
+			`"\U01F40E"`:     "🐎",
+			`"\d"`:           `\d`,
+			`"\uD83Dx"`:      "\uFFFDx",
+			`"\U110000"`:     "\uFFFD",
+		}
+		for expr, want := range strs {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+		bools := []string{
+			`matches("1", "^\\d$")`,
+			`string length("🐎ab") = 3`,
+			`string length("\uD83D\uDC0E") = 1`,
+			`substring("🐎ab", 1, 1) = "🐎"`,
+		}
+		for _, expr := range bools {
+			if got := mustEval(t, e, expr, nil); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {

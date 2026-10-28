@@ -424,6 +424,64 @@ func TestStringAndListSupplementDomain(t *testing.T) {
 	}
 }
 
+func TestStringLiteralsAndCharacters(t *testing.T) {
+	// DMN 1.5 §10.3.1.2 grammar rule 66: a string literal's escapes decode
+	// (issue #55). §10.3.4.3 Table 73: lengths and positions count
+	// characters, which are code points (issue #56).
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`"a\\b"`, `a\b`},
+		{`"a\tb"`, "a\tb"},
+		{`"a\rb"`, "a\rb"},
+		{`"a\nb"`, "a\nb"},
+		{`"a\'b"`, "a'b"},
+		{`"a\"b"`, `a"b`},
+		{`"\u0041\u00e9"`, "Aé"},
+		{`"\uD83D\uDC0E"`, "🐎"},
+		{`"\U01F40E"`, "🐎"},
+		{`"\\"`, `\`},
+		{`"\\n"`, `\n`},
+		// Escapes the grammar does not define stay verbatim.
+		{`"\d"`, `\d`},
+		{`"\u12"`, `\u12`},
+		{`"\uD83D"`, "\uFFFD"},
+		// A regular expression written with an escaped backslash reaches the
+		// engine as one backslash.
+		{`matches("a1", "\\d")`, true},
+		{`matches("ad", "\\d")`, false},
+		{`replace("a1b2", "\\d", "#")`, "a#b#"},
+		{`string length("a\\b")`, 3.0},
+		{`string length("\uD83D\uDC0E")`, 1.0},
+		// Characters, not bytes.
+		{`string length("🐎ab")`, 3.0},
+		{`string length("é")`, 1.0},
+		{`string length("")`, 0.0},
+		{`substring("🐎ab", 2)`, "ab"},
+		{`substring("🐎ab", -2, 1)`, "a"},
+		{`substring before("🐎ab", "b")`, "🐎a"},
+		{`substring after("🐎ab", "🐎")`, "ab"},
+		{`upper case("éa🐎")`, "ÉA🐎"},
+		{`lower case("ÉA")`, "éa"},
+		{`starts with("🐎ab", "🐎")`, true},
+		{`ends with("ab🐎", "🐎")`, true},
+		{`contains("a🐎b", "🐎")`, true},
+		{`matches("🐎", "^.$")`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 func TestAllAnyAreThreeValued(t *testing.T) {
 	// DMN 1.5 §10.3.4.4; TCK 0059/0060. A null item decides nothing; a
 	// non-boolean item puts the call outside its domain.

@@ -176,6 +176,8 @@ date(2026, 2, 28)   time(10, 30, 0)   time(10, 30, 0, duration("PT2H"))   // com
 date(dt)   time(dt)   date and time(d, t)   number("1.000,5", ".", ",")   // Table 72 overloads
 [1..10]  [1..10)  [1..10[  (1..10]  ]1..10]           // both bracket spellings
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
+matches(s, "^\\d+$")   "a\tb"   "\u00e9"   "\uD83D\uDC0E"   // escapes \' \" \\ \n \r \t \uXXXX \UXXXXXX decode; others stay verbatim
+string length("🐎ab") = 3                         // lengths and positions count characters (code points), not bytes
 string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; strings nested in lists/contexts quoted
 context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key; context put/merge override instead
 context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list
