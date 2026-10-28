@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	pfeel "github.com/frankbardon/verdict/pkg/feel/internal/dialect"
 )
@@ -2317,4 +2318,84 @@ func TestScopeLeaksAreStillContexts(t *testing.T) {
 			t.Errorf("%s = %#v, want true", expr, got)
 		}
 	}
+}
+
+// stringRoundTrip renders x with string() and evaluates the result as FEEL,
+// returning the text and the value it reads back as.
+func stringRoundTrip(e *Evaluator, x any) (string, any, error) {
+	s, err := e.EvalText("string(x)", map[string]any{"x": FromGo(x)})
+	if err != nil {
+		return "", nil, err
+	}
+	text, _ := ToGo(s).(string)
+	back, err := e.EvalText(text, nil)
+	if err != nil {
+		return text, nil, err
+	}
+	return text, ToGo(back), nil
+}
+
+// TestStringRoundTrip: string() of a list or context writes nested strings
+// and non-name keys as FEEL string literals with only the escapes of DMN 1.5
+// §10.3.1.2 grammar rule 66, so the text reads back as the same value.
+func TestStringRoundTrip(t *testing.T) {
+	e := newFEEL(t)
+	tricky := []string{
+		`say "hi"`, `back\slash`, `\n is not a newline`, `A`, "line\nbreak",
+		"tab\there", "cr\rhere", "bell\a", "nul\x00", "del\x7f", "é", "🐎",
+		"\U0001F600 non-BMP", "\u2028 separator", "\U000E0001 tag", "",
+		`trailing \`, `'single'`,
+	}
+	for _, s := range tricky {
+		for _, x := range []any{[]any{s}, map[string]any{"k": s}, map[string]any{s: 1.0}} {
+			text, back, err := stringRoundTrip(e, x)
+			if err != nil {
+				t.Errorf("string(%#v) = %q does not read back: %v", x, text, err)
+				continue
+			}
+			if !reflect.DeepEqual(back, x) {
+				t.Errorf("string(%#v) = %q reads back as %#v", x, text, back)
+			}
+		}
+	}
+	keys := []string{
+		"a b", "a  b", " a", "a ", "true", "and", "a and b", "for", "null",
+		"?", "a?", "é", "1x", "a.b", "a-b", "x\ny", "not", "between", "date",
+	}
+	for _, k := range keys {
+		x := map[string]any{k: 1.0}
+		text, back, err := stringRoundTrip(e, x)
+		if err != nil || !reflect.DeepEqual(back, x) {
+			t.Errorf("string({%q: 1}) = %q reads back as %#v (%v)", k, text, back, err)
+		}
+	}
+}
+
+// FuzzQuoteRoundTrip: for any valid UTF-8 string s, string([s]) and
+// string({s: 1}) read back as the same list and context.
+func FuzzQuoteRoundTrip(f *testing.F) {
+	for _, s := range []string{
+		"", "a", `"`, `\`, `\\`, `A`, `\U01F600`, "\n\r\t", "\x01\x1f\x7f",
+		"é🐎", "\u2028\u00a0", "\U000E0001", "a  b", "true", "?",
+	} {
+		f.Add(s)
+	}
+	e, err := NewEvaluator(FEEL)
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		if !utf8.ValidString(s) {
+			t.Skip("FEEL text is UTF-8")
+		}
+		for _, x := range []any{[]any{s}, map[string]any{s: 1.0}} {
+			text, back, err := stringRoundTrip(e, x)
+			if err != nil {
+				t.Fatalf("string(%#v) = %q does not read back: %v", x, text, err)
+			}
+			if !reflect.DeepEqual(back, x) {
+				t.Fatalf("string(%#v) = %q reads back as %#v", x, text, back)
+			}
+		}
+	})
 }

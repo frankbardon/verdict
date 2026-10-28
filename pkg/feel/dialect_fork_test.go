@@ -2483,6 +2483,28 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
+	t.Run("string() writes nested strings as rule-66 literals", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 grammar rule 66. Nested strings were quoted
+		// with Go's strconv.Quote, which writes escapes FEEL does not
+		// define (\x01, \a, \v) and an eight-digit \U000e0001 that FEEL's
+		// six-digit \U reads as U+0E00 followed by "01";
+		// keys that are keywords or need `?`, `é` or two spaces printed
+		// bare and did not parse back.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`string(["a\\b"])`, `["a\\b"]`},
+			{`string(["l1\nl2\tx\ry"])`, `["l1\nl2\tx\ry"]`},
+			{`string(["\u0001\u001F\u007F"])`, `["\u0001\u001F\u007F"]`},
+			{`string(["é🐎"])`, `["é🐎"]`},
+			{"string([\"\u2028\"])", `["\u2028"]`},
+			{`string(["\U0E0001"])`, `["\U0E0001"]`},
+			{`string({"x\ny": "q\"q"})`, `{"x\ny": "q\"q"}`},
+			{`string({"true": 1, "a  b": 2, "?": 3, "é": 4, "a b": 5})`, `{"?": 3, "a  b": 2, a b: 5, "true": 1, "é": 4}`},
+		})
+	})
+
 	t.Run("context merge and list contains convert a singleton instead of raising", func(t *testing.T) {
 		// DMN 1.5 §10.3.2.9.4 and §10.3.2.15: a non-list argument to a list
 		// parameter is a singleton list; null is outside the domain. Upstream

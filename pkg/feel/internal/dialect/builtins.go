@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/mitchellh/mapstructure"
@@ -768,11 +767,12 @@ func position(v any, n int) (int, bool) {
 // feelString renders a value as string() does for anything but a top-level
 // string or null (DMN 1.5 §10.3.4.1 Table 72: "convert from to a string"):
 // in FEEL's own lexical form, so true is `true`, a list `[1, "a", null]` and
-// a context `{a: 1, b: "x"}`. Strings inside a list or context are quoted and
-// escaped; temporals and durations print in their lexical form, unquoted, as
+// a context `{a: 1, b: "x"}`. Strings inside a list or context are written
+// as FEEL string literals (quoteString), so they read back as the same
+// string; temporals and durations print in their lexical form, unquoted, as
 // a top-level one does; ranges print with their endpoints. A context's
 // entries print in key order: the fork holds contexts as Go maps, which keep
-// none of their own. A key that is not a FEEL name is quoted.
+// none of their own. A key that is not a FEEL name is quoted the same way.
 //
 // VERDICT DIVERGENCE: fork-only; upstream formatted with fmt's %s.
 func feelString(v any) string {
@@ -786,7 +786,7 @@ func writeFEEL(b *strings.Builder, v any) {
 	case nil, *NullValue:
 		b.WriteString("null")
 	case string:
-		b.WriteString(strconv.Quote(x))
+		quoteString(b, x)
 	case bool:
 		b.WriteString(strconv.FormatBool(x))
 	case *Number:
@@ -814,7 +814,7 @@ func writeFEEL(b *strings.Builder, v any) {
 			if isFEELName(k) {
 				b.WriteString(k)
 			} else {
-				b.WriteString(strconv.Quote(k))
+				quoteString(b, k)
 			}
 			b.WriteString(": ")
 			writeFEEL(b, x[k])
@@ -843,19 +843,24 @@ func writeFEEL(b *strings.Builder, v any) {
 	}
 }
 
-// isFEELName reports whether a context key can be written unquoted: a FEEL
-// name start character followed by name characters, with no leading or
-// trailing space (DMN 1.5 §10.3.1.2 grammar rules 27-30, restricted to the
-// unambiguous subset).
+// isFEELName reports whether a context key can be written unquoted and read
+// back as the same key: one or more words separated by single spaces, each
+// of which this fork's scanner reads as one name token. That is the
+// unambiguous subset of DMN 1.5 §10.3.1.2 grammar rules 27-30 that the
+// scanner admits: a keyword (`true`, `and`, `for`) is not a name, a run of
+// spaces would read back as one, and name characters the scanner does not
+// take (`?`, `é`) would not parse. Any other key is written as a string
+// literal, which always reads back.
 func isFEELName(k string) bool {
-	if k == "" || strings.TrimSpace(k) != k {
+	if k == "" {
 		return false
 	}
-	for i, r := range k {
-		switch {
-		case r == '_' || r == '?' || unicode.IsLetter(r):
-		case i > 0 && (unicode.IsDigit(r) || r == ' '):
-		default:
+	for _, word := range strings.Split(k, " ") {
+		if word == "" {
+			return false
+		}
+		tokens, err := NewScanner(word).Tokens()
+		if err != nil || len(tokens) != 1 || tokens[0].Kind != TokenName || tokens[0].Value != word {
 			return false
 		}
 	}

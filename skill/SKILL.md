@@ -187,7 +187,7 @@ starts([1..10), [1..10]) = true   finished by([1..10], (1..10]) = true   // star
 substring before(s, "@")   matches(s, "^ab")   split(s, ",")
 matches(s, "^\\d+$")   "a\tb"   "\u00e9"   "\uD83D\uDC0E"   // escapes \' \" \\ \n \r \t \uXXXX \UXXXXXX decode; others stay verbatim
 string length("🐎ab") = 3                         // lengths and positions count characters (code points), not bytes
-string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; strings nested in lists/contexts quoted
+string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; nested strings and non-name keys as FEEL literals, so the result parses back
 context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key; context put/merge override instead
 {c: 1, r: c + 1} = {c: 1, r: 2}   {a: 2, n: {b: a + 1}}.n.b = 3   // an entry sees earlier entries of its literal; shadows outer names
 context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list

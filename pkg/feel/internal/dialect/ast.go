@@ -3,6 +3,7 @@ package dialect
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -300,6 +301,52 @@ func unescapeString(s string) string {
 		i++
 	}
 	return b.String()
+}
+
+// quoteString writes s as a FEEL string literal, quotes included, using only
+// the escapes of DMN 1.5 §10.3.1.2 grammar rule 66, so that
+// unescapeString(body) == s for every s. `"` and `\` are always escaped (an
+// unescaped backslash before an unknown character would be kept verbatim,
+// but one before n or u would not); newline, carriage return and tab use
+// their short escapes; any other non-printable code point is written as
+// \uXXXX, or \UXXXXXX beyond the Basic Multilingual Plane. Printable
+// characters, non-ASCII ones included (é, 🐎), are written literally, and so
+// are bytes that are not valid UTF-8, which unescapeString passes through.
+//
+// VERDICT DIVERGENCE: fork-only; see the string() row of NOTICE.md.
+func quoteString(b *strings.Builder, s string) {
+	const hex = "0123456789ABCDEF"
+	b.WriteByte('"')
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			b.WriteByte(s[i])
+		case r == '"' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteByte(byte(r))
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case unicode.IsPrint(r):
+			b.WriteString(s[i : i+size])
+		case r <= 0xFFFF:
+			b.WriteString(`\u`)
+			for shift := 12; shift >= 0; shift -= 4 {
+				b.WriteByte(hex[r>>shift&0xF])
+			}
+		default:
+			b.WriteString(`\U`)
+			for shift := 20; shift >= 0; shift -= 4 {
+				b.WriteByte(hex[r>>shift&0xF])
+			}
+		}
+		i += size
+	}
+	b.WriteByte('"')
 }
 
 // hexRune reads exactly n hexadecimal digits from the start of s.
