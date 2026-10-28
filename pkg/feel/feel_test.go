@@ -3,6 +3,7 @@ package feel
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1485,6 +1486,99 @@ func TestTemporalZoneProperties(t *testing.T) {
 		if got := mustEval(t, e, expr, nil); got != want {
 			t.Errorf("%s = %#v, want %#v", expr, got, want)
 		}
+	}
+}
+
+// TestTemporalPropertiesPerKind walks DMN 1.5 §10.3.2.15 Table 65 kind by
+// kind, with Table 66's types: every listed property answers, and a property
+// the kind does not list is null.
+func TestTemporalPropertiesPerKind(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		kind  string
+		cases map[string]any
+	}{
+		{"date", map[string]any{
+			`date("2020-01-01").year`:  2020.0,
+			`date("2020-01-01").month`: 1.0,
+			`date("2020-01-01").day`:   1.0,
+			// ISO 8601 numbering (Table 66): 1 is Monday, 7 is Sunday.
+			`date("2020-01-01").weekday`:                       3.0,
+			`date("2020-01-06").weekday`:                       1.0,
+			`date("2020-01-05").weekday`:                       7.0,
+			`date("2020-12-01").month + 1`:                     13.0,
+			`is defined(date("2020-01-01").weekday)`:           true,
+			`[date("2020-01-01"), date("2020-01-02")].weekday`: []any{3.0, 4.0},
+			`date("2020-01-01").hour`:                          nil,
+			`date("2020-01-01").time offset`:                   nil,
+			`date("2020-01-01").timezone`:                      nil,
+			`is defined(date("2020-01-01").hour)`:              false,
+		}},
+		{"date and time", map[string]any{
+			`date and time("2020-03-05T10:20:30").year`:      2020.0,
+			`date and time("2020-03-05T10:20:30").month`:     3.0,
+			`date and time("2020-03-05T10:20:30").day`:       5.0,
+			`date and time("2020-03-05T10:20:30").weekday`:   4.0,
+			`date and time("2020-03-05T10:20:30").hour`:      10.0,
+			`date and time("2020-03-05T10:20:30").minute`:    20.0,
+			`date and time("2020-03-05T10:20:30").second`:    30.0,
+			`date and time("2020-03-05T10:20:30.25").second`: 0.25 + 30,
+			// The weekday is the value's own calendar date, at its offset.
+			`date and time("2020-03-08T23:30:00-05:00").weekday`:             7.0,
+			`string(date and time("2020-03-05T10:00:00+02:00").time offset)`: "PT2H",
+			`date and time("2020-03-05T10:00:00+02:00").timezone`:            nil,
+			`date and time("2020-03-05T10:00:00@Europe/Paris").timezone`:     "Europe/Paris",
+			`date and time("2020-03-05T10:00:00").time offset`:               nil,
+			`date and time("2020-03-05T10:00:00").timezone`:                  nil,
+			`date and time("2020-03-05T10:00:00").years`:                     nil,
+		}},
+		{"time", map[string]any{
+			`time("10:20:30").hour`:                      10.0,
+			`time("10:20:30").minute`:                    20.0,
+			`time("10:20:30").second`:                    30.0,
+			`time("10:20:30.5").second`:                  30.5,
+			`string(time("10:20:30-05:00").time offset)`: "-PT5H",
+			`time("10:20:30-05:00").timezone`:            nil,
+			`time("10:20:30@Etc/UTC").timezone`:          "Etc/UTC",
+			`time("10:20:30").time offset`:               nil,
+			`time("10:20:30").timezone`:                  nil,
+			`time("10:20:30").weekday`:                   nil,
+			`time("10:20:30").year`:                      nil,
+		}},
+		{"years and months duration", map[string]any{
+			`duration("P14M").years`:             1.0,
+			`duration("P14M").months`:            2.0,
+			`duration("-P1Y2M").years`:           -1.0,
+			`duration("-P1Y2M").months`:          -2.0,
+			`duration("P1Y2M").days`:             nil,
+			`duration("P1Y2M").hours`:            nil,
+			`duration("P1Y2M").seconds`:          nil,
+			`is defined(duration("P1Y").days)`:   false,
+			`is defined(duration("P1Y").months)`: true,
+		}},
+		{"days and time duration", map[string]any{
+			`duration("P1DT25H").days`:            2.0,
+			`duration("P1DT25H").hours`:           1.0,
+			`duration("PT90M").minutes`:           30.0,
+			`duration("PT1.5S").seconds`:          1.5,
+			`duration("-P1DT2H").days`:            -1.0,
+			`duration("-P1DT2H").hours`:           -2.0,
+			`duration("-PT1.5S").seconds`:         -1.5,
+			`duration("P1D").years`:               nil,
+			`duration("P1D").months`:              nil,
+			`is defined(duration("P1D").years)`:   false,
+			`is defined(duration("P1D").seconds)`: true,
+		}},
+	}
+	for _, kind := range cases {
+		t.Run(kind.kind, func(t *testing.T) {
+			for expr, want := range kind.cases {
+				got := mustEval(t, e, expr, nil)
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("%s = %#v, want %#v", expr, got, want)
+				}
+			}
+		})
 	}
 }
 

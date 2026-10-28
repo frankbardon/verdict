@@ -3255,6 +3255,27 @@ func TestForkedDefects(t *testing.T) {
 			{`{g: {f: function(x) x + u}.f, r: {u: 1, v: g(1)}.v}.r`, nil},
 		})
 	})
+
+	t.Run("temporals expose every Table 65 property", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.15 Tables 65 and 66. Upstream had no `weekday`,
+		// returned `month` as Go's time.Month (the string "January"),
+		// dropped a second's fraction, answered 0 for a duration property
+		// of the other kind and returned a negative duration's magnitude.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`date("2020-01-01").weekday`, 3.0},
+			{`date("2020-01-01").month`, 1.0},
+			{`date and time("2020-01-05T10:00:00").weekday`, 7.0},
+			{`time("10:00:00.5").second`, 0.5},
+			{`duration("P1Y2M").days`, nil},
+			{`duration("P1D").years`, nil},
+			{`duration("-P1Y2M").years`, -1.0},
+			{`is defined(date("2020-01-01").weekday)`, true},
+			{`is defined(duration("P1D").years)`, false},
+		})
+	})
 }
 
 func approx(a, b float64) bool {

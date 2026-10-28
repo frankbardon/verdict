@@ -204,6 +204,10 @@ func ParseTime(temporalStr string) (*FEELTime, error) {
 	return &FEELTime{t: t, hasOffset: zone != zoneNone, zoneID: zone == zoneID}, nil
 }
 
+// GetAttr is the time row of DMN 1.5 §10.3.2.15 Table 65: `hour`,
+// `minute`, `second`, `time offset` and `timezone` (see zoneAttr).
+// VERDICT DIVERGENCE: `second` is a decimal (Table 66, "[0..60)"), so
+// `time("10:00:00.5").second` is 0.5; upstream dropped the fraction.
 func (t FEELTime) GetAttr(name string) (interface{}, bool) {
 	switch name {
 	case "hour":
@@ -211,9 +215,41 @@ func (t FEELTime) GetAttr(name string) (interface{}, bool) {
 	case "minute":
 		return t.t.Minute(), true
 	case "second":
-		return t.t.Second(), true
+		return secondAttr(t.t), true
 	}
 	return zoneAttr(t.t, t.hasOffset, t.zoneID, name)
+}
+
+// secondAttr is t's second of the minute with its fraction (DMN 1.5 Table 66:
+// "a decimal in the interval [0..60)"), a whole number when there is none.
+func secondAttr(t time.Time) any {
+	if t.Nanosecond() == 0 {
+		return t.Second()
+	}
+	frac := strings.TrimRight(fmt.Sprintf("%09d", t.Nanosecond()), "0")
+	return NewNumber(fmt.Sprintf("%d.%s", t.Second(), frac))
+}
+
+// dateAttr is the date components of DMN 1.5 Table 65 that a date and a date
+// and time share, read at t's own wall clock. VERDICT DIVERGENCE: `month` is
+// a number (Table 66), where upstream returned Go's time.Month, which became
+// the string "January"; and `weekday` exists, the ISO 8601 day of the week
+// Table 66 names, 1 for Monday to 7 for Sunday — upstream had none.
+func dateAttr(t time.Time, name string) (any, bool) {
+	switch name {
+	case "year":
+		return t.Year(), true
+	case "month":
+		return int(t.Month()), true
+	case "day":
+		return t.Day(), true
+	case "weekday":
+		if wd := t.Weekday(); wd != time.Sunday {
+			return int(wd), true
+		}
+		return 7, true
+	}
+	return nil, false
 }
 
 // zoneAttr answers the zone properties of a time or a date and time (DMN 1.5
@@ -266,16 +302,10 @@ func (d FEELDate) Date() time.Time {
 	return d.t
 }
 
+// GetAttr is the date row of DMN 1.5 §10.3.2.15 Table 65: `year`, `month`,
+// `day` and `weekday` (see dateAttr).
 func (d FEELDate) GetAttr(name string) (interface{}, bool) {
-	switch name {
-	case "year":
-		return d.t.Year(), true
-	case "month":
-		return d.t.Month(), true
-	case "day":
-		return d.t.Day(), true
-	}
-	return nil, false
+	return dateAttr(d.t, name)
 }
 
 func (d FEELDate) String() string {
@@ -341,20 +371,20 @@ func (dt FEELDatetime) Compare(other FEELDatetime) int {
 	}
 }
 
+// GetAttr is the date and time row of DMN 1.5 §10.3.2.15 Table 65: the date
+// components (dateAttr), `hour`, `minute`, `second` (a decimal, as for
+// FEELTime), `time offset` and `timezone` (zoneAttr).
 func (dt FEELDatetime) GetAttr(name string) (interface{}, bool) {
+	if v, ok := dateAttr(dt.t, name); ok {
+		return v, true
+	}
 	switch name {
-	case "year":
-		return dt.t.Year(), true
-	case "month":
-		return dt.t.Month(), true
-	case "day":
-		return dt.t.Day(), true
 	case "hour":
 		return dt.t.Hour(), true
 	case "minute":
 		return dt.t.Minute(), true
 	case "second":
-		return dt.t.Second(), true
+		return secondAttr(dt.t), true
 	}
 	return zoneAttr(dt.t, dt.hasOffset, dt.zoneID, name)
 }
@@ -580,25 +610,56 @@ func (duration FEELDuration) secondsString() string {
 	return fmt.Sprintf("%d.%s", duration.Seconds, frac)
 }
 
+// GetAttr is the two duration rows of DMN 1.5 §10.3.2.15 Table 65: `years`
+// and `months` for a years and months duration, `days`, `hours`, `minutes` and
+// `seconds` for a days and time one, each the normalised component.
+//
+// VERDICT DIVERGENCE: a property of the other kind is null, as Table 66 says
+// of each ("returns null when invoked on a days and time duration value"),
+// where upstream answered 0. It is not found either, since Table 65 does not
+// list it for that kind, so `is defined(duration("P1D").years)` is false. **Interpretation:** a component carries the
+// duration's sign (`duration("-P1Y2M").years` is -1, `.months` -2), as XPath
+// F&O 3.1 §8.2 fn:years-from-duration and its siblings do; Table 66's
+// intervals are silent on sign, and upstream returned the magnitude.
 func (duration FEELDuration) GetAttr(name string) (interface{}, bool) {
+	var v int
 	switch name {
-	case "years":
-		return duration.Years, true
-	case "months":
-		return duration.Months, true
-	case "days":
-		return duration.Days, true
-	case "hours":
-		return duration.Hours, true
-	case "minutes":
-		return duration.Minutes, true
-	case "seconds":
-		if duration.Nanoseconds != 0 {
-			return NewNumber(duration.secondsString()), true
+	case "years", "months":
+		if !duration.isYearsMonths() {
+			return nil, false
 		}
-		return duration.Seconds, true
+		v = duration.Years
+		if name == "months" {
+			v = duration.Months
+		}
+	case "days", "hours", "minutes", "seconds":
+		if duration.isYearsMonths() {
+			return nil, false
+		}
+		switch name {
+		case "days":
+			v = duration.Days
+		case "hours":
+			v = duration.Hours
+		case "minutes":
+			v = duration.Minutes
+		default:
+			if duration.Nanoseconds != 0 {
+				sign := ""
+				if duration.Neg {
+					sign = "-"
+				}
+				return NewNumber(sign + duration.secondsString()), true
+			}
+			v = duration.Seconds
+		}
+	default:
+		return nil, false
 	}
-	return nil, false
+	if duration.Neg {
+		v = -v
+	}
+	return v, true
 }
 
 func (duration FEELDuration) MarshalJSON() ([]byte, error) {

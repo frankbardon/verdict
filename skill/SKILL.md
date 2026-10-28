@@ -457,6 +457,15 @@ opens as an empty canvas.
   likewise for `time`. A fraction of a second prints only when it is non-zero,
   with trailing zeros trimmed: `string(time("10:00:00.500"))` is `"10:00:00.5"`,
   `string(time("10:00:00.000"))` is `"10:00:00"`.
+- **Temporal properties are DMN Table 65's, as numbers.** A date has `.year`,
+  `.month`, `.day`, `.weekday` (ISO 8601: 1 is Monday, 7 is Sunday, so
+  `date("2020-01-01").weekday` is 3); a date and time adds `.hour`, `.minute`,
+  `.second` (a decimal: `time("10:00:00.5").second` is 0.5), `.time offset`
+  and `.timezone`; a time has the last five. A years and months duration has
+  `.years`/`.months`, a days and time one `.days`/`.hours`/`.minutes`/`.seconds`,
+  normalised and signed (`duration("-P1Y2M").years` is -1). Any other name —
+  `duration("P1D").years`, `date(...).hour` — is null, and `is defined` of it
+  is false.
 - **`today()` is the UTC date**, not the host's: with `feel.timezone` set (the
   engine clock's zone, UTC by default) it is the date in that zone.
 - **`now()` and Go `time.Time` inputs keep their IANA zone.** Under
