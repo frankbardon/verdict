@@ -3224,6 +3224,24 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
+	t.Run("is defined asks whether an index reaches an element", func(t *testing.T) {
+		// Camunda FEEL `is defined` (8.2 / FEEL Scala 1.16): defined means
+		// exists, null included. Since an out-of-range index is null
+		// (DMN 1.5 §10.3.2.5), `is defined([1, 2][9])` had become true.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`is defined([1, 2][9])`, false},
+			{`is defined([1, 2][-9])`, false},
+			{`is defined([1, 2][2])`, true},
+			{`is defined([1, null][2])`, true},
+			{`is defined({a: [1]}.a[5])`, false},
+			{`is defined({a: {b: 1}}.a.c)`, false},
+			{`is defined(unbound.x)`, false},
+		})
+	})
+
 	t.Run("functions are lexical closures", func(t *testing.T) {
 		// DMN 1.5 §10.3.2.13.2. Upstream kept only a function's parameters
 		// and body, so a call resolved free names at the call site:

@@ -296,30 +296,18 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return null, nil
 	}).Required("from"))
 
+	// `is defined` is not a DMN built-in; it is the Camunda FEEL extension
+	// upstream ported, with the semantics Camunda documented up to 8.2 (FEEL
+	// Scala 1.16): "A value is defined if it exists, and it is an instance of
+	// one of the FEEL data types including null" — so a name, entry,
+	// property or list element holding null is defined, one that does not
+	// exist is not. See definedLookup.
 	prelude.Bind("is defined", NewMacro(func(intp *Interpreter, args map[string]Node, varArgs []Node) (any, error) {
-		if varNode, ok := args["value"].(*Var); ok {
-			if _, ok := intp.Resolve(varNode.Name); !ok {
-				return false, nil
-			}
-		} else if dotop, ok := args["value"].(*DotOp); ok {
-			// A missing context entry selects null rather than raising
-			// (DMN 1.5 §10.3.2.6), so ask the context whether it holds
-			// the entry: `is defined({a: 1}.b)` stays false.
-			return entryDefined(intp, dotop)
-		} else {
-			_, err := args["value"].Eval(intp)
-			if err != nil {
-				var evalErr *EvalError
-				if errors.As(err, &evalErr) {
-					if evalErr.Short == "key not found" || evalErr.Short == "index error" {
-						return false, nil
-					}
-				}
-				return false, err
-			}
+		_, found, err := definedLookup(intp, args["value"])
+		if err != nil {
+			return false, err
 		}
-		// TODO: more condition tests
-		return true, nil
+		return found, nil
 	}).Required("value"))
 
 	// string functions
@@ -845,31 +833,47 @@ func isFEELName(k string) bool {
 	return true
 }
 
-// entryDefined is `is defined(e.name)`: whether the value e selects from has
-// an entry or attribute called name. Upstream answered it from the "key not
-// found" a missing entry raised; the path is now null instead (DMN 1.5
-// §10.3.2.6), so the entry is looked up directly with the selectProperty the
-// path itself uses: a context without the entry, a date without the property
-// and a value with no properties at all (`5.x`) are all undefined. A path over
-// a list, or on null, is defined when it evaluates without error, as before.
-func entryDefined(intp *Interpreter, dotop *DotOp) (any, error) {
-	if inner, ok := dotop.Left.(*DotOp); ok {
-		defined, err := entryDefined(intp, inner)
-		if err != nil || defined != true {
-			return defined, err
+// definedLookup evaluates node for `is defined` and reports whether what it
+// selects exists. Upstream answered from the "key not found" and "index
+// error" a missing entry or index raised; both are null now (DMN 1.5
+// §10.3.2.5-6), so existence is asked structurally, recursing through chains
+// of names, paths and indexes (`{a: [1]}.a[5]`, `xs[5].a`, `{a: {b: 1}}.a.c`):
+//
+//   - a name exists when it is bound;
+//   - `e.name` exists when e does and selectProperty finds the entry or
+//     property on it — a path over a list, or on null, is defined;
+//   - `e1[e2]` exists when e1 does and indexInto finds the element or string
+//     key — an index the list does not reach is undefined, a null element
+//     defined, and a filter (a list) defined;
+//   - anything else is defined when it evaluates without error.
+func definedLookup(intp *Interpreter, node Node) (val any, found bool, err error) {
+	switch n := node.(type) {
+	case *Var:
+		v, ok := intp.Resolve(n.Name)
+		return v, ok, nil
+	case *DotOp:
+		left, found, err := definedLookup(intp, n.Left)
+		if err != nil || !found {
+			return null, false, err
+		}
+		if list, isList := left.([]any); isList {
+			v, err := n.project(intp, list)
+			return v, err == nil, err
+		}
+		if isNullValue(left) {
+			return null, true, nil
+		}
+		v, found := selectProperty(left, n.Attr)
+		return v, found, nil
+	case *Binop:
+		if n.Op == "[]" {
+			left, found, err := definedLookup(intp, n.Left)
+			if err != nil || !found {
+				return null, false, err
+			}
+			return n.indexInto(intp, left)
 		}
 	}
-	leftVal, err := dotop.Left.Eval(intp)
-	if err != nil {
-		var evalErr *EvalError
-		if errors.As(err, &evalErr) && (evalErr.Short == "key not found" || evalErr.Short == "index error") {
-			return false, nil
-		}
-		return false, err
-	}
-	if _, isList := leftVal.([]any); isList || isNullValue(leftVal) {
-		return true, nil
-	}
-	_, found := selectProperty(leftVal, dotop.Attr)
-	return found, nil
+	v, err := node.Eval(intp)
+	return v, err == nil, err
 }

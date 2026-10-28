@@ -775,6 +775,60 @@ func TestPathOnNonContext(t *testing.T) {
 	}
 }
 
+// TestIsDefinedIndex pins `is defined` over indexes, paths and their chains.
+// `is defined` is the Camunda FEEL extension (Camunda 8.2 / FEEL Scala 1.16):
+// a value is defined if it exists, null included. Since an index the list does
+// not reach is null (DMN 1.5 §10.3.2.5) rather than an error, existence is
+// asked structurally: no element is undefined, a null element defined.
+func TestIsDefinedIndex(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"xs": FromGo([]any{map[string]any{"a": 1}})}
+	cases := []struct {
+		expr string
+		want bool
+	}{
+		{`is defined([1, 2][9])`, false},
+		{`is defined([1, 2][-9])`, false},
+		{`is defined([1, 2][0])`, false},
+		{`is defined([1, 2][1.5])`, false},
+		{`is defined([1, 2][2])`, true},
+		{`is defined([1, 2][-1])`, true},
+		{`is defined([1, null][2])`, true},
+		{`is defined({a: [1]}.a[5])`, false},
+		{`is defined({a: [1]}.a[1])`, true},
+		{`is defined({a: {b: 1}}.a.c)`, false},
+		{`is defined(xs[5].a)`, false},
+		{`is defined(xs[1].a)`, true},
+		{`is defined(xs[1].b)`, false},
+		{`is defined([[1]][1][2])`, false},
+		{`is defined({a: 1}["b"])`, false},
+		{`is defined({a: null}["a"])`, true},
+		{`is defined(5[1])`, true},
+		{`is defined(5[2])`, false},
+		{`is defined([1, 2][item > 1])`, true},
+		{`is defined([1, 2][item > 5])`, true},
+		{`is defined({a: 1}.b)`, false},
+		{`is defined({a: null}.a)`, true},
+		{`is defined(5.x)`, false},
+		{`is defined([1..5].start)`, true},
+		{`is defined(unbound)`, false},
+		{`is defined(unbound.x)`, false},
+		{`is defined(unbound[1])`, false},
+		{`is defined(null)`, true},
+		{`is defined(null.x)`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); got != c.want {
+			t.Errorf("%s = %#v, want %v", c.expr, got, c.want)
+		}
+	}
+}
+
 // TestStringAndListSupplementDomain pins the §10.3.4 domain rule for the
 // supplement's string and list built-ins: a null or wrong-typed argument, an
 // invalid regular expression, replacement or flags (footnote 2), a position

@@ -937,26 +937,27 @@ func (binop Binop) orOp(intp *Interpreter) (any, error) {
 // the nth from the end. "If L does not contain n items, then L[n] is null", so
 // 0 and any index past either end is null. Table 68 applies the rule only to
 // an integer (0 scale) index and no rule covers any other number, so a
-// fractional index is null too.
+// fractional index is null too. found reports whether L holds an nth item —
+// `is defined` asks it, so a null element is told apart from no element.
 //
 // VERDICT DIVERGENCE: upstream raised "index out of range" for 0, a negative
 // index and one past the end, and truncated a fractional index.
-func listIndex(list []any, n *Number) any {
+func listIndex(list []any, n *Number) (val any, found bool) {
 	if !n.v.IsInt() {
-		return null
+		return null, false
 	}
 	i, acc := n.v.Int64()
 	if acc != big.Exact {
-		return null
+		return null, false
 	}
 	size := int64(len(list))
 	switch {
 	case i > 0 && i <= size:
-		return list[i-1]
+		return list[i-1], true
 	case i < 0 && i >= -size:
-		return list[size+i]
+		return list[size+i], true
 	default:
-		return null
+		return null, false
 	}
 }
 
@@ -979,45 +980,55 @@ func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if leftVal == nil {
-		return null, nil
-	}
-	if _, isNull := leftVal.(*NullValue); isNull {
+	val, _, err := binop.indexInto(intp, leftVal)
+	return val, err
+}
+
+// indexInto is `e1[e2]` for an e1 already evaluated to leftVal. found reports
+// whether an index or a string key selected something that exists — an
+// element the list holds, an entry the context has — which `is defined` asks.
+// A filter, and a selection from null, always count as found: both yield a
+// value (a list, or null on null as a path does) rather than a missing one.
+func (binop Binop) indexInto(intp *Interpreter, leftVal any) (val any, found bool, err error) {
+	if isNullValue(leftVal) {
 		// Every row of Table 68 requires e1 to be a list or not null.
-		return null, nil
+		return null, true, nil
 	}
 	rightVal, outerErr := binop.Right.Eval(intp)
 	var budgetErr *IterationBudgetExceededError
 	if errors.As(outerErr, &budgetErr) {
-		return nil, outerErr
+		return nil, false, outerErr
 	}
 	if outerErr == nil {
 		switch r := rightVal.(type) {
 		case *Number:
 			if list, ok := leftVal.([]any); ok {
-				return listIndex(list, r), nil
+				val, found := listIndex(list, r)
+				return val, found, nil
 			}
 			// Row 2: a non-list e1 indexed by 1 is e1 itself.
 			if r.Cmp(NewNumberFromInt64(1)) == 0 {
-				return leftVal, nil
+				return leftVal, true, nil
 			}
-			return null, nil
+			return null, false, nil
 		case string:
 			if m, ok := asContext(leftVal); ok {
 				if elem, ok := m[r]; ok {
-					return elem, nil
+					return elem, true, nil
 				}
 				// DMN 1.5 §10.3.2.6: a context without the entry
 				// selects null, as the path `.r` does.
-				return null, nil
+				return null, false, nil
 			}
 		}
 	}
-	if list, ok := leftVal.([]any); ok {
-		return filterList(intp, list, binop.Right)
+	list, ok := leftVal.([]any)
+	if !ok {
+		// Row 4: a non-list e1 filtered as the singleton list [e1].
+		list = []any{leftVal}
 	}
-	// Row 4: a non-list e1 filtered as the singleton list [e1].
-	return filterList(intp, []any{leftVal}, binop.Right)
+	val, err = filterList(intp, list, binop.Right)
+	return val, err == nil, err
 }
 
 // filterList keeps the items of list for which filter, evaluated under each

@@ -194,6 +194,7 @@ context put(Applicant, "k", 1)   Applicant = {name: "A", age: 30}   // a context
 get entries({b: 1, a: 2}) = [{key: "a", value: 2}, {key: "b", value: 1}]   get entries(m)[1].key   // a FEEL list, entries in key order
 list replace(xs, -1, null)   substring("foobar", -2, 1)   // positions from 1, negative from the end
 xs[1]   xs[-1]   [1, 2, 3][4] = null   [1, 2, 3][0] = null   // index from 1, negative from the end; out of range or fractional: null
+is defined([1, 2][9]) = false   is defined([1, null][2]) = true   is defined(x.y) = false   // exists, null included; x unbound or without y: false
 xs[item > 2]   people[age >= 18]   people[item.age >= 18]   // filter: item bound, a context's entries by name; false/null drops
 people.name = ["A", "B"]   get entries(m)[key = "y"].value   // a path on a list of contexts projects; missing entry: null
 {a: 1}.b = null   {a: 1}["b"] = null   {a: 1}.b.c = null   // a missing context entry selects null, never an error; is defined({a: 1}.b) = false
