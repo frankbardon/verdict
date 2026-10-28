@@ -263,6 +263,9 @@ func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 		"5 instance of number",
 		"3 between 1 and 5",
 		"x between 1 and 5 and x > 2",
+		"x in [1,2]",
+		"x in (1..5)",
+		"x > 0 and x in [1,2]",
 	}
 	for _, src := range rejected {
 		if _, err := e.Compile(src); err == nil {
@@ -280,6 +283,13 @@ func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 	for _, src := range rejected {
 		if _, err := full.Compile(src); err != nil {
 			t.Errorf("FEEL rejected %q: %v", src, err)
+		}
+	}
+	// S-FEEL unary tests (clause 9.2 rules 5-12) are not the `in` operator and
+	// stay accepted: intervals, comma lists, negation and comparison prefixes.
+	for _, entry := range []string{"[1..5]", "(1..5]", "1, 2", "not(3)", "< 5", "not(< 5, [7..9])"} {
+		if _, err := e.CompileUnaryTest(entry); err != nil {
+			t.Errorf("S-FEEL rejected unary-test cell %q: %v", entry, err)
 		}
 	}
 }

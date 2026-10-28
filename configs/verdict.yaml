@@ -12,7 +12,8 @@ verdict:
   feel:
     # "feel" is DMN Conformance Level 3 — the full language.
     # "s-feel" is Level 2: decision tables and simple expressions only, with
-    # iteration, conditionals and inline functions rejected at parse time.
+    # iteration, conditionals, `between`, `in` and inline functions rejected at
+    # parse time.
     # A model that declares its own conformanceLevel overrides this for itself.
     dialect: feel
 

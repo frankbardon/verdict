@@ -241,8 +241,10 @@ Two dialects, selected per model with `conformanceLevel`:
 
 - `s-feel` (Conformance Level 2) — literals, arithmetic, comparisons, ranges,
   lists, `and`/`or`, qualified names. Rejects `if`, `for`, `some`, `every`,
-  `instance of`, `between` and inline functions **at parse time**. Use it for decision-table-only models that
-  must interoperate with Level 2 tooling.
+  `instance of`, `between`, the `in` operator and inline functions **at parse
+  time** (unary-test cells such as `[1..5]`, `1, 2` and `not(3)` stay
+  allowed). Use it for decision-table-only models that must interoperate with
+  Level 2 tooling.
 - `feel` (Conformance Level 3, the default) — the full language.
 
 ## Authoring: agent decisions
