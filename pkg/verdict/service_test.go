@@ -61,9 +61,11 @@ func TestDecisionServicesPassNativeFEELValues(t *testing.T) {
 		"dt_zoned":    `Echo(date and time("2024-03-05T10:00:00+02:00")).time offset = duration("PT2H")`,
 
 		// A date stays a date and a time stays a time — not a date and time at
-		// midnight UTC or on 0000-01-01. (The fork does not parse
-		// "instance of"; kind identity is checked through equality, which is
-		// null across kinds, and through string().)
+		// midnight UTC or on 0000-01-01: kind identity is checked through
+		// instance of, through equality, which is null across kinds, and
+		// through string().
+		"date_kind":     `Echo(date("2024-03-05")) instance of date`,
+		"time_kind":     `Echo(time("10:00:00")) instance of time`,
 		"date_equal":    `Echo(date("2024-03-05")) = date("2024-03-05")`,
 		"date_string":   `string(Echo(date("2024-03-05"))) = "2024-03-05"`,
 		"date_arith":    `Echo(date("2024-03-05")) + duration("P1D") = date("2024-03-06")`,

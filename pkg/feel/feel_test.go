@@ -260,6 +260,7 @@ func TestSFEELRejectsLevel3Constructs(t *testing.T) {
 		"every x in [1,2] satisfies x > 0",
 		"function(a) a + 1",
 		"-(if 1 > 0 then 1 else 2)",
+		"5 instance of number",
 	}
 	for _, src := range rejected {
 		if _, err := e.Compile(src); err == nil {
@@ -1327,6 +1328,118 @@ func TestInTakesPositiveUnaryTests(t *testing.T) {
 		}
 		if got := ToGo(v); !deepEqualNum(got, c.want) {
 			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestInstanceOf pins DMN 1.5 grammar rules 51-52 and Table 61: a type maps to
+// a node of the lattice or the check is null; null is an instance of Null only;
+// a non-null value is an instance of a type its own type conforms to
+// (§10.3.2.9.2). Several cases are TCK 0070-feel-instance-of's.
+func TestInstanceOf(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"x":              FromGo(5),
+		"b":              FromGo(true),
+		"a":              FromGo(map[string]any{"x": 1, "n": map[string]any{"y": 2}}),
+		"Date of Birth":  FromGo("1990-01-01"),
+		"instance count": FromGo(3),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Primitive types.
+		{`5 instance of number`, true},
+		{`x instance of number`, true},
+		{`"abc" instance of string`, true},
+		{`123 instance of string`, false},
+		{`true instance of boolean`, true},
+		{`date("2020-01-01") instance of date`, true},
+		{`date("2020-01-01") instance of date and time`, false},
+		{`date and time("2020-01-01T10:00:00") instance of date and time`, true},
+		{`time("10:00:00") instance of time`, true},
+		{`duration("P1D") instance of days and time duration`, true},
+		{`duration("P1D") instance of years and months duration`, false},
+		{`duration("P1Y") instance of years and months duration`, true},
+		{`@"P0Y" instance of years and months duration`, true},
+		// Any and Null (Table 61 rules 2-3).
+		{`5 instance of Any`, true},
+		{`null instance of number`, false},
+		{`null instance of Any`, false},
+		{`null instance of Null`, true},
+		{`5 instance of Null`, false},
+		{`(5 instance of number) = null`, false},
+		// Lists.
+		{`[123] instance of list<number>`, true},
+		{`[1, "a"] instance of list<number>`, false},
+		{`["a", true, 123] instance of list<Any>`, true},
+		{`[] instance of list<string>`, true},
+		{`[null, 1] instance of list<number>`, true},
+		{`[[1], [2]] instance of list<list<number>>`, true},
+		{`5 instance of list<number>`, false},
+		// Ranges.
+		{`[1..10) instance of range<number>`, true},
+		{`[1..10) instance of range<string>`, false},
+		{`[date("2020-01-01")..date("2020-12-31")] instance of range<date>`, true},
+		// Contexts: width subtyping, nested, null entries.
+		{`{a: "foo"} instance of context<>`, true},
+		{`{} instance of context<>`, true},
+		{`{a: "foo"} instance of context<a: string>`, true},
+		{`{a: "123", b: 123} instance of context<a: string>`, true},
+		{`{a: "123"} instance of context<a: number>`, false},
+		{`{b: 1} instance of context<a: number>`, false},
+		{`{a: null} instance of context<a: string>`, true},
+		{`{a: {b: 123}} instance of context<a: context<b: number>>`, true},
+		{`{a: {b: 123}} instance of context<a: context<b: string>>`, false},
+		{`{"full name": "x"} instance of context<"full name": string>`, true},
+		{`5 instance of context<>`, false},
+		{`a instance of context<>`, true},
+		{`a instance of context<x: number, n: context<y: number>>`, true},
+		// Functions: arity; untyped parameters are Any.
+		{`(function() "foo") instance of function<>->Any`, true},
+		{`(function() "foo") instance of function<>->string`, true},
+		{`(function(a, b) a) instance of function<string, string>->Any`, true},
+		{`(function(a) a) instance of function<string, string>->Any`, false},
+		{`abs instance of function<number>->number`, true},
+		{`5 instance of function<>->Any`, false},
+		// Types that map to no lattice node are null (Table 61 rule 1).
+		{`123 instance of list`, nil},
+		{`a instance of context`, nil},
+		{`5 instance of function`, nil},
+		{`5 instance of tNumber`, nil},
+		{`5 instance of list<tNumber>`, nil},
+		{`null instance of tNumber`, nil},
+		// Precedence: tighter than arithmetic and comparison, looser than a
+		// path and negation (grammar rule 2).
+		{`x instance of number and b`, true},
+		{`b and x instance of string`, false},
+		{`x instance of date and b`, false},
+		{`1 + 1 instance of number`, nil},
+		{`-5 instance of number`, true},
+		{`a.x instance of number`, true},
+		{`x instance of number = true`, true},
+		{`if x instance of number then 1 else 2`, 1.0},
+		{`[x instance of number, 1]`, []any{true, 1.0}},
+		// Names containing the words still resolve.
+		{`Date of Birth`, "1990-01-01"},
+		{`instance count + 1`, 4.0},
+		{`Date of Birth instance of string`, true},
+		{`instance count instance of number`, true},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+	for _, bad := range []string{`5 instance of`, `5 instance of list<number`, `5 instance of context<a number>`, `5 instance of function<number>number`} {
+		if _, err := e.Compile(bad); err == nil {
+			t.Errorf("%s compiled, want a syntax error", bad)
 		}
 	}
 }

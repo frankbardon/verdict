@@ -8,8 +8,8 @@ import pfeel "github.com/frankbardon/verdict/pkg/feel/internal/dialect"
 // S-FEEL (DMN 1.5 clause 9) is the subset a Level 2 engine must support: number,
 // string, boolean, date/time and duration literals; arithmetic, comparison and
 // range operators; conjunction and disjunction; list literals; and qualified
-// names. Iteration (`for`/`some`/`every`), conditionals (`if`) and inline
-// function definitions belong to full FEEL only.
+// names. Iteration (`for`/`some`/`every`), conditionals (`if`), type checks
+// (`instance of`) and inline function definitions belong to full FEEL only.
 //
 // The embedded parser hides the argument list of a FunCall behind an unexported
 // type, so an offending construct nested inside a call argument — `f(for x in
@@ -31,6 +31,8 @@ func violatesSFEEL(n pfeel.Node) string {
 		return "`if` is a FEEL construct; S-FEEL admits only simple expressions"
 	case *pfeel.FunDef:
 		return "inline function definitions are a FEEL construct; S-FEEL admits only simple expressions"
+	case *pfeel.InstanceOf:
+		return "`instance of` is a FEEL construct; S-FEEL admits only simple expressions"
 	case *pfeel.Binop:
 		if r := violatesSFEEL(v.Left); r != "" {
 			return r

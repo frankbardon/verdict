@@ -3335,6 +3335,42 @@ func TestForkedDefects(t *testing.T) {
 			{`is defined(duration("P1D").years)`, false},
 		})
 	})
+
+	t.Run("instance of checks FEEL types", func(t *testing.T) {
+		// DMN 1.5 grammar rules 51-52 and Table 61. Upstream had no
+		// `instance of`: `x instance of number` scanned as one variable name
+		// and `5 instance of number` as two juxtaposed expressions, both null.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`5 instance of number`, true},
+			{`null instance of number`, false},
+			{`null instance of Any`, false},
+			{`null instance of Null`, true},
+			{`{a: "123", b: 123} instance of context<a: string>`, true},
+			{`{a: null} instance of context<a: string>`, true},
+			{`[1..10) instance of range<number>`, true},
+			{`(function(a) a) instance of function<Any>->Any`, true},
+			{`123 instance of list`, nil},
+			{`1 + 1 instance of number`, nil},
+			{`-5 instance of number`, true},
+		})
+		vars := map[string]any{
+			"x": FromGo(5), "b": FromGo(true),
+			"a":             FromGo(map[string]any{"x": 1, "n": map[string]any{"y": 2}}),
+			"Date of Birth": FromGo("1990-01-01"),
+		}
+		for expr, want := range map[string]any{
+			"x instance of number and b": true,
+			"a instance of context<>":    true,
+			"Date of Birth":              "1990-01-01",
+		} {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {

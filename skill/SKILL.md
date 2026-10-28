@@ -206,6 +206,11 @@ list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]  
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
 all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null
 1 in 1   "a" in "a"                                   // a non-list, non-range right side is `=`
+x instance of number   d instance of date and time   // type check; binds tighter than arithmetic: 1 + 1 instance of number is 1 + (true) = null
+xs instance of list<number>   r instance of range<date>   f instance of function<number, number>->Any   // functions: arity only, untyped params are Any
+m instance of context<age: number>   m instance of context<>   // extra entries allowed; context<> is any context
+null instance of number = false   null instance of Any = false   null instance of Null = true   // only Null admits null; [null] instance of list<number> = true
+123 instance of list = null   x instance of tMyType = null   // an unparameterised generic or an itemDefinition name maps to no type: null
 ```
 
 String, list and context built-ins return **null**, never an error, outside
@@ -219,13 +224,14 @@ elements and treats a null delimiter as none. A non-matching `substring before`
 
 Names may contain spaces (`Credit Rating`) but **not reserved words** — `and`,
 `or`, `in`, `if`, `then`, `else`, `for`, `some`, `every`, `return`, `satisfies`.
-`Rent and Rates` will not resolve; rename it.
+`Rent and Rates` will not resolve; rename it. `instance` and `of` are not
+reserved (`Date of Birth` resolves), but `instance of` together ends a name.
 
 Two dialects, selected per model with `conformanceLevel`:
 
 - `s-feel` (Conformance Level 2) — literals, arithmetic, comparisons, ranges,
-  lists, `and`/`or`, qualified names. Rejects `if`, `for`, `some`, `every` and
-  inline functions **at parse time**. Use it for decision-table-only models that
+  lists, `and`/`or`, qualified names. Rejects `if`, `for`, `some`, `every`,
+  `instance of` and inline functions **at parse time**. Use it for decision-table-only models that
   must interoperate with Level 2 tooling.
 - `feel` (Conformance Level 3, the default) — the full language.
 

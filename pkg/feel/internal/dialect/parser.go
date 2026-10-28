@@ -258,8 +258,9 @@ func (p *Parser) logicAndOp() (Node, error) {
 // `x in [5] and b` was `x in ([5] and b)`, and read the right of `in` as a
 // plain expression, so `10 in =10` and `10 in (1, < 5, >= 10)` were syntax
 // errors. The right of `in` is now a positive unary test or a parenthesised
-// list of them (see inRight). Rule 49.b (`between`) and rule 51 (`instance
-// of`) are not parsed yet; both belong in this loop as further keyword cases.
+// list of them (see inRight). Rule 49.b (`between`) is not parsed yet; it
+// belongs in this loop as a further keyword case. Rule 51 (`instance of`)
+// binds tighter than arithmetic, so it is not a comparison (see instanceOfOp).
 func (p *Parser) compareOp() (Node, error) {
 	left, err := p.addOrSubOp()
 	if err != nil {
@@ -370,8 +371,228 @@ func (p *Parser) mulOrDivOp() (Node, error) {
 func (p *Parser) powOp() (Node, error) {
 	return p.binop(
 		[]string{"**"},
-		p.negationOp,
+		p.instanceOfOp,
 	)
+}
+
+// instanceOfOp parses `e instance of type`, DMN 1.5 grammar rule 51.
+//
+// VERDICT DIVERGENCE: upstream had no `instance of`; `x instance of number`
+// scanned as one variable name and was null. Rule 2 orders the alternatives of
+// a textual expression from lowest to highest precedence (§10.3.1.2, additional
+// syntax rules) and puts `instance of` (2.f) after arithmetic (2.e) and before
+// path, filter and invocation (2.g), so it binds tighter than every arithmetic
+// operator and looser than a path: `1 + 1 instance of number` is
+// `1 + (1 instance of number)`, and `a.b instance of number` checks `a.b`.
+// Negation is the exception: it binds tighter, as the fork's negation already
+// does against `**`, because rule 35 lets a numeric literal carry its own
+// minus, so `-5 instance of number` is true.
+//
+// `instance` and `of` are not keywords, so names containing either word
+// (`Date of Birth`, `instance count`) still parse; parseName ends a name only
+// where `instance` is directly followed by `of`.
+func (p *Parser) instanceOfOp() (Node, error) {
+	left, err := p.negationOp()
+	if err != nil {
+		return nil, err
+	}
+	for p.atInstanceOf() {
+		for i := 0; i < 2; i++ {
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+		}
+		t, err := p.parseType()
+		if err != nil {
+			return nil, err
+		}
+		left = &InstanceOf{Expr: left, Type: t, textRange: TextRange{Start: left.TextRange().Start, End: p.CurrentToken().Pos}}
+	}
+	return left, nil
+}
+
+// atInstanceOf reports whether the next two tokens are the names `instance`
+// and `of`. It looks ahead on a copy of the scanner, as inRight backtracks.
+func (p *Parser) atInstanceOf() bool {
+	tok := p.CurrentToken()
+	if tok.Kind != TokenName || tok.Value != "instance" {
+		return false
+	}
+	ahead := *p.scanner
+	if err := ahead.Next(); err != nil {
+		return false
+	}
+	next := ahead.Current()
+	return next.Kind == TokenName && next.Value == "of"
+}
+
+// parseType parses a type, DMN 1.5 grammar rule 52. A generic name written
+// without its parameters (`list`, `context`, `function`) is kept as a plain
+// name, which maps to no lattice node, so the check is null (Table 61:
+// "123 instance of list is null as a list type requires parameters").
+//
+// Interpretation: rule 52 as printed requires at least one context entry, but
+// TCK 0070 writes `context<>`; it parses as the context type with no entries,
+// to which every context conforms.
+func (p *Parser) parseType() (*TypeExpr, error) {
+	tok := p.CurrentToken()
+	if tok.ExpectKeywords("function") {
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		if !p.CurrentToken().Expect("<") {
+			return &TypeExpr{Kind: TypeKindName, Name: "function"}, nil
+		}
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		var params []*TypeExpr
+		for !p.CurrentToken().Expect(">") {
+			param, err := p.parseType()
+			if err != nil {
+				return nil, err
+			}
+			params = append(params, param)
+			if p.CurrentToken().Expect(",") {
+				if err := p.scanner.Next(); err != nil {
+					return nil, err
+				}
+			} else if !p.CurrentToken().Expect(">") {
+				return nil, p.Unexpected(",", ">")
+			}
+		}
+		for _, want := range []string{">", "-", ">"} {
+			if !p.CurrentToken().Expect(want) {
+				return nil, p.Unexpected("->")
+			}
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+		}
+		result, err := p.parseType()
+		if err != nil {
+			return nil, err
+		}
+		return &TypeExpr{Kind: TypeKindFunction, Params: params, Result: result}, nil
+	}
+	if tok.Kind != TokenName {
+		return nil, p.Unexpected("type")
+	}
+	name, err := p.parseTypeName()
+	if err != nil {
+		return nil, err
+	}
+	if p.CurrentToken().Expect("<") {
+		switch name {
+		case TypeKindList, TypeKindRange:
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+			elem, err := p.parseType()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectTypeClose(); err != nil {
+				return nil, err
+			}
+			return &TypeExpr{Kind: name, Elem: elem}, nil
+		case TypeKindContext:
+			return p.parseContextType()
+		}
+	}
+	for p.CurrentToken().Expect(".") {
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		part, err := p.parseTypeName()
+		if err != nil {
+			return nil, err
+		}
+		name += "." + part
+	}
+	return &TypeExpr{Kind: TypeKindName, Name: name}, nil
+}
+
+func (p *Parser) parseContextType() (*TypeExpr, error) {
+	if err := p.scanner.Next(); err != nil {
+		return nil, err
+	}
+	t := &TypeExpr{Kind: TypeKindContext}
+	for !p.CurrentToken().Expect(">") {
+		key, err := p.parseMapKey()
+		if err != nil {
+			return nil, err
+		}
+		if !p.CurrentToken().Expect(":") {
+			return nil, p.Unexpected(":")
+		}
+		if err := p.scanner.Next(); err != nil {
+			return nil, err
+		}
+		field, err := p.parseType()
+		if err != nil {
+			return nil, err
+		}
+		t.Keys = append(t.Keys, key)
+		t.Fields = append(t.Fields, field)
+		if p.CurrentToken().Expect(",") {
+			if err := p.scanner.Next(); err != nil {
+				return nil, err
+			}
+		} else if !p.CurrentToken().Expect(">") {
+			return nil, p.Unexpected(",", ">")
+		}
+	}
+	if err := p.expectTypeClose(); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (p *Parser) expectTypeClose() error {
+	if !p.CurrentToken().Expect(">") {
+		return p.Unexpected(">")
+	}
+	return p.scanner.Next()
+}
+
+// parseTypeName parses one segment of a type's qualified name. It is
+// parseName, except that a keyword taken in as part of `date and time`, `days
+// and time duration` or `years and months duration` is given back unless the
+// whole of one of those names follows: `x instance of date and y` is
+// `(x instance of date) and y`, not a check against the type `date and y`.
+func (p *Parser) parseTypeName() (string, error) {
+	var names []string
+	var saved *Scanner
+	savedLen := 0
+	for p.CurrentToken().Expect(TokenName, TokenKeyword) {
+		tok := p.CurrentToken()
+		if len(names) > 0 && p.atInstanceOf() {
+			break
+		}
+		if tok.Kind == TokenKeyword {
+			if len(names) == 0 || !keywordNamePrefixes[strings.Join(append(names, tok.Value), " ")] {
+				break
+			}
+			if saved == nil {
+				s := *p.scanner
+				saved, savedLen = &s, len(names)
+			}
+		}
+		names = append(names, tok.Value)
+		if err := p.scanner.Next(); err != nil {
+			return "", err
+		}
+	}
+	if len(names) == 0 {
+		return "", p.Unexpected(TokenName)
+	}
+	name := strings.Join(names, " ")
+	if _, primitive := primitiveTypes[name]; saved != nil && !primitive {
+		*p.scanner = *saved
+		name = strings.Join(names[:savedLen], " ")
+	}
+	return name, nil
 }
 
 func (p *Parser) negationOp() (Node, error) {
@@ -671,6 +892,10 @@ func (p *Parser) parseName(stopKeywords ...string) (string, error) {
 
 	for p.CurrentToken().Expect(TokenName, TokenKeyword) {
 		if p.CurrentToken().Kind == TokenName {
+			// `instance of` ends a name (see instanceOfOp).
+			if len(names) > 0 && p.atInstanceOf() {
+				break
+			}
 			names = append(names, p.CurrentToken().Value)
 			if err := p.scanner.Next(); err != nil {
 				return "", err
