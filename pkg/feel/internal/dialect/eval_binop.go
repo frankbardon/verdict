@@ -941,9 +941,6 @@ func (binop Binop) orOp(intp *Interpreter) (any, error) {
 //
 // VERDICT DIVERGENCE: upstream raised "index out of range" for 0, a negative
 // index and one past the end, and truncated a fractional index.
-//
-// Numeric indexing is kept apart from indexAtOp's other branches so that a
-// boolean filter (Table 68's third and fourth rows) can be added beside it.
 func listIndex(list []any, n *Number) any {
 	if !n.v.IsInt() {
 		return null
@@ -963,39 +960,126 @@ func listIndex(list []any, n *Number) any {
 	}
 }
 
+// indexAtOp is `e1[e2]` (DMN 1.5 §10.3.2.5, Table 68). e2 is first evaluated
+// in the enclosing scope: a number there is an index (row 1, or row 2 for an
+// e1 that is not a list), and a string on a context is the fork's key lookup.
+// Anything else — a boolean, null, or an evaluation error, which is what a
+// filter referencing `item` or an element's entries gives outside the item
+// scope — makes e2 a filter, evaluated once per element under filterScope
+// (rows 3 and 4). Evaluating e2 in the enclosing scope first is how an index
+// expression is told apart from a filter that happens to yield a number; it is
+// what other FEEL engines do too.
+//
+// VERDICT DIVERGENCE: upstream evaluated e2 once in the enclosing scope and
+// had no filter at all, so `[1, 2, 3][item > 1]` raised "non int index"; a
+// non-list e1 other than a context raised "non-indexable value". See
+// NOTICE.md.
 func (binop Binop) indexAtOp(intp *Interpreter) (any, error) {
 	leftVal, err := binop.Left.Eval(intp)
 	if err != nil {
 		return nil, err
 	}
-	rightVal, err := binop.Right.Eval(intp)
-	if err != nil {
+	if leftVal == nil {
+		return null, nil
+	}
+	if _, isNull := leftVal.(*NullValue); isNull {
+		// Every row of Table 68 requires e1 to be a list or not null.
+		return null, nil
+	}
+	rightVal, outerErr := binop.Right.Eval(intp)
+	var budgetErr *IterationBudgetExceededError
+	if errors.As(outerErr, &budgetErr) {
+		return nil, outerErr
+	}
+	if outerErr == nil {
+		switch r := rightVal.(type) {
+		case *Number:
+			if list, ok := leftVal.([]any); ok {
+				return listIndex(list, r), nil
+			}
+			// Row 2: a non-list e1 indexed by 1 is e1 itself.
+			if r.Cmp(NewNumberFromInt64(1)) == 0 {
+				return leftVal, nil
+			}
+			return null, nil
+		case string:
+			if m, ok := asContext(leftVal); ok {
+				if elem, ok := m[r]; ok {
+					return elem, nil
+				}
+				return nil, NewErrKeyNotFound(r)
+			}
+		}
+	}
+	if list, ok := leftVal.([]any); ok {
+		return filterList(intp, list, binop.Right)
+	}
+	// Row 4: a non-list e1 filtered as the singleton list [e1].
+	return filterList(intp, []any{leftVal}, binop.Right)
+}
+
+// filterList keeps the items of list for which filter, evaluated under each
+// item's filterScope, is true (DMN 1.5 §10.3.2.5, Table 68 rows 3 and 4): "a
+// list containing only items where the filter expression is true", so an item
+// whose filter is false, null or of another kind is dropped — the spec's own
+// example `[{x:1, y:2}, {x:null, y:3}][x < 2]` drops the second. When the
+// filter was evaluated at least once and was never a boolean or null, e2 is not
+// a filter at all and no row of Table 68 applies, so the result is null
+// (`[1, 2]["a"]`). Every item is charged against the iteration budget.
+func filterList(intp *Interpreter, list []any, filter Node) (any, error) {
+	if err := intp.chargeIterations(uint64(len(list))); err != nil {
 		return nil, err
 	}
-	switch v := leftVal.(type) {
-	case []any:
-		if nRight, ok := rightVal.(*Number); ok {
-			return listIndex(v, nRight), nil
-		} else {
-			//return nil, NewEvalError(-3200, "non int index")
-			return nil, NewErrIndex("non int index")
+	kept := make([]any, 0, len(list))
+	filterLike := len(list) == 0
+	for _, item := range list {
+		intp.Push(filterScope(item))
+		res, err := filter.Eval(intp)
+		intp.Pop()
+		if err != nil {
+			return nil, err
 		}
-	case map[string]any:
-		if strRight, ok := rightVal.(string); ok {
-			if elem, ok := v[strRight]; ok {
-				return elem, nil
-			} else {
-				//return nil, NewEvalError(-3201, "key not found")
-				return nil, NewErrKeyNotFound(strRight)
+		switch b := res.(type) {
+		case bool:
+			filterLike = true
+			if b {
+				kept = append(kept, item)
 			}
-		} else {
-			//return nil, NewEvalError(-3200, "non string index")
-			return nil, NewErrIndex("non string index")
+		case *NullValue:
+			filterLike = true
+		case nil:
+			filterLike = true
 		}
-	default:
-		//return nil, NewEvalError(-3202, "non indexable value")
-		return nil, NewErrIndex("non-indexable value")
 	}
+	if !filterLike {
+		return null, nil
+	}
+	return kept, nil
+}
+
+// filterScope is the "special first context" of Table 68 rows 3 and 4: the
+// entry ("item", i) and, when i is a context, all of i's entries. An entry of
+// i named "item" wins, since §10.3.2.5 binds the name item to the element
+// "unless the list element is a context that contains the key item".
+func filterScope(item any) Scope {
+	scope := Scope{"item": item}
+	if m, ok := asContext(item); ok {
+		for key, value := range m {
+			scope[key] = value
+		}
+	}
+	return scope
+}
+
+// asContext reports v as a context in either map spelling.
+func asContext(v any) (map[string]any, bool) {
+	switch m := v.(type) {
+	case map[string]any:
+		return m, true
+	case Scope:
+		return m, true
+	}
+	return nil, false
 }
 
 // inZonedRange is `e in range` when e is a zoned time or date and time and an

@@ -3138,6 +3138,36 @@ func TestForkedDefects(t *testing.T) {
 			{`[][-1]`, nil},
 		})
 	})
+
+	t.Run("a boolean filter binds item and a context's entries, a path projects over a list", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.5 and Table 68 rows 2-4. Upstream evaluated the
+		// bracket once in the enclosing scope and had no filter, so
+		// `[1, 2, 3][item > 1]` and `[{a: 1}][a = 1]` raised "non int index",
+		// `[{a: 1}][item.a = 1]` "type mismatch, expect map", a non-list
+		// operand "non-indexable value", and a path on any list "type
+		// mismatch, expect map".
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`[1, 2, 3, 4][item > 2]`, []any{3.0, 4.0}},
+			{`[{a: 1}, {a: 2}][item.a = 2]`, []any{map[string]any{"a": 2.0}}},
+			{`[{a: 1}, {a: 2}][a = 2]`, []any{map[string]any{"a": 2.0}}},
+			{`[{x: 1, y: 2}, {x: null, y: 3}][x < 2]`, []any{map[string]any{"x": 1.0, "y": 2.0}}},
+			{`[{item: 5}, {item: 1}][item > 2]`, []any{map[string]any{"item": 5.0}}},
+			{`[][item > 1]`, []any{}},
+			{`[1, 2]["a"]`, nil},
+			{`5[1]`, 5.0},
+			{`5[2]`, nil},
+			{`5[item > 1]`, []any{5.0}},
+			{`5[item > 9]`, []any{}},
+			{`null[1]`, nil},
+			{`[{a: 1}, {a: 2}].a`, []any{1.0, 2.0}},
+			{`[{x: 1, y: 2}, {x: 2}].y`, []any{2.0, nil}},
+			{`[1, 2, 3][2]`, 2.0},
+			{`[1, 2, 3][-1]`, 3.0},
+		})
+	})
 }
 
 func approx(a, b float64) bool {

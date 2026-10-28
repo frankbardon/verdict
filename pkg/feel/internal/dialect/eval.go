@@ -304,6 +304,9 @@ func (dotop DotOp) Eval(intp *Interpreter) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if list, ok := leftVal.([]any); ok {
+		return dotop.project(intp, list)
+	}
 	if mapVal, ok := leftVal.(Scope); ok {
 		if val, found := mapVal[dotop.Attr]; found {
 			return val, nil
@@ -328,6 +331,37 @@ func (dotop DotOp) Eval(intp *Interpreter) (any, error) {
 	} else {
 		return nil, NewErrTypeMismatch("map")
 	}
+}
+
+// project is a path over a list (DMN 1.5 §10.3.2.5): "a selection using the
+// "." operator with a list of contexts on its left hand side returns a list of
+// selections", FEEL(f, c') for each element e' with c' augmented by the entries
+// of e' — so an element without the entry gives null
+// (`[{x:1, y:2}, {x:2}].y = [2, null]`). **Interpretation:** an element that is
+// not a context contributes no entries, so it selects null too, unless it has
+// the attribute (a date's `year`). Every element is charged against the
+// iteration budget.
+//
+// VERDICT DIVERGENCE: upstream raised "type mismatch, expect map" for a path
+// on any list. See NOTICE.md.
+func (dotop DotOp) project(intp *Interpreter, list []any) (any, error) {
+	if err := intp.chargeIterations(uint64(len(list))); err != nil {
+		return nil, err
+	}
+	out := make([]any, len(list))
+	for i, elem := range list {
+		out[i] = null
+		if m, ok := asContext(elem); ok {
+			if v, found := m[dotop.Attr]; found {
+				out[i] = v
+			}
+		} else if obj, ok := elem.(HasAttrs); ok {
+			if v, found := obj.GetAttr(dotop.Attr); found {
+				out[i] = normalizeValue(v)
+			}
+		}
+	}
+	return out, nil
 }
 
 func (ifExpr IfExpr) Eval(intp *Interpreter) (any, error) {

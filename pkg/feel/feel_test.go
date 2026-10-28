@@ -554,6 +554,61 @@ func TestListIndex(t *testing.T) {
 	}
 }
 
+// TestListFilterAndPath pins DMN 1.5 §10.3.2.5 and Table 68: a boolean
+// filter is evaluated per item with `item` bound and, when the item is a
+// context, its entries in scope by name; an item whose filter is false, null or
+// not a boolean is dropped. A numeric bracket is still an index. A path on a
+// list of contexts projects over the elements, null where one lacks the entry.
+// Filters and paths work the same on a literal, a context-typed variable and a
+// built-in's result.
+func TestListFilterAndPath(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"cs": FromGo([]any{map[string]any{"a": 1}, map[string]any{"a": 2}}),
+		"m":  FromGo(map[string]any{"x": 1, "y": 2}),
+		"n":  FromGo(2),
+		"xs": FromGo([]any{1, 2, 3}),
+	}
+	a2 := []any{map[string]any{"a": 2.0}}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`[{a: 1}, {a: 2}][item.a = 2]`, a2},
+		{`[{a: 1}, {a: 2}][a = 2]`, a2},
+		{`cs[item.a = 2]`, a2},
+		{`cs[a = 2]`, a2},
+		{`[{a: 1}, {a: 2}].a`, []any{1.0, 2.0}},
+		{`cs.a`, []any{1.0, 2.0}},
+		{`get entries(m).key`, []any{"x", "y"}},
+		{`get entries({x: 1, y: 2})[key = "y"].value`, []any{2.0}},
+		{`get entries(m)[value > 1].key`, []any{"y"}},
+		{`[{x: 1, y: 2}, {x: 2}].y`, []any{2.0, nil}},
+		{`[1, 2, 3][item > 1]`, []any{2.0, 3.0}},
+		{`xs[item > n]`, []any{3.0}},
+		{`[{x: 1}, {x: null}, {x: "a"}][x < 2]`, []any{map[string]any{"x": 1.0}}},
+		{`[1, 2, 3][if item = 2 then null else true]`, []any{1.0, 3.0}},
+		{`[1, 2, 3][item > 5]`, []any{}},
+		{`[][item > 1]`, []any{}},
+		{`[[1, 2], [3, 4]][item[1] = 3]`, []any{[]any{3.0, 4.0}}},
+		{`count(cs[a > 0])`, 2.0},
+		{`xs[n]`, 2.0},
+		{`xs[-1]`, 3.0},
+		{`xs[0]`, nil},
+		{`[][1]`, nil},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, vars)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 // TestStringAndListSupplementDomain pins the §10.3.4 domain rule for the
 // supplement's string and list built-ins: a null or wrong-typed argument, an
 // invalid regular expression, replacement or flags (footnote 2), a position
