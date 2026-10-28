@@ -105,29 +105,6 @@ func decodeKWArgs(input map[string]any, output any) error {
 	return decoder.Decode(input)
 }
 
-func extractList(args map[string]any, argName string) ([]any, error) {
-	if v, ok := args[argName]; ok {
-		if listV, ok := v.([]any); ok {
-			if len(listV) == 1 {
-				elem := listV[0]
-				rv := reflect.ValueOf(elem)
-				if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
-					result := make([]any, rv.Len())
-					for i := 0; i < rv.Len(); i++ {
-						result[i] = rv.Index(i).Interface()
-					}
-					return result, nil
-				}
-			}
-			return listV, nil
-		} else {
-			return nil, NewErrTypeMismatch("list")
-		}
-	} else {
-		return nil, NewErrKeyNotFound(argName)
-	}
-}
-
 // booleanItems binds the `list` parameter of all/any (and the fork's
 // and(list)/or(list)): DMN 1.5 §10.3.4.4 gives them the domain "list of
 // Boolean items or argument list of one or more Boolean items". A positional
@@ -409,135 +386,13 @@ func installBuiltinFunctions(prelude *Prelude) {
 		return false, nil
 	}).Required("list", "element"))
 
-	prelude.Bind("count", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		return len(list), nil
-	}).Vararg("list"))
-
-	prelude.Bind("min", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		return extremum(list, 1), nil
-	}).Vararg("list"))
-
-	prelude.Bind("max", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		return extremum(list, -1), nil
-	}).Vararg("list"))
-
-	prelude.Bind("sum", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		sum := Zero
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				sum = sum.Add(numEntry)
-			}
-		}
-		return sum, nil
-	}).Vararg("list"))
-
-	prelude.Bind("product", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		sum := N(1)
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				sum = sum.Mul(numEntry)
-			}
-		}
-		return sum, nil
-	}).Vararg("list"))
-
-	prelude.Bind("mean", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		sum := Zero
-		cnt := 0
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				sum = sum.Add(numEntry)
-				cnt++
-			}
-		}
-		r := sum.FloatDiv(N(cnt))
-		return r, nil
-	}).Vararg("list"))
-
-	prelude.Bind("stddev", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		sum := 0.0
-		cnt := 0
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				//sum = sum.Add(numEntry)
-				sum += numEntry.Float64()
-				cnt++
-			}
-		}
-		if cnt == 0 {
-			return 0, nil
-		}
-
-		avg := sum / float64(cnt)
-
-		dev := 0.0
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				n := numEntry.Float64()
-				dev += (n - avg) * (n - avg)
-			}
-		}
-
-		return math.Sqrt(dev / float64(cnt)), nil
-	}).Vararg("list"))
-
-	prelude.Bind("median", NewNativeFunc(func(args map[string]any) (any, error) {
-		list, err := extractList(args, "list")
-		if err != nil {
-			return nil, err
-		}
-		var numberList []*Number
-
-		for _, entry := range list {
-			if numEntry, ok := entry.(*Number); ok {
-				numberList = append(numberList, numEntry)
-			}
-		}
-		if len(numberList) == 0 {
-			return nil, nil
-		} else if len(numberList) == 1 {
-			return numberList[0], nil
-		}
-
-		sort.Slice(numberList, func(i, j int) bool {
-			return numberList[i].Compare(*numberList[j]) == -1
-		})
-
-		if len(numberList)%2 == 1 {
-			return numberList[len(numberList)/2], nil
-		} else {
-			medPos := (len(numberList) / 2)
-			return numberList[medPos+1].Add(numberList[medPos]).Mul(N("0.5")), nil
-		}
-	}).Vararg("list"))
+	// VERDICT DIVERGENCE: upstream raised on a null list, skipped items that
+	// were not numbers, returned 0 for sum([]) and 1 for product([]), panicked
+	// on mean([]), divided stddev by n and median's even case picked the wrong
+	// pair, and had no mode. DMN 1.5 §10.3.4.4 Table 75; see Aggregate.
+	for _, name := range aggregateNames {
+		prelude.Bind(name, NewNativeFunc(aggregateBuiltin(name)).Vararg("list"))
+	}
 
 	// VERDICT DIVERGENCE: upstream coerced each item through boolValue, so
 	// `all([true, null])` was false and `any([123])` true, and raised on a

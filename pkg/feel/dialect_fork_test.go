@@ -2855,6 +2855,35 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("list aggregates are null outside their domain", func(t *testing.T) {
+		// DMN 1.5 §10.3.4.4 Table 75, §10.3.2.13.1. Upstream raised on a
+		// null list (count(null) was 1, sum(null) 0), skipped non-numbers
+		// (sum([1, "a"]) was 1), returned 0 and 1 for sum([]) and
+		// product([]), panicked on mean([]), divided stddev by n, took the
+		// wrong pair for an even median, and had no mode.
+		for _, expr := range []string{
+			`count(null) = null`,
+			`count([]) = 0`,
+			`count([1, null]) = 2`,
+			`sum(null) = null`,
+			`sum([]) = null`,
+			`sum([1, null]) = null`,
+			`sum([1, "a"]) = null`,
+			`product([]) = null`,
+			`product([1, 2, null, 4]) = null`,
+			`mean([]) = null`,
+			`median([6, 1, 2, 3]) = 2.5`,
+			`stddev([2, 4, 7, 5]) = 2.081665999466132735282297706979931`,
+			`stddev([47]) = null`,
+			`mode([]) = []`,
+			`mode([6, 1, 9, 6, 1]) = [1, 6]`,
+		} {
+			if got := mustEval(t, e, expr, nil); got != true {
+				t.Errorf("%s = %#v, want true", expr, got)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {

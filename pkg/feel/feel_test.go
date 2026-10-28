@@ -168,6 +168,9 @@ func TestNumericBuiltinsAreNullOutsideTheirDomain(t *testing.T) {
 		`log(null)`, `log("a")`, `log(0)`, `log(-1)`,
 		`exp(null)`, `exp("x")`,
 		`odd(null)`, `odd("x")`, `even(null)`, `even("x")`,
+		// Interpretation (#60): Table 76 is silent on a fraction; odd and
+		// even are defined on integers, so one is outside the domain.
+		`odd(1.5)`, `even(1.5)`, `odd(-0.5)`, `even(2.000001)`,
 	} {
 		v, err := e.EvalText(expr, nil)
 		if err != nil {
@@ -210,8 +213,8 @@ func TestNumericBuiltinsAreDecimal(t *testing.T) {
 		`odd(123456789012345678901234567890123)`,
 		`odd(-7)`,
 		`even(0)`,
-		`not(odd(2.5))`,
-		`not(even(2.5))`,
+		`odd(2.5) = null`,
+		`even(2.5) = null`,
 	} {
 		if got := mustEval(t, e, expr, nil); got != true {
 			t.Errorf("%s = %#v, want true", expr, got)
@@ -510,6 +513,117 @@ func TestStringLiteralsAndCharacters(t *testing.T) {
 		if got := ToGo(v); !deepEqualNum(got, c.want) {
 			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
 		}
+	}
+}
+
+// TestListAggregates pins DMN 1.5 §10.3.4.4 Table 75 for count, min, max,
+// sum, product, mean, median, stddev and mode (#58): a null or out-of-domain
+// argument is null, never an error; an empty list is 0 for count, [] for
+// mode and null for the rest; a null or non-number item makes an arithmetic
+// aggregate null, while count counts it (an interpretation; TCK 0094-004
+// fixes only product). TCK ids: 0061 median, 0062 mode, 0063 stddev, 0094
+// product.
+func TestListAggregates(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		// Null or out-of-domain argument.
+		{`count(null)`, nil},
+		{`count(list: null)`, nil},
+		{`sum(null)`, nil},
+		{`product(null)`, nil},
+		{`mean(null)`, nil},
+		{`median(null)`, nil},
+		{`stddev(null)`, nil},
+		{`mode(null)`, nil},
+		{`min(null)`, nil},
+		{`max(null)`, nil},
+		{`sum("a")`, nil},
+		{`mean([1, "a"])`, nil},
+		{`median([1, 2, "foo", 4])`, nil},
+		{`mode([1, 2, "foo", 4])`, nil},
+		{`stddev([1, 2, "foo", 4])`, nil},
+		{`product([1, 2, "foo", 4])`, nil},
+		{`sum([[1, 2]])`, nil},
+		// Empty list.
+		{`count([])`, 0.0},
+		{`sum([])`, nil},
+		{`product([])`, nil},
+		{`mean([])`, nil},
+		{`median([])`, nil},
+		{`stddev([])`, nil},
+		{`min([])`, nil},
+		{`max([])`, nil},
+		{`mode([])`, []any{}},
+		// A null item.
+		{`count([1, null])`, 2.0},
+		{`sum([1, null])`, nil},
+		{`product([1, 2, null, 4])`, nil},
+		{`mean([1, null])`, nil},
+		{`median([1, null])`, nil},
+		{`stddev([1, null, 3])`, nil},
+		{`mode([1, null])`, nil},
+		{`max([1, null])`, nil},
+		// In the domain, including singleton conversion and varargs.
+		{`count([1, [2, 3]])`, 2.0},
+		{`count(1, 2, 3)`, 3.0},
+		{`count(5)`, 1.0},
+		{`sum([1, 2, 3])`, 6.0},
+		{`sum(1, 2, 3)`, 6.0},
+		{`sum(list: [1, 2])`, 3.0},
+		{`product([2, 3, 4])`, 24.0},
+		{`product(6)`, 6.0},
+		{`mean([1, 2, 3, 4])`, 2.5},
+		{`mean(5)`, 5.0},
+		{`median([8, 2, 5, 3, 4])`, 4.0},
+		{`median([6, 1, 2, 3])`, 2.5},
+		{`median(4)`, 4.0},
+		{`stddev(47)`, nil},
+		{`stddev([47])`, nil},
+		{`stddev([2, 4, 7, 5]) = 2.081665999466132735282297706979931`, true},
+		{`mode([6, 1, 9, 6, 1])`, []any{1.0, 6.0}},
+		{`mode([3, 6, 1, 9, 6, 1, 3])`, []any{1.0, 3.0, 6.0}},
+		{`mode(6, 3, 9, 6, 6)`, []any{6.0}},
+		{`min([3, 1, 2])`, 1.0},
+		{`max(3, 1, 2)`, 3.0},
+		{`string(mean([1, 2, 3, 4]))`, "2.5"},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v, want %#v", c.expr, err, c.want)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestAggregateIsTheBuiltin pins that feel.Aggregate, the door COLLECT
+// aggregation uses, answers exactly as the FEEL built-ins do.
+func TestAggregateIsTheBuiltin(t *testing.T) {
+	list := []any{FromGo(3), FromGo(1), Null}
+	cases := map[string]any{"count": 3.0, "sum": nil, "min": nil, "max": nil, "mode": nil}
+	for name, want := range cases {
+		got, ok := Aggregate(name, list)
+		if !ok {
+			t.Fatalf("Aggregate(%q) unknown", name)
+		}
+		if g := ToGo(got); !deepEqualNum(g, want) {
+			t.Errorf("Aggregate(%q, [3, 1, null]) = %#v, want %#v", name, g, want)
+		}
+	}
+	if got, _ := Aggregate("sum", nil); !IsNull(got) {
+		t.Errorf("Aggregate(sum, []) = %#v, want null", got)
+	}
+	if got, _ := Aggregate("count", nil); ToGo(got) != 0.0 {
+		t.Errorf("Aggregate(count, []) = %#v, want 0", ToGo(got))
+	}
+	if _, ok := Aggregate("all", nil); ok {
+		t.Error("Aggregate(all) is not a list aggregate")
 	}
 }
 

@@ -448,6 +448,16 @@ func Add(a, b any) (any, error) {
 	return an.Add(bn), nil
 }
 
+// Aggregate applies the DMN 1.5 §10.3.4.4 list aggregate name (count, min,
+// max, sum, product, mean, median, stddev or mode) to a list of FEEL values,
+// exactly as the FEEL built-in of that name does: a list outside the
+// function's domain gives Null, never an error. ok is false only for an
+// unknown name. It is the door a decision table's COLLECT aggregation, which
+// §10.3.2.10 defines through these built-ins, uses into them.
+func Aggregate(name string, list []any) (result any, ok bool) {
+	return pfeel.Aggregate(name, list)
+}
+
 // ParseTemporal parses a temporal literal into the requested FEEL type. It
 // backs agent-response coercion, where a model answers a date-typed decision
 // with a string.

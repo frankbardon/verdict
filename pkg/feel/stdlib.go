@@ -209,9 +209,9 @@ func buildSupplement() {
 		Fn: unaryDecimal(decimalLog)})
 	bind("exp", Function{Params: []string{"number"}, Help: "e raised to the given power",
 		Fn: unaryDecimal(decimalExp)})
-	bind("odd", Function{Params: []string{"number"}, Help: "true when the integral value is odd",
+	bind("odd", Function{Params: []string{"number"}, Help: "true when the integer is odd; null for a non-integer",
 		Fn: parity(1)})
-	bind("even", Function{Params: []string{"number"}, Help: "true when the integral value is even",
+	bind("even", Function{Params: []string{"number"}, Help: "true when the integer is even; null for a non-integer",
 		Fn: parity(0)})
 
 	// ---- list functions ---------------------------------------------------
@@ -471,7 +471,10 @@ func unaryDecimal(f func(*big.Float) (*big.Float, bool)) func(map[string]any) (a
 
 // parity is odd (rem 1) or even (rem 0), decided on the exact value so an
 // integer above 2^53 is not rounded to its float64 neighbour first. A number
-// that is not an integer is neither.
+// that is not an integer is null. Interpretation: DMN 1.5 §10.3.4.5 Table 76
+// and the TCK (0054, 0055) are silent on odd(1.5); odd and even are defined
+// on integers, so a fraction is treated as outside the domain (§10.3.2.13.1)
+// rather than answered false.
 func parity(rem uint) func(map[string]any) (any, error) {
 	return func(a map[string]any) (any, error) {
 		n, ok := numberArg(a["number"])
@@ -480,7 +483,7 @@ func parity(rem uint) func(map[string]any) (any, error) {
 		}
 		x := n.BigFloat()
 		if x.IsInf() || !x.IsInt() {
-			return false, nil
+			return Null, nil
 		}
 		i, _ := x.Int(nil)
 		return i.Bit(0) == rem, nil

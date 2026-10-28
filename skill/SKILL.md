@@ -169,8 +169,12 @@ value in ["low", "medium", "high"]                // membership
 decimal(amount * 1.2, 2)                          // round to 2 places
 modulo(-10.1, 4.5) = 3.4   sqrt(-1) = null           // numeric fns: exact decimals; null on null, non-number or out-of-domain args
 sqrt(2)   log(10)   exp(1)   odd(9007199254740993)  // 34 significant digits; odd/even exact on any integer
+odd(1.5) = null   even(2.5) = null                  // odd/even of a non-integer is null (interpretation; spec silent)
 string(1/3) = "0.3333333333333333333333333333333333"   // numbers print at 34 significant digits, plain decimal (never 1E-40), zeros trimmed
 min([a, b])   max([a, b])   sum([1, 2, 3])        // list functions
+count([]) = 0   mode([]) = []   sum([]) = null   mean([]) = null   // empty list: null for sum/product/mean/median/stddev/min/max
+sum([1, null]) = null   count([1, null]) = 2   sum(null) = null   // null/non-number item: arithmetic aggregates null; count counts it
+median([6, 1, 2, 3]) = 2.5   stddev([2, 4, 7, 5])   mode([6, 1, 9, 6, 1]) = [1, 6]   // stddev is the sample deviation; mode ascending
 date("2024-03-01")   date and time("2024-03-01T09:00:00Z")   @"P30D"
 number("12.5")   string(x)   duration("P1Y2M")   // null on a malformed string
 date(2026, 2, 28)   time(10, 30, 0)   time(10, 30, 0, duration("PT2H"))   // components; bad ones null
