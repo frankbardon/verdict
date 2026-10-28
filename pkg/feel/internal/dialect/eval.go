@@ -570,6 +570,11 @@ func (fe ForExpr) Eval(intp *Interpreter) (any, error) {
 	intp.PushEmpty()
 	results := make([]any, 0)
 	for _, val := range aList {
+		// A fresh frame per element, so a function the body defines closes
+		// over this element's binding, not the frame the next element
+		// overwrites (§10.3.2.13.2): (for t in [1, 2] return function(x)
+		// x + t)[1](10) is 11.
+		intp.ScopeStack[len(intp.ScopeStack)-1] = Scope{}
 		intp.Bind(fe.Varname, val)
 
 		res, err := fe.ReturnExpr.Eval(intp)
@@ -671,23 +676,50 @@ func (ee EveryExpr) Eval(intp *Interpreter) (any, error) {
 	return quantify(intp, ee.Varname, ee.ListExpr, ee.FilterExpr, false)
 }
 
+// Eval makes a function value that closes over the current scope. DMN 1.5
+// §10.3.2.13.2: FEEL(function(X1, ... Xn) body, s) is function(argument list,
+// body, scope: s), and a call evaluates body in insert before(s, 1, c), c
+// being the arguments — so a free name in the body resolves where the
+// function was written, not where it is called. Only the stack's frame
+// pointers are copied (one slice of len(ScopeStack)), never a frame's entries.
+//
+// VERDICT DIVERGENCE: upstream kept only Args and Body, so a call resolved
+// free names at the call site (dynamic scope). See NOTICE.md.
 func (fd FunDef) Eval(intp *Interpreter) (any, error) {
 	return &FunDef{
-		Args: fd.Args,
-		Body: fd.Body,
+		Args:      fd.Args,
+		Body:      fd.Body,
+		closure:   append([]Scope(nil), intp.ScopeStack...),
+		textRange: fd.textRange,
 	}, nil
 }
 
-func (fd FunDef) EvalCall(intp *Interpreter, args []any) (any, error) {
+// invoke evaluates the body under the closure with frame — the bound
+// arguments — on top, then restores the caller's stack. The closure is
+// re-sliced to its length so the append always allocates: two calls of one
+// function value, concurrent or nested, never share a backing array, and the
+// captured frames are read, never written. A FunDef without a closure (one
+// not produced by Eval) keeps the caller's stack, as upstream did.
+func (fd *FunDef) invoke(intp *Interpreter, frame Scope) (any, error) {
+	saved := intp.ScopeStack
+	base := saved
+	if fd.closure != nil {
+		base = fd.closure
+	}
+	intp.ScopeStack = append(base[:len(base):len(base)], frame)
+	defer func() { intp.ScopeStack = saved }()
+	return fd.Body.Eval(intp)
+}
+
+func (fd *FunDef) EvalCall(intp *Interpreter, args []any) (any, error) {
 	if len(args) != len(fd.Args) {
 		return nil, errors.New("eval call argument size mismatch")
 	}
-	intp.PushEmpty()
-	defer intp.Pop()
+	frame := make(Scope, len(fd.Args))
 	for i, argName := range fd.Args {
-		intp.Bind(argName, args[i])
+		frame[argName] = normalizeValue(args[i])
 	}
-	return fd.Body.Eval(intp)
+	return fd.invoke(intp, frame)
 }
 
 func (fc FunCall) Eval(intp *Interpreter) (any, error) {
@@ -907,10 +939,9 @@ func (fc FunCall) EvalFunDef(intp *Interpreter, funDef *FunDef) (any, error) {
 	} else if len(funDef.Args) < len(fc.Args) {
 		return nil, NewErrTooManyArguments()
 	}
-	//var args []any
-	intp.PushEmpty()
-	defer intp.Pop()
-
+	// The arguments are evaluated in the caller's scope; only the body runs
+	// under the function's closure (§10.3.2.13.2).
+	frame := make(Scope, len(funDef.Args))
 	if fc.keywordArgs {
 		kwArgMap, err := fc.evalArgsToMap(intp)
 		if err != nil {
@@ -919,11 +950,9 @@ func (fc FunCall) EvalFunDef(intp *Interpreter, funDef *FunDef) (any, error) {
 
 		for _, argName := range funDef.Args {
 			if v, ok := kwArgMap[argName]; ok {
-				//argVals = append(argVals, v)
-				intp.Bind(argName, v)
+				frame[argName] = normalizeValue(v)
 			} else {
-				//return nil, NewEvalError(-5001, "no keyword argument", fmt.Sprintf("no keyword argument %s", argName))
-				intp.Bind(argName, null)
+				frame[argName] = null
 			}
 		}
 	} else {
@@ -932,11 +961,10 @@ func (fc FunCall) EvalFunDef(intp *Interpreter, funDef *FunDef) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			intp.Bind(funDef.Args[i], a)
+			frame[funDef.Args[i]] = normalizeValue(a)
 		}
 	}
-	ret, err := funDef.Body.Eval(intp)
-	return ret, err
+	return funDef.invoke(intp, frame)
 }
 
 func EvalString(input string) (any, error) {

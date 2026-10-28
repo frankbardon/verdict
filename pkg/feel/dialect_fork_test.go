@@ -3202,6 +3202,20 @@ func TestForkedDefects(t *testing.T) {
 			{`is defined({a: 1}.a)`, true},
 		})
 	})
+
+	t.Run("functions are lexical closures", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.13.2. Upstream kept only a function's parameters
+		// and body, so a call resolved free names at the call site:
+		// `{t: 5, f: function(x) x + t}.f(1)` was null.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`{t: 5, f: function(x) x + t}.f(1)`, 6.0},
+			{`(for t in [1, 2] return function(x) x + t)[1](10)`, 11.0},
+			{`{g: {f: function(x) x + u}.f, r: {u: 1, v: g(1)}.v}.r`, nil},
+		})
+	})
 }
 
 func approx(a, b float64) bool {

@@ -117,6 +117,15 @@ type FunDef struct {
 	Args []string
 	Body Node
 
+	// closure is the scope stack the definition was evaluated in (DMN 1.5
+	// §10.3.2.13.2: a FEEL function is a lexical closure). It holds the
+	// frames themselves, not copies, so a context literal's frame that is
+	// still being filled — a recursive entry — is visible at call time. Nil on
+	// a parsed node; set on the value FunDef.Eval returns.
+	//
+	// VERDICT DIVERGENCE: upstream had no closure. See NOTICE.md.
+	closure []Scope
+
 	textRange TextRange
 }
 

@@ -87,8 +87,9 @@ func NewNativeFuncI(fn NativeFunDefI) *NativeFun {
 }
 
 // CallFunction applies a FEEL function value to positional arguments under
-// intp, so a call made from a built-in sees the same scope stack and draws on
-// the same iteration budget as the expression that invoked the built-in. ok is
+// intp, so a call made from a built-in draws on the same iteration budget as
+// the expression that invoked the built-in; a *FunDef's body resolves free
+// names in the scope it was defined in (its closure, §10.3.2.13.2). ok is
 // false when fn is not a function or does not take len(args) arguments;
 // evaluation errors from the function's body are returned, as `sort` does.
 //

@@ -108,6 +108,47 @@ func TestContextEntriesSeeEarlierEntries(t *testing.T) {
 	}
 }
 
+// TestFunctionsAreLexicalClosures pins DMN 1.5 §10.3.2.13.2: a FEEL function
+// is a lexical closure over the scope it is defined in, and a call evaluates
+// its body in that scope with the arguments inserted first. Parameters shadow
+// captured names; captured names shadow the call site's; a name bound only at
+// the call site is not visible to the body.
+func TestFunctionsAreLexicalClosures(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"t": FromGo(99), "xs": FromGo([]any{1, 3, 2})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`{t: 5, f: function(x) x + t}.f(1)`, 6.0},
+		{`{t: 5, f: function(x) x + t}.f(x: 2)`, 7.0},
+		{`(function(x) x + t)(1)`, 100.0},
+		// Returned out of a for: each function keeps its own element.
+		{`(for t in [1, 2] return function(x) x + t)[2](10)`, 12.0},
+		{`(for t in [1, 2] return function(x) x + t)[1](10)`, 11.0},
+		{`for f in (for t in [1, 2] return function(x) x * t) return f(3)`, []any{3.0, 6.0}},
+		// Returned out of a nested context.
+		{`{g: {k: 3, f: function(x) x * k}.f, r: g(2)}.r`, 6.0},
+		// Parameters shadow captured names.
+		{`{x: 100, f: function(x) x + 1}.f(1)`, 2.0},
+		// Captured names shadow the call site's.
+		{`{t: 5, f: function(x) x + t, r: {t: 50, v: f(1)}.v}.r`, 6.0},
+		// A name bound only where the function is called is not in scope.
+		{`{g: {f: function(x) x + u}.f, r: {u: 1, v: g(1)}.v}.r`, nil},
+		// Recursion through the enclosing context's entry.
+		{`{fact: function(n) if n <= 1 then 1 else n * fact(n - 1), r: fact(5)}.r`, 120.0},
+		{`{fact: function(n) if n <= 1 then 1 else n * fact(n - 1)}.fact(4)`, 24.0},
+		// Built-ins that apply a function value see its closure.
+		{`{k: -1, r: sort(xs, function(a, b) a * k < b * k)}.r`, []any{3.0, 2.0, 1.0}},
+		{`{lt: {m: 2, f: function(item, newItem) item < m}.f, r: list replace(xs, lt, 0)}.r`, []any{0.0, 3.0, 2.0}},
+	}
+	for _, c := range cases {
+		if got := mustEval(t, e, c.expr, vars); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 func TestUnaryTests(t *testing.T) {
 	e := newFEEL(t)
 	cases := []struct {
