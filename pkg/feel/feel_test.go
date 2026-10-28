@@ -76,6 +76,38 @@ func TestNamesEndAtClosingDelimiters(t *testing.T) {
 	}
 }
 
+// TestContextEntriesSeeEarlierEntries pins DMN 1.5 §10.3.2.6: a context
+// entry's value may refer to the entries before it in the same literal. An
+// entry shadows an outer variable of the same name, nested literals see their
+// enclosing literal's earlier entries, and a function called while the literal
+// is being built sees them too.
+func TestContextEntriesSeeEarlierEntries(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{"c": FromGo(9), "xs": FromGo([]any{1, 7, 3})}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`{c: 1, r: c}`, map[string]any{"c": 1.0, "r": 1.0}},
+		{`{c: 1, r: c}.r`, 1.0},
+		{`{r: c}`, map[string]any{"r": 9.0}},
+		{`{a: 1, b: a + 1, d: b * 10}`, map[string]any{"a": 1.0, "b": 2.0, "d": 20.0}},
+		{`{a: 2, n: {b: a + 1, m: {d: b + a}}}.n.m.d`, 5.0},
+		{`{"a b": 1, r: a b + 1}.r`, 2.0},
+		{`{f: function(x) x + 1, r: f(2)}.r`, 3.0},
+		{`{t: 5, r: list replace(xs, function(item, newItem) item > t, 0)}.r`, []any{1.0, 0.0, 3.0}},
+		// A later entry is not in scope for an earlier one, and the frame does
+		// not outlive the literal.
+		{`{r: q, q: 1}.r`, nil},
+		{`{q: 1}.q + c`, 10.0},
+	}
+	for _, c := range cases {
+		if got := mustEval(t, e, c.expr, vars); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 func TestUnaryTests(t *testing.T) {
 	e := newFEEL(t)
 	cases := []struct {

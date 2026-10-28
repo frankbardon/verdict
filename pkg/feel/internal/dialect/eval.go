@@ -286,8 +286,17 @@ func (mt MultiTests) Eval(intp *Interpreter) (any, error) {
 	return false, nil
 }
 
+// Eval builds a context literal. DMN 1.5 §10.3.2.6: an entry's value may
+// refer to the entries before it in the same literal, so each finished entry
+// is bound in a frame of its own before the next is evaluated. That frame sits
+// above the caller's scope, so an entry shadows an outer variable of the same
+// name, and nested literals see their enclosing literal's earlier entries.
+// Upstream evaluated every entry against the outer scope alone, so `{c: 1,
+// r: c}` gave r = null.
 func (mapNode MapNode) Eval(intp *Interpreter) (any, error) {
 	mapVal := make(map[string]any)
+	intp.PushEmpty()
+	defer intp.Pop()
 	for _, item := range mapNode.Values {
 
 		v, err := item.Value.Eval(intp)
@@ -295,6 +304,7 @@ func (mapNode MapNode) Eval(intp *Interpreter) (any, error) {
 			return nil, err
 		}
 		mapVal[item.Name] = v
+		intp.Bind(item.Name, v)
 	}
 	return mapVal, nil
 }

@@ -81,6 +81,22 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("a context entry sees the entries before it", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.6. Upstream evaluated every entry against the outer
+		// scope alone, so `{c: 1, r: c}` gave r = null, or the outer c.
+		vars := map[string]any{"c": FromGo(9)}
+		cases := map[string]any{
+			`{c: 1, r: c}.r`:            1.0,
+			`{a: 1, b: a + 1}.b`:        2.0,
+			`{a: 2, n: {b: a + 1}}.n.b`: 3.0,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
 	t.Run("dates are comparable", func(t *testing.T) {
 		cases := map[string]any{
 			`date("2024-01-01") < date("2024-06-01")`:  true,

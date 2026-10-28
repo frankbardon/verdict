@@ -188,6 +188,7 @@ matches(s, "^\\d+$")   "a\tb"   "\u00e9"   "\uD83D\uDC0E"   // escapes \' \" \\ 
 string length("🐎ab") = 3                         // lengths and positions count characters (code points), not bytes
 string(true) = "true"   string([1, "a"]) = "[1, \"a\"]"   // FEEL form; strings nested in lists/contexts quoted
 context([{key: "a", value: 1}, {key: "a", value: 2}]) = null   // duplicate key; context put/merge override instead
+{c: 1, r: c + 1} = {c: 1, r: 2}   {a: 2, n: {b: a + 1}}.n.b = 3   // an entry sees earlier entries of its literal; shadows outer names
 context merge({a: 1})   list contains(5, 5)              // a non-list item is a singleton list
 context put(Applicant, "k", 1)   Applicant = {name: "A", age: 30}   // a context input is a context to =, built-ins, string()
 get entries({b: 1, a: 2}) = [{key: "a", value: 2}, {key: "b", value: 1}]   get entries(m)[1].key   // a FEEL list, entries in key order
