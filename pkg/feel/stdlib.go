@@ -49,9 +49,9 @@ func buildSupplement() {
 		if _, exists := pfeel.GetPrelude().Resolve(name); exists {
 			return
 		}
-		// A supplement built-in is a standard one: a call to it with the
-		// wrong arguments is null (DMN 1.5 §10.3.4), as for the prelude's.
-		supplement[name] = nativeFunc(f).Standard()
+		// A call with the wrong arguments is null (DMN 1.5 §10.3.4), as it
+		// is for every native function.
+		supplement[name] = nativeFunc(f)
 	}
 	// bindNative is bind for a built-in constructed directly on the fork's
 	// NativeFun — one that needs a hook Function does not expose.
@@ -59,7 +59,7 @@ func buildSupplement() {
 		if _, exists := pfeel.GetPrelude().Resolve(name); exists {
 			return
 		}
-		supplement[name] = nf.Standard()
+		supplement[name] = nf
 	}
 
 	// ---- string functions -------------------------------------------------

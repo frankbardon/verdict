@@ -2544,7 +2544,7 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
-	t.Run("a standard built-in called with the wrong arguments is null", func(t *testing.T) {
+	t.Run("a native function called with the wrong arguments is null", func(t *testing.T) {
 		// DMN 1.5 §10.3.4; TCK 1140, 1145, 1155 pin a wrong argument count
 		// and an unknown parameter name as null. Upstream raised on the
 		// first and ignored the second; it also dropped a named variadic
@@ -2567,18 +2567,32 @@ func TestForkedDefects(t *testing.T) {
 			{`string length(string: "ab")`, 2.0},
 			{`count(list: [1, 2])`, 2.0},
 		})
-		// A function that is not a standard built-in still raises.
+		// An application function — how a BKM or decision service is
+		// invoked from FEEL — is null on misfitting arguments too (DMN 1.5
+		// §10.3.2.13.2); it used to raise. Its body is not run, and an
+		// error the body raises still propagates.
+		ran := 0
 		lib := FunctionLibrary{Namespace: "acme", Functions: map[string]Function{
-			"twice": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) { return a["n"], nil }},
+			"twice": {Params: []string{"n"}, Fn: func(a map[string]any) (any, error) { ran++; return a["n"], nil }},
+			"fails": {Params: []string{"n"}, Fn: func(map[string]any) (any, error) { return nil, errors.New("boom") }},
 		}}
 		le, err := NewEvaluator(FEEL, WithLibraries(lib))
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, expr := range []string{`acme.twice()`, `acme.twice(1, 2)`, `acme.twice(n: 1, m: 2)`} {
-			if v, err := le.EvalText(expr, nil); err == nil {
-				t.Errorf("%s = %#v, want an evaluation error", expr, ToGo(v))
+		for _, expr := range []string{`acme.twice()`, `acme.twice(1, 2)`, `acme.twice(n: 1, m: 2)`, `acme.twice(m: 1)`} {
+			v, err := le.EvalText(expr, nil)
+			if err != nil {
+				t.Errorf("%s raised %v, want null", expr, err)
+			} else if ToGo(v) != nil {
+				t.Errorf("%s = %#v, want null", expr, ToGo(v))
 			}
+		}
+		if ran != 0 {
+			t.Errorf("a misfitting call ran the function body %d times", ran)
+		}
+		if _, err := le.EvalText(`acme.fails(1)`, nil); err == nil {
+			t.Error("acme.fails(1): want the body's error, got none")
 		}
 	})
 

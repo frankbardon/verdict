@@ -204,7 +204,7 @@ list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]  
 {t: 5, f: function(x) x + t}.f(1) = 6   (for t in [1, 2] return function(x) x + t)[2](10) = 12   // functions close over where they are defined, not where they are called
 function(a: string, b) a   (function(a: number) a)("x") = null   (function(a: number) a)([7]) = 7   // typed params: a non-conforming argument (after singleton-list/date conversion) is null; null conforms to any type; an itemDefinition type name is not checked
 sort(list: xs, precedes: function(x, y) x < y)   sort([3,1], function(x) x) = null   sort() = null   is defined(1, 2) = null   // built-ins (sort, is defined too) are null on a wrong argument count, unknown name or out-of-domain arg; an error inside a predicate still fails
-5(1) = null   nofn(x) = null   sumx([1]) = null   (function(x) x)(1, 2) = null   // calling a non-function (a misspelt built-in too) or misfitting a function's parameters is null, not an error
+5(1) = null   nofn(x) = null   sumx([1]) = null   (function(x) x)(1, 2) = null   // calling a non-function (a misspelt built-in too) or misfitting a function's parameters — a BKM, decision service or library function too — is null, not an error
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false
 all(true, false)   all([false, 123]) = null           // variadic; a non-boolean item makes the call null
 1 in 1   "a" in "a"                                   // a non-list, non-range right side is `=`
@@ -520,6 +520,12 @@ opens as an empty canvas.
   duration stays a duration and a number keeps every decimal digit. Only
   `Result.Outputs` and the trace are narrowed to plain Go/JSON (temporals and
   durations as FEEL lexical strings, numbers as `float64`).
+- **A misfitting BKM or service call from FEEL is null, not an error.** Too
+  many or too few arguments, or an unknown or missing parameter name
+  (`Scale(2)`, `Echo(5, 6)`, `Scale(n: 2, extra: 1)`), gives null and the body
+  does not run, so a service called that way leaves no `decisionService` trace
+  node. An error raised inside the body (budget, recursion depth) still fails
+  the evaluation (DMN 1.5 §10.3.2.13.2).
 - **An empty cell means `-`** (any), not "equals empty string".
 - **`itemDefinition` is an `xsd:choice`.** A type is *either* a constrained
   simple type (`typeRef` + `allowedValues`) *or* a structure (`itemComponent`)

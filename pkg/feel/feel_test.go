@@ -1306,9 +1306,9 @@ func TestFunctionLibraryIsNamespaced(t *testing.T) {
 
 // TestInvokingANonFunction pins DMN 1.5 §10.3.2.13.2: invoking something
 // that is not a function, or a user-defined function with arguments that do
-// not conform to its parameters, is null rather than an error. Built-ins,
-// closures and library functions are unchanged; a library function (as a
-// BKM or decision service is) still raises on a wrong argument count.
+// not conform to its parameters, is null rather than an error. That holds
+// for built-ins, closures and library functions alike — a library function
+// is how a BKM or decision service is invoked from FEEL.
 func TestInvokingANonFunction(t *testing.T) {
 	lib := FunctionLibrary{
 		Namespace: "acme",
@@ -1340,6 +1340,9 @@ func TestInvokingANonFunction(t *testing.T) {
 		{`abs(-1)`, 1.0},
 		{`abs(1, 2)`, nil},
 		{`acme.one(1)`, 1.0},
+		{`acme.one(1, 2)`, nil},
+		{`acme.one()`, nil},
+		{`acme.one(m: 1)`, nil},
 		{`{t: 5, f: function(x) x + t}.f(1)`, 6.0},
 	}
 	for _, c := range cases {
@@ -1352,11 +1355,7 @@ func TestInvokingANonFunction(t *testing.T) {
 			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
 		}
 	}
-	// An application function's arity mismatch still raises (NOTICE: the
-	// EvalNativeFun row), and an error evaluating an argument propagates.
-	if _, err := e.EvalText(`acme.one(1, 2)`, nil); err == nil {
-		t.Error("acme.one(1, 2): want an error, got none")
-	}
+	// An error evaluating an argument still propagates.
 	capped, err := NewEvaluator(FEEL, WithMaxIterations(10))
 	if err != nil {
 		t.Fatal(err)

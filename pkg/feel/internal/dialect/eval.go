@@ -765,9 +765,13 @@ func (fc FunCall) Eval(intp *Interpreter) (any, error) {
 // absent; a named variadic parameter (`count(list: [1, 2])`) was dropped. DMN
 // 1.5 §10.3.4 makes a standard built-in invoked outside its domain null, and
 // TCK 1140, 1145 and 1155 pin a wrong argument count and an unknown parameter
-// name as null: so a standard built-in (see NativeFun.standard) yields null
-// for any of them, and every other native function raises, unknown names
-// included. A named variadic parameter is passed through as its value.
+// name as null; §10.3.2.13.2 makes any invocation whose arguments do not
+// conform to the parameters null, and an application function — which is how
+// a BKM or decision service is invoked from FEEL — is "equivalent to a FEEL
+// function". So every native function yields null for any of them, unknown
+// names included. A named variadic parameter is passed through as its value.
+// An error evaluating an argument, or raised by the function itself, still
+// propagates.
 func (fc FunCall) EvalNativeFun(intp *Interpreter, funDef *NativeFun) (any, error) {
 	if len(funDef.overloads) > 0 {
 		return fc.evalOverloaded(intp, funDef)
@@ -776,10 +780,7 @@ func (fc FunCall) EvalNativeFun(intp *Interpreter, funDef *NativeFun) (any, erro
 	if err != nil {
 		var bad *argBindingError
 		if errors.As(err, &bad) {
-			if funDef.standard {
-				return null, nil
-			}
-			return nil, bad.err
+			return null, nil
 		}
 		return nil, err
 	}
@@ -857,7 +858,7 @@ func (fc FunCall) bindNativeArgs(intp *Interpreter, funDef *NativeFun) (map[stri
 }
 
 // evalOverloaded calls a built-in declared with NativeFun.Overloads. A call
-// that fits no overload is null for a standard built-in (see EvalNativeFun).
+// that fits no overload is null (see EvalNativeFun).
 func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, error) {
 	var args map[string]any
 	var err error
@@ -868,7 +869,7 @@ func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, err
 		}
 		args, err = funDef.bindOverload(nil, named)
 		if err != nil {
-			return funDef.bindFailure(err)
+			return null, nil
 		}
 	} else {
 		positional := make([]any, len(fc.Args))
@@ -878,7 +879,7 @@ func (fc FunCall) evalOverloaded(intp *Interpreter, funDef *NativeFun) (any, err
 			}
 		}
 		if args, err = funDef.bindOverload(positional, nil); err != nil {
-			return funDef.bindFailure(err)
+			return null, nil
 		}
 	}
 	return funDef.Call(intp, args)
