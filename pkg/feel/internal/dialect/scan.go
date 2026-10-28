@@ -92,7 +92,14 @@ var tokenMatchers = []tokenMatcher{
 
 	// variable name support unicode chars, currently Han and Greek is in the list
 	// refer to https://github.com/google/re2/wiki/Syntax
-	match(TokenName, `[a-zA-Z_\$\p{Han}\p{Greek}\p{Bopomofo}\p{Hangul}][a-zA-Z_\$0-9\p{Han}\p{Greek}}\p{Bopomofo}\p{Hangul}]*`),
+	//
+	// VERDICT DIVERGENCE: upstream's continuation class carried a stray `}`
+	// (`\p{Greek}}`), so a name ran on through a closing brace: `{v: a}` scanned
+	// `a}` as one name and the context literal never closed. A `}` is never a
+	// name character — DMN 1.5 §10.3.1.2 grammar rules 27-30 (name start and
+	// part characters) do not admit it — and rule 59 lets a context entry's
+	// value be any expression, a bare name or path included.
+	match(TokenName, `[a-zA-Z_\$\p{Han}\p{Greek}\p{Bopomofo}\p{Hangul}][a-zA-Z_\$0-9\p{Han}\p{Greek}\p{Bopomofo}\p{Hangul}]*`),
 }
 
 // ScanPosition is a 0-based row and column in the scanned text; Column counts

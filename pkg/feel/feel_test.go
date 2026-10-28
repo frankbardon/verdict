@@ -42,6 +42,40 @@ func TestEvalBasics(t *testing.T) {
 	}
 }
 
+// TestNamesEndAtClosingDelimiters pins that a bare name or path may be the
+// last thing before `}`, `]` or `)` — DMN 1.5 §10.3.1.2 grammar rules 57-59
+// put no restriction on a context's last entry.
+func TestNamesEndAtClosingDelimiters(t *testing.T) {
+	e := newFEEL(t)
+	vars := map[string]any{
+		"a":             FromGo(map[string]any{"n": 5}),
+		"b":             FromGo(2),
+		"Credit Rating": FromGo("A"),
+	}
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`{v: a}`, map[string]any{"v": map[string]any{"n": 5.0}}},
+		{`{v: a.n}`, map[string]any{"v": 5.0}},
+		{`{v:a.n}`, map[string]any{"v": 5.0}},
+		{`{v: a.n, w: 1}`, map[string]any{"v": 5.0, "w": 1.0}},
+		{`{v: (a.n)}`, map[string]any{"v": 5.0}},
+		{`[{key: "k", value: a.n}]`, []any{map[string]any{"key": "k", "value": 5.0}}},
+		{`{v: a}.v.n`, 5.0},
+		{`{r: Credit Rating}`, map[string]any{"r": "A"}},
+		{`{outer: {inner: b}}.outer.inner`, 2.0},
+		{`[a.n, b]`, []any{5.0, 2.0}},
+		{`abs(b)`, 2.0},
+		{`(b)`, 2.0},
+	}
+	for _, c := range cases {
+		if got := mustEval(t, e, c.expr, vars); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 func TestUnaryTests(t *testing.T) {
 	e := newFEEL(t)
 	cases := []struct {

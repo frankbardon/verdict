@@ -63,6 +63,24 @@ func TestForkedDefects(t *testing.T) {
 		}
 	})
 
+	t.Run("a closing brace ends a name", func(t *testing.T) {
+		// DMN 1.5 §10.3.1.2 grammar rules 27-31 and 57-59: `}` is not a name
+		// character, and a context entry's value may be any expression.
+		// Upstream's name pattern admitted `}`, so `{v: a}` scanned `a}` as one
+		// name and never closed the context.
+		vars := map[string]any{"a": FromGo(map[string]any{"n": 5})}
+		cases := map[string]any{
+			`{v: a.n}.v`:                        5.0,
+			`{v: a}.v.n`:                        5.0,
+			`[{key: "k", value: a.n}][1].value`: 5.0,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, vars); got != want {
+				t.Errorf("%s = %#v, want %v", expr, got, want)
+			}
+		}
+	})
+
 	t.Run("dates are comparable", func(t *testing.T) {
 		cases := map[string]any{
 			`date("2024-01-01") < date("2024-06-01")`:  true,
