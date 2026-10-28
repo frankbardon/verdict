@@ -50,8 +50,9 @@ type point struct {
 
 // TestCoerceToTypeCharacterization pins what coerceToType makes of every shape
 // of Go answer a bridge can hand back, for every declared type path. It was
-// written against the ToGo(FromGo(v)) round-trip coercion and holds the
-// refactor that removed it to the same outputs (#69).
+// written against the ToGo(FromGo(v)) round-trip coercion before it was
+// removed (#69); the rows marked "Intended change" are the outputs that
+// removal changed on purpose, and every other row held.
 func TestCoerceToTypeCharacterization(t *testing.T) {
 	paris, err := time.LoadLocation("Europe/Paris")
 	if err != nil {
@@ -155,6 +156,8 @@ func TestCoerceToTypeCharacterization(t *testing.T) {
 		{"enum/bool", true, enum, `string:"true"`},
 		{"enum/paris time", parisTime, enum, `string:"2024-07-01T09:30:00@Europe/Paris"`},
 		{"enum/go duration", time.Hour, enum, `string:"PT1H"`},
+		{"enum/small float", 0.1, enum, `error: "0.1" is not one of low, 1.5, 3, true, 2024-07-01T09:30:00@Europe/Paris, PT1H`},
+		{"enum/large float", 1e21, enum, `error: "1e+21" is not one of low, 1.5, 3, true, 2024-07-01T09:30:00@Europe/Paris, PT1H`},
 		{"enum/nil", nil, enum, `error: "<nil>" is not one of low, 1.5, 3, true, 2024-07-01T09:30:00@Europe/Paris, PT1H`},
 
 		// Lists.
@@ -162,13 +165,21 @@ func TestCoerceToTypeCharacterization(t *testing.T) {
 		{"list/int slice", []int{1, 2}, list(num), "[number:1, number:2]"},
 		{"list/string slice", []string{"a", "b"}, list(str), `[string:"a", string:"b"]`},
 		{"list/string slice as numbers", []string{"1", "2"}, list(num), "[number:1, number:2]"},
-		{"list/json numbers", []json.Number{"1.10", "2"}, list(num), "[number:1.100000000000000088817841970012523, number:2]"},
+		// Intended change (#69): the exact decimal is kept, no longer narrowed
+		// through float64 (was 1.100000000000000088817841970012523).
+		{"list/json numbers", []json.Number{"1.10", "2"}, list(num), `[number:1.1, number:2]`},
 		{"list/bool slice", []bool{true, false}, list(boo), "[boolean:true, boolean:false]"},
 		{"list/array", [2]int{4, 5}, list(num), "[number:4, number:5]"},
 		{"list/time slice", []time.Time{utcTime, parisTime}, list(dt), "[date and time:2024-07-01T09:30:00Z, date and time:2024-07-01T09:30:00@Europe/Paris]"},
-		{"list/time slice as strings", []time.Time{utcTime}, list(str), `[string:"2024-07-01T09:30:00Z"]`},
-		{"list/time slice as dates", []time.Time{utcTime}, list(date), "error: element 1: fail to parse temporal value"},
-		{"list/duration slice", []time.Duration{time.Hour}, list(dtd), "[duration:PT1H]"},
+		// Intended change (#69): rejected, as a top-level time.Time is for a
+		// string (was accepted as its lexical string).
+		{"list/time slice as strings", []time.Time{utcTime}, list(str), `error: element 1: expected a string, got *dialect.FEELDatetime`},
+		// Intended change (#69): message text only (was "fail to parse
+		// temporal value").
+		{"list/time slice as dates", []time.Time{utcTime}, list(date), "error: element 1: expected date, got *dialect.FEELDatetime"},
+		// Intended change (#69): rejected, as a top-level time.Duration is
+		// (was accepted through its lexical string).
+		{"list/duration slice", []time.Duration{time.Hour}, list(dtd), "error: element 1: expected days and time duration, got *dialect.FEELDuration"},
 		{"list/enum slice", []string{"LOW", "low"}, list(enum), `[string:"low", string:"low"]`},
 		{"list/int slice as enum", []int{3}, list(enum), `[string:"3"]`},
 		{"list/bad element", []any{1, "x"}, list(num), `error: element 2: "x" is not a number`},
@@ -203,7 +214,9 @@ func TestCoerceToTypeCharacterization(t *testing.T) {
 			"tags": []any{"a", "b"},
 			"at":   "2024-07-01T09:30:00Z",
 		}, nested, `{at: date and time:2024-07-01T09:30:00Z, p: {x: number:1, y: number:2}, tags: [string:"a", string:"b"]}`},
-		{"object/map of times", map[string]time.Time{"x": utcTime}, objX, `error: field "x": "2024-07-01T09:30:00Z" is not a number`},
+		// Intended change (#69): message text only (was the lexical string
+		// "... is not a number").
+		{"object/map of times", map[string]time.Time{"x": utcTime}, objX, `error: field "x": expected a number, got *dialect.FEELDatetime`},
 	}
 
 	for _, c := range cases {
