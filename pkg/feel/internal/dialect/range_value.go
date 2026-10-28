@@ -8,6 +8,26 @@ type RangeValue struct {
 	End     any
 }
 
+// GetAttr is the range properties of DMN 1.5 Table 65: `start` and `end` are
+// the endpoints, `start included` and `end included` whether each end is
+// closed. `[1..5).end included` is false.
+//
+// VERDICT DIVERGENCE: upstream gave a range no properties, so `[1..5].start`
+// raised "type mismatch, expect map". See NOTICE.md.
+func (rv RangeValue) GetAttr(name string) (interface{}, bool) {
+	switch name {
+	case "start":
+		return rv.Start, true
+	case "end":
+		return rv.End, true
+	case "start included":
+		return !rv.StartOpen, true
+	case "end included":
+		return !rv.EndOpen, true
+	}
+	return nil, false
+}
+
 // HasNullEndpoint reports whether either endpoint is null. A literal such as
 // `[null..10]` has no defined start, and DMN 1.5 §10.3.2.15 makes every ordering
 // comparison against it null, so membership in it, and every range built-in

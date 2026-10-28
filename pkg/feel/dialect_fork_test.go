@@ -3203,6 +3203,27 @@ func TestForkedDefects(t *testing.T) {
 		})
 	})
 
+	t.Run("a path on a non-context value selects null", func(t *testing.T) {
+		// DMN 1.5 §10.3.2.6, Tables 64-65. Upstream raised "key not found"
+		// for `date("2020-01-01").foo`, "type mismatch, expect map" for
+		// `5.x`, and gave a range no properties.
+		evalCases(t, []struct {
+			expr string
+			want any
+		}{
+			{`date("2020-01-01").foo`, nil},
+			{`5.x`, nil},
+			{`"abc".length`, nil},
+			{`true.x`, nil},
+			{`[date("2020-01-01")].foo`, []any{nil}},
+			{`date("2020-01-01").year`, 2020.0},
+			{`[1..5].start`, 1.0},
+			{`[1..5).end included`, false},
+			{`is defined(5.x)`, false},
+			{`is defined(date("2020-01-01").foo)`, false},
+		})
+	})
+
 	t.Run("functions are lexical closures", func(t *testing.T) {
 		// DMN 1.5 §10.3.2.13.2. Upstream kept only a function's parameters
 		// and body, so a call resolved free names at the call site:

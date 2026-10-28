@@ -848,9 +848,10 @@ func isFEELName(k string) bool {
 // entryDefined is `is defined(e.name)`: whether the value e selects from has
 // an entry or attribute called name. Upstream answered it from the "key not
 // found" a missing entry raised; the path is now null instead (DMN 1.5
-// §10.3.2.6), so the entry is looked up directly. A path over a list, or over
-// a value that is neither a context nor has attributes, is defined when it
-// evaluates without error, as before.
+// §10.3.2.6), so the entry is looked up directly with the selectProperty the
+// path itself uses: a context without the entry, a date without the property
+// and a value with no properties at all (`5.x`) are all undefined. A path over
+// a list, or on null, is defined when it evaluates without error, as before.
 func entryDefined(intp *Interpreter, dotop *DotOp) (any, error) {
 	if inner, ok := dotop.Left.(*DotOp); ok {
 		defined, err := entryDefined(intp, inner)
@@ -866,20 +867,9 @@ func entryDefined(intp *Interpreter, dotop *DotOp) (any, error) {
 		}
 		return false, err
 	}
-	if m, ok := asContext(leftVal); ok {
-		_, found := m[dotop.Attr]
-		return found, nil
+	if _, isList := leftVal.([]any); isList || isNullValue(leftVal) {
+		return true, nil
 	}
-	if obj, ok := leftVal.(HasAttrs); ok {
-		_, found := obj.GetAttr(dotop.Attr)
-		return found, nil
-	}
-	if _, err := dotop.Eval(intp); err != nil {
-		var evalErr *EvalError
-		if errors.As(err, &evalErr) && (evalErr.Short == "key not found" || evalErr.Short == "index error") {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
+	_, found := selectProperty(leftVal, dotop.Attr)
+	return found, nil
 }

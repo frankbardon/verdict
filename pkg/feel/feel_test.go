@@ -730,6 +730,51 @@ func TestMissingContextEntry(t *testing.T) {
 	}
 }
 
+// TestPathOnNonContext pins DMN 1.5 §10.3.2.6 and Tables 64-65: `e.name`
+// selects a context entry or a property the value's type lists, and anything
+// else is null — on a single value and on each element of a list alike.
+func TestPathOnNonContext(t *testing.T) {
+	e := newFEEL(t)
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`date("2020-01-01").foo`, nil},
+		{`5.x`, nil},
+		{`"abc".length`, nil},
+		{`true.x`, nil},
+		{`5.x.y`, nil},
+		{`[date("2020-01-01")].foo`, []any{nil}},
+		{`[5, {x: 1}].x`, []any{nil, 1.0}},
+		{`date("2020-01-01").year`, 2020.0},
+		{`duration("P1D").days`, 1.0},
+		{`duration("P1Y2M").months`, 2.0},
+		{`(@"2020-01-01T10:00:00@Europe/Paris").timezone`, "Europe/Paris"},
+		{`[1..5].start`, 1.0},
+		{`[1..5].end`, 5.0},
+		{`[1..5].start included`, true},
+		{`(1..5].start included`, false},
+		{`[1..5).end included`, false},
+		{`[1..5].foo`, nil},
+		{`[[1..5], [2..3]].end`, []any{5.0, 3.0}},
+		{`is defined(5.x)`, false},
+		{`is defined(date("2020-01-01").foo)`, false},
+		{`is defined(date("2020-01-01").year)`, true},
+		{`is defined([1..5].start)`, true},
+		{`is defined([1..5].foo)`, false},
+	}
+	for _, c := range cases {
+		v, err := e.EvalText(c.expr, nil)
+		if err != nil {
+			t.Errorf("%s: error %v", c.expr, err)
+			continue
+		}
+		if got := ToGo(v); !deepEqualNum(got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.expr, got, c.want)
+		}
+	}
+}
+
 // TestStringAndListSupplementDomain pins the §10.3.4 domain rule for the
 // supplement's string and list built-ins: a null or wrong-typed argument, an
 // invalid regular expression, replacement or flags (footnote 2), a position
@@ -859,8 +904,9 @@ func TestListReplaceMatchFunction(t *testing.T) {
 		}
 	}
 
-	// An error inside the predicate propagates, as it does from sort's.
-	if _, err := e.EvalText(`list replace([1,2], function(a, b) a.x.y, 5)`, nil); err == nil {
+	// An error inside the predicate propagates, as it does from sort's. A
+	// path on a number is null (§10.3.2.6), so call the number instead.
+	if _, err := e.EvalText(`list replace([1,2], function(a, b) a(1), 5)`, nil); err == nil {
 		t.Error("a failing predicate: want an evaluation error, got none")
 	}
 }

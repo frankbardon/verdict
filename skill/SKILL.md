@@ -197,6 +197,7 @@ xs[1]   xs[-1]   [1, 2, 3][4] = null   [1, 2, 3][0] = null   // index from 1, ne
 xs[item > 2]   people[age >= 18]   people[item.age >= 18]   // filter: item bound, a context's entries by name; false/null drops
 people.name = ["A", "B"]   get entries(m)[key = "y"].value   // a path on a list of contexts projects; missing entry: null
 {a: 1}.b = null   {a: 1}["b"] = null   {a: 1}.b.c = null   // a missing context entry selects null, never an error; is defined({a: 1}.b) = false
+[1..5].start = 1   [1..5).end included = false   5.x = null   date("2020-01-01").foo = null   // range properties; a property a value lacks is null
 list replace([2,4,6,8], function(item, newItem) item < newItem, 5) = [5,5,6,8]   // match form: replace each item match(item, newItem) is true for
 {t: 5, f: function(x) x + t}.f(1) = 6   (for t in [1, 2] return function(x) x + t)[2](10) = 12   // functions close over where they are defined, not where they are called
 all([true, null]) = null   all([false, null]) = false   any([true, null]) = true   // three-valued; all([]) true, any([]) false

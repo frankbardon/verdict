@@ -313,10 +313,14 @@ func (mapNode MapNode) Eval(intp *Interpreter) (any, error) {
 // the entry named Attr from a context; a context without that entry has
 // nothing to select, so the path is null (`{a: 1}.b` is null), and a path
 // continuing from that null is null too (`{a: 1}.b.c`), as null propagates
-// through every FEEL operator.
+// through every FEEL operator. A date, time, duration or range answers the
+// properties Table 65 lists for its type; any other name on it, and any name
+// on a value with no properties at all (`5.x`, `"abc".length`), selects
+// nothing and is null — see selectProperty.
 //
-// VERDICT DIVERGENCE: upstream raised "key not found" for a missing entry and
-// "type mismatch, expect map" for a path on null. See NOTICE.md.
+// VERDICT DIVERGENCE: upstream raised "key not found" for a missing entry or
+// attribute and "type mismatch, expect map" for a path on null or on a value
+// with no attributes. See NOTICE.md.
 func (dotop DotOp) Eval(intp *Interpreter) (any, error) {
 	leftVal, err := dotop.Left.Eval(intp)
 	if err != nil {
@@ -325,22 +329,8 @@ func (dotop DotOp) Eval(intp *Interpreter) (any, error) {
 	if list, ok := leftVal.([]any); ok {
 		return dotop.project(intp, list)
 	}
-	if m, ok := asContext(leftVal); ok {
-		if val, found := m[dotop.Attr]; found {
-			return val, nil
-		}
-		return null, nil
-	}
-	if isNullValue(leftVal) {
-		return null, nil
-	}
-	if obj, ok := leftVal.(HasAttrs); ok {
-		if v, found := obj.GetAttr(dotop.Attr); found {
-			return normalizeValue(v), nil
-		}
-		return nil, NewErrKeyNotFound(dotop.Attr)
-	}
-	return nil, NewErrTypeMismatch("map")
+	v, _ := selectProperty(leftVal, dotop.Attr)
+	return v, nil
 }
 
 // project is a path over a list (DMN 1.5 §10.3.2.5): "a selection using the
@@ -349,8 +339,8 @@ func (dotop DotOp) Eval(intp *Interpreter) (any, error) {
 // of e' — so an element without the entry gives null
 // (`[{x:1, y:2}, {x:2}].y = [2, null]`). **Interpretation:** an element that is
 // not a context contributes no entries, so it selects null too, unless it has
-// the attribute (a date's `year`). Every element is charged against the
-// iteration budget.
+// the attribute (a date's `year`) — the same selectProperty a single value
+// uses. Every element is charged against the iteration budget.
 //
 // VERDICT DIVERGENCE: upstream raised "type mismatch, expect map" for a path
 // on any list. See NOTICE.md.
@@ -360,18 +350,31 @@ func (dotop DotOp) project(intp *Interpreter, list []any) (any, error) {
 	}
 	out := make([]any, len(list))
 	for i, elem := range list {
-		out[i] = null
-		if m, ok := asContext(elem); ok {
-			if v, found := m[dotop.Attr]; found {
-				out[i] = v
-			}
-		} else if obj, ok := elem.(HasAttrs); ok {
-			if v, found := obj.GetAttr(dotop.Attr); found {
-				out[i] = normalizeValue(v)
-			}
-		}
+		out[i], _ = selectProperty(elem, dotop.Attr)
 	}
 	return out, nil
+}
+
+// selectProperty is `v.name` for a v that is not a list: the entry of a
+// context (Table 64) or the named property of a date, time, date and time,
+// duration or range (Table 65). found reports whether v has such an entry or
+// property — `is defined` asks it. A value without one, null and a value with
+// no properties at all included, selects null: DMN 1.5 gives `e.name` no
+// meaning outside those types, and an expression with no meaning is null
+// (§10.3.2.15), as it already was for a missing context entry.
+func selectProperty(v any, name string) (val any, found bool) {
+	if m, ok := asContext(v); ok {
+		if val, found := m[name]; found {
+			return val, true
+		}
+		return null, false
+	}
+	if obj, ok := v.(HasAttrs); ok {
+		if val, found := obj.GetAttr(name); found {
+			return normalizeValue(val), true
+		}
+	}
+	return null, false
 }
 
 func (ifExpr IfExpr) Eval(intp *Interpreter) (any, error) {
