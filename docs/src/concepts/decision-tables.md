@@ -66,6 +66,8 @@ for a list-valued input, also `? = [1, 2]` (DMN 1.5 §7.3.2): lists are equal
 when they have the same length and equal elements in order, so `[1, 2]`
 matches `[1, 2]` but not `[2, 1]` (§10.3.2.15, Table 53). `not(["a", "b"])`
 matches `"c"` but not `5`.
+A range item is tested by membership rather than equality (Table 55), so
+`[[1..3], 7]` matches `2` and `7` but not `5`.
 
 Equality is FEEL's `=` everywhere a table compares values — equality cells,
 list cells, ANY agreement, PRIORITY and OUTPUT ORDER ranking — so `1` equals

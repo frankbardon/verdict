@@ -2884,6 +2884,31 @@ func TestForkedDefects(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("a range element of a list is tested by membership", func(t *testing.T) {
+		// DMN 1.5 Table 55: each element of `e in [e1, e2, …]` is a positive
+		// unary test, so a range element is membership, not `=` (TCK
+		// 0072-feel-in). The fork compared `1 = [2..4]`, a kind mismatch, so
+		// `1 in [[2..4], [1..3]]` was null and `5 in [[1..3], 7]` null (#62).
+		cases := map[string]any{
+			"1 in [[2..4], [1..3]]":      true,
+			"5 in [[1..3], 7]":           false,
+			"2 in [[1..3], 7]":           true,
+			"7 in [[1..3], 7]":           true,
+			`"a" in [[1..3], 7]`:         nil,
+			"null in [[1..3], 7]":        nil,
+			"true in [[false..true]]":    nil,
+			"not(1 in [[2..4], [1..3]])": false,
+			"[1..2] in [[1..2], 3]":      true,
+			"[1..2] in [[1..3]]":         false,
+			`"a" in [1, 2]`:              nil,
+		}
+		for expr, want := range cases {
+			if got := mustEval(t, e, expr, nil); got != want {
+				t.Errorf("%s = %#v, want %#v", expr, got, want)
+			}
+		}
+	})
 }
 
 func approx(a, b float64) bool {

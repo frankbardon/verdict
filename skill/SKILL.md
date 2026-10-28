@@ -352,6 +352,8 @@ opens as an empty canvas.
 - **`x in [list]` is `x = e1 or x = e2 or …`, three-valued.** `3 in [1, 2]` is
   false and `1 in [1, "a"]` true, but `"a" in [1, 2]` is null (each `=` is
   null), so `not("a" in [1, 2])` is null too. `null in [1, null]` is true.
+  A range element is membership, not `=`: `1 in [[2..4], [1..3]]` is true and
+  `5 in [[1..3], 7]` false; a range input still matches an equal range element.
 - **`min` and `max` need comparable items of one kind.** Numbers, strings,
   temporals or durations of one kind: `max(3, 1, 2)` is `3`. An empty list, a
   null item, a mixed list (`min([1, "a"])`) or items with no order (booleans,

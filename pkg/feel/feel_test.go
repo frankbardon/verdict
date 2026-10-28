@@ -59,6 +59,13 @@ func TestUnaryTests(t *testing.T) {
 		{`"low", "medium"`, "medium", true},
 		{`"low", "medium"`, "high", false},
 		{"not(1, 2)", 3, true},
+		// A list-literal cell holding ranges tests them by membership
+		// (DMN 1.5 Table 55, issue #62).
+		{"[[2..4], [1..3]]", 1, true},
+		{"[[1..3], 7]", 5, false},
+		{"[[1..3], 7]", 7, true},
+		{"not([[1..3], 7])", 5, true},
+		{"not([[1..3], 7])", 2, false},
 	}
 	for _, c := range cases {
 		x, err := e.CompileUnaryTest(c.entry)

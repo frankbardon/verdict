@@ -1051,9 +1051,14 @@ func In(leftVal, rightVal any) (any, error) {
 		// Upstream answered a boolean from valuesEqual, so `"a" in [1, 2]`
 		// was false and `not("a" in [1, 2])` true. A pair the fork cannot
 		// compare at all (two functions) still counts as not equal.
+		//
+		// VERDICT DIVERGENCE: an element that is itself a range is tested
+		// by membership, not `=` (DMN 1.5 Table 55, TCK 0072-feel-in), so
+		// `1 in [[2..4], [1..3]]` is true and `5 in [[1..3], 7]` false where
+		// `5 = [1..3]` made them null. See inListItem.
 		unknown := false
 		for _, kv := range rv {
-			r, err := feelEqual(leftVal, kv)
+			r, err := inListItem(leftVal, kv)
 			if err != nil {
 				continue
 			}
@@ -1075,4 +1080,18 @@ func In(leftVal, rightVal any) (any, error) {
 		// `1 in 1` is true and `1 in "a"` null (TCK 0072-feel-in).
 		return feelEqual(leftVal, rightVal)
 	}
+}
+
+// inListItem is one disjunct of `e in [e1, e2, …]`: `e in ei`. DMN 1.5 Table
+// 55 reads each list element as a positive unary test, so a range element is
+// a membership test (`1 in [1..3]`) and any other element equality. A range
+// input is compared to a range element by `=`, which keeps
+// `[1..2] in [[1..2], 3]` true: the endpoints of [1..3] cannot order a range.
+func inListItem(leftVal, item any) (any, error) {
+	if r, ok := item.(*RangeValue); ok {
+		if _, isRange := leftVal.(*RangeValue); !isRange {
+			return In(leftVal, r)
+		}
+	}
+	return feelEqual(leftVal, item)
 }
